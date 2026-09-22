@@ -92,6 +92,8 @@ What the script wires up in a worktree, and why:
 
 `upstream` = `AlmondGod/tinyworlds` (the original project); `git fetch upstream && git merge upstream/main` on `main` pulls their changes.
 
+**Phone control (Remote Control).** User settings have `remoteControlAtStartup: true`, so every interactive session already shows up in the Claude app under Code. For a session that must outlive the terminal (e.g. one driving a Modal run), `scripts/rc.sh <worktree-name>` starts `claude remote-control` for that worktree inside tmux (`rc-<name>`) wrapped in `caffeinate -i`; `scripts/rc.sh --list` / `--stop <name>` manage them. Push notifications are on (`inputNeededNotifEnabled`, `agentPushNotifEnabled`), so when working remotely, send a push when a long task finishes or a decision is needed.
+
 ## Contributing conventions (from README)
 
 Keep backwards compatibility, keep code lean, annotate every tensor with the shape key, and include inference visualizations in PRs. The README TODO list is the roadmap (RoPE/AliBi, AdaLN-Zero, MaskGIT schedulers, larger runs).
