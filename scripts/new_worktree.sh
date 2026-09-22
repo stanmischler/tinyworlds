@@ -4,9 +4,9 @@
 #   scripts/new_worktree.sh <name> [base]
 #
 # Creates ../worktrees/<name> on a new branch <name> (from `base`, default: main),
-# and wires up the gitignored bits the code needs: the shared .venv, the shared
-# data/ directory, and the CPU smoke config. results/ stays per-worktree on
-# purpose so find_latest_checkpoint only sees that experiment's checkpoints.
+# and wires it up: shared .venv and data/ (symlinks), the CPU smoke config (copy),
+# and CLAUDE.md symlinked to the main checkout's copy. results/ stays per-worktree
+# on purpose so find_latest_checkpoint only sees that experiment's checkpoints.
 set -euo pipefail
 
 name="${1:?usage: scripts/new_worktree.sh <name> [base]}"
@@ -21,6 +21,13 @@ git -C "$main_repo" worktree add "$wt_dir" -b "$name" "$base"
 
 ln -s "$main_repo/.venv" "$wt_dir/.venv"
 ln -s "$main_repo/data" "$wt_dir/data"
+
+# CLAUDE.md is tracked, but every worktree should read the main checkout's copy so an
+# edit there is visible everywhere at once. Swap the checked-out file for a symlink and
+# tell git to ignore that change here, so it never shows as modified or gets committed.
+rm "$wt_dir/CLAUDE.md"
+ln -s "$main_repo/CLAUDE.md" "$wt_dir/CLAUDE.md"
+git -C "$wt_dir" update-index --skip-worktree CLAUDE.md
 [ -f "$main_repo/configs/dev/dev_training_cpu.yaml" ] && cp "$main_repo/configs/dev/dev_training_cpu.yaml" "$wt_dir/configs/dev/"
 
 cat <<EOF

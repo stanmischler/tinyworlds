@@ -64,6 +64,34 @@ After any local smoke run, **delete its `results/<timestamp>/` directory** (see 
 - Interactive inference blocks on terminal `input()` per step and `assert`s on bad input; there is no live frame display. Never run it from an agent — use `use_interactive_mode=false use_actions=true`.
 - `configs/dev/dev_training.yaml` (upstream's smoke profile) **no longer loads** — it predates the mandatory `distributed` block and targets PICODOOM at 64px. Use `configs/dev/dev_training_cpu.yaml` (verified end-to-end on this Mac) or copy it.
 
+## Worktree lifecycle (how new work is started here)
+
+The main checkout is `Project Vicky/tinyworlds` and stays on `main`. Each new direction gets its own worktree + branch under `Project Vicky/worktrees/`:
+
+```bash
+cd "/Users/stanislas/Desktop/Project Vicky/tinyworlds"
+scripts/new_worktree.sh <name>            # branch <name> from main → ../worktrees/<name>
+scripts/new_worktree.sh <name> <base>     # stack on an unmerged branch instead
+cd "../worktrees/<name>" && export PYTHONPATH="$PWD"
+
+# ... commit inside the worktree as usual ...
+git push -u origin <name>                 # publish the branch (origin = stanmischler/tinyworlds)
+
+# merge from the main checkout (or open a PR), then retire the worktree
+cd "/Users/stanislas/Desktop/Project Vicky/tinyworlds"
+git merge <name> && git push
+git worktree remove --force ../worktrees/<name>   # --force: the symlinks count as untracked
+```
+
+What the script wires up in a worktree, and why:
+- `.venv` and `data/` are **symlinks** to the main checkout (no reinstall, no re-download).
+- `CLAUDE.md` is a **symlink** to the main checkout's copy, with `git update-index --skip-worktree` so the swap never shows as modified or gets committed. **Edit CLAUDE.md only in the main checkout**, and commit it from there; every worktree sees the edit immediately.
+- `configs/dev/dev_training_cpu.yaml` is copied (it is gitignored).
+- `results/` is **not** shared — `find_latest_checkpoint` is cwd-relative, so each worktree's inference only sees its own checkpoints.
+- `scripts/modal_train.py` mounts `.`, so running it from a worktree trains that branch's code.
+
+`upstream` = `AlmondGod/tinyworlds` (the original project); `git fetch upstream && git merge upstream/main` on `main` pulls their changes.
+
 ## Contributing conventions (from README)
 
 Keep backwards compatibility, keep code lean, annotate every tensor with the shape key, and include inference visualizations in PRs. The README TODO list is the roadmap (RoPE/AliBi, AdaLN-Zero, MaskGIT schedulers, larger runs).

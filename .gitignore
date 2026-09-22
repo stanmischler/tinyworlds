@@ -1,9 +1,11 @@
 *results*/
 *pycache*/
+data
 data/
 batch_visualizations/*
 wandb/*
 setup.sh
 # local-only tooling (not part of the upstream project)
+.venv
 .venv/
 configs/dev/dev_training_cpu.yaml
