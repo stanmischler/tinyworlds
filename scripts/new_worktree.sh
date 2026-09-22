@@ -30,5 +30,5 @@ Worktree ready: $wt_dir  (branch: $name, from $base)
   cd "$wt_dir" && export PYTHONPATH="\$PWD"
 
 When done:  git push -u origin $name   then merge/PR into main, then
-            git -C "$main_repo" worktree remove "$wt_dir"
+            git -C "$main_repo" worktree remove --force "$wt_dir"   # --force: the symlinks count as untracked
 EOF
