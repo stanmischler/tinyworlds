@@ -4,3 +4,8 @@ data/
 batch_visualizations/*
 wandb/*
 setup.sh
+# local-only tooling (not part of the upstream project)
+.venv/
+CLAUDE.md
+configs/dev/dev_training_cpu.yaml
+scripts/modal_train.py
