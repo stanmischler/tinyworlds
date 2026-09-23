@@ -75,6 +75,18 @@ def load_sonic(num_frames=4, fps=15, preload_ratio=1):
     )
 
 
+def load_sonic_train(num_frames=4, fps=15, preload_ratio=1):
+    """Sonic minus the held-out test blocks (see scripts/eval/split_dataset.py); same class and fps as SONIC."""
+    return _load_video_dataset_pair(
+        SonicDataset,
+        '/data/sonic_frames.mp4',
+        '/data/sonic_train_frames.h5',
+        num_frames=num_frames,
+        fps=fps,
+        preload_ratio=preload_ratio
+    )
+
+
 def load_pole_position(num_frames=4, fps=15, preload_ratio=1):
     return _load_video_dataset_pair(
         PolePositionDataset,
@@ -146,6 +158,8 @@ def load_data_and_data_loaders(dataset, batch_size, num_frames=1, distributed=Fa
         training_data, validation_data = load_pong(num_frames=num_frames, fps=fps, preload_ratio=preload_ratio)
     elif dataset == 'SONIC':
         training_data, validation_data = load_sonic(num_frames=num_frames, fps=fps, preload_ratio=preload_ratio)
+    elif dataset == 'SONIC_TRAIN':
+        training_data, validation_data = load_sonic_train(num_frames=num_frames, fps=fps, preload_ratio=preload_ratio)
     elif dataset == 'POLE_POSITION':
         training_data, validation_data = load_pole_position(num_frames=num_frames, fps=fps, preload_ratio=preload_ratio)
     elif dataset == 'PICODOOM':

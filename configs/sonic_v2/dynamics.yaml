@@ -1,0 +1,21 @@
+# sonic_v2 dynamics: 4x the steps and ~8x the compute of sonic_short (which plateaued at loss 2.57 only because the
+# cosine schedule ran out); lr lowered for the wider model.
+batch_size_per_gpu: 256
+gradient_accumulation_steps: 1
+n_updates: 60000
+learning_rate: 0.0003
+log_interval: 1000   # checkpoint + prediction PNG every 1000 steps
+
+use_actions: true
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 8
+
+# filled in by full_train.py from the earlier stages
+video_tokenizer_path:
+latent_actions_path:
+
+# resume: set to a checkpoint dir (…/dynamics/checkpoints/dynamics_step_N) to restore weights, optimizer, scheduler and step
+checkpoint:
