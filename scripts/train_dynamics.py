@@ -93,9 +93,11 @@ def main():
     # optional DDP, compile, param count, tf32
     print_param_count_if_main(dynamics_model, "DynamicsModel", is_main)
     if args.compile:
-        video_tokenizer = torch.compile(video_tokenizer, mode="reduce-overhead", fullgraph=False, dynamic=True)
-        latent_action_model = torch.compile(latent_action_model, mode="reduce-overhead", fullgraph=False, dynamic=True)
-        dynamics_model = torch.compile(dynamics_model, mode="reduce-overhead", fullgraph=False, dynamic=True)
+        # mode="default" rather than "reduce-overhead": CUDA-graph mode crashed the latent-actions stage on H100
+        # (inductor: "storage data ptrs are not allocated in pool", torch 2.8); same model is compiled here
+        video_tokenizer = torch.compile(video_tokenizer, mode="default", fullgraph=False, dynamic=True)
+        latent_action_model = torch.compile(latent_action_model, mode="default", fullgraph=False, dynamic=True)
+        dynamics_model = torch.compile(dynamics_model, mode="default", fullgraph=False, dynamic=True)
         print("Compiled all models for training.")
     dynamics_model = prepare_model_for_distributed(
         dynamics_model, 
@@ -113,6 +115,25 @@ def main():
 
     # cosine scheduler for lr warmup and AMP grad scaler
     schedulers = [create_cosine_scheduler(opt, args.n_updates) for opt in optimizers]
+
+    # resume: restore optimizer/scheduler state and continue from the saved step (weights were loaded above)
+    start_step = 0
+    if args.checkpoint:
+        from utils.utils import OPTIMIZER_CHECKPOINT, STATE
+        import pathlib
+        ckpt_dir = pathlib.Path(args.checkpoint)
+        optimizers[0].load_state_dict(torch.load(ckpt_dir / OPTIMIZER_CHECKPOINT, map_location=args.device, weights_only=False))
+        state = torch.load(ckpt_dir / STATE, map_location='cpu', weights_only=False)
+        if state.get('scheduler_state_dict') is not None:
+            schedulers[0].load_state_dict(state['scheduler_state_dict'])
+        if len(optimizers) > 1 and (ckpt_dir / 'all_optimizers.pt').exists():
+            all_opt = torch.load(ckpt_dir / 'all_optimizers.pt', map_location=args.device, weights_only=False)
+            all_sch = torch.load(ckpt_dir / 'all_schedulers.pt', map_location='cpu', weights_only=False)
+            for k, (o, sch) in enumerate(zip(optimizers, schedulers)):
+                o.load_state_dict(all_opt[f'optimizer_{k}'])
+                sch.load_state_dict(all_sch[f'scheduler_{k}'])
+        start_step = int(state.get('step') or 0) + 1
+        print(f"Resumed from {args.checkpoint}: continuing at step {start_step}/{args.n_updates}")
     train_ctx = torch.amp.autocast(args.device, enabled=True, dtype=torch.bfloat16) if args.amp and not args.distributed.use_fsdp else nullcontext()
 
     results = {
@@ -147,7 +168,7 @@ def main():
 
     use_moe = getattr(args, 'use_moe', False)
 
-    for i in tqdm(range(0, args.n_updates), disable=not is_main):
+    for i in tqdm(range(start_step, args.n_updates), initial=start_step, total=args.n_updates, disable=not is_main):
         for opt in optimizers:
             opt.zero_grad(set_to_none=True)
         if isinstance(dynamics_model, FSDPModule):

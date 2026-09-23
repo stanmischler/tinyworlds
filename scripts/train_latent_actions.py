@@ -69,7 +69,9 @@ def main():
     # optional DDP, compile, param count, tf32
     print_param_count_if_main(model, "LatentActionModel", is_main)
     if args.compile:
-        model = torch.compile(model, mode="reduce-overhead", fullgraph=False, dynamic=True)
+        # mode="default" rather than "reduce-overhead": CUDA-graph mode crashed this stage on H100 at step 1
+        # (inductor: "storage data ptrs are not allocated in pool", torch 2.8)
+        model = torch.compile(model, mode="default", fullgraph=False, dynamic=True)
     model = prepare_model_for_distributed(
         model, 
         args.distributed, 

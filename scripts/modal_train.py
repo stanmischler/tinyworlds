@@ -7,7 +7,11 @@ One-time setup (from the repo root):
 
 Then:
     modal run scripts/modal_train.py::download --pattern "zelda_frames.h5"
-    modal run --detach scripts/modal_train.py --dataset ZELDA
+    modal run --detach scripts/modal_train.py --dataset ZELDA   # returns immediately; --detach keeps the app alive
+    modal app logs tinyworlds                                   # follow training; `modal app stop tinyworlds` cancels
+
+Use a different shared config (e.g. a self-contained experiment under configs/<name>/):
+    modal run --detach scripts/modal_train.py --dataset SONIC --training-config configs/sonic_short/training.yaml
 
 Pick the GPU with an env var (defaults to one A100-80GB):
     TINYWORLDS_GPU=H100 modal run --detach scripts/modal_train.py --dataset ZELDA
@@ -19,11 +23,13 @@ Datasets and checkpoints live in Modal Volumes, so they survive between runs:
 """
 
 import os
+import threading
 
 import modal
 
 REPO_DIR = "/root/tinyworlds"
 GPU = os.environ.get("TINYWORLDS_GPU", "A100-80GB")
+COMMIT_EVERY_S = 10 * 60  # how often to persist results to the volume during training
 
 # set TINYWORLDS_NO_WANDB=1 to run without creating a Modal secret (also pass --no-wandb)
 SECRETS = [] if os.environ.get("TINYWORLDS_NO_WANDB") else [
@@ -69,7 +75,7 @@ def download(pattern: str = "zelda_frames.h5"):
     secrets=SECRETS,
     timeout=24 * 60 * 60,  # Modal's per-call maximum
 )
-def train(dataset: str = "ZELDA", overrides: list[str] | None = None):
+def train(dataset: str = "ZELDA", overrides: list[str] | None = None, training_config: str = "configs/training.yaml"):
     """Run the three-stage pipeline (video tokenizer -> latent actions -> dynamics)."""
     import subprocess
 
@@ -77,7 +83,7 @@ def train(dataset: str = "ZELDA", overrides: list[str] | None = None):
 
     # full_train.py does not forward CLI overrides to the stage scripts (they re-read the
     # training config from disk), so bake the dataset and any overrides into a config copy.
-    cfg = OmegaConf.load(f"{REPO_DIR}/configs/training.yaml")
+    cfg = OmegaConf.load(f"{REPO_DIR}/{training_config}")
     cfg.dataset = dataset
 
     # the .h5 fixes the resolution (zelda/picodoom are 128, sonic/pong are 64) and the models
@@ -101,6 +107,15 @@ def train(dataset: str = "ZELDA", overrides: list[str] | None = None):
     OmegaConf.save(cfg, cfg_path)
     print(OmegaConf.to_yaml(cfg))
 
+    # volume writes only persist once committed; commit periodically so a timeout or a manual
+    # `modal app stop` loses at most COMMIT_EVERY_S of checkpoints/visualizations
+    stop = threading.Event()
+
+    def commit_periodically():
+        while not stop.wait(COMMIT_EVERY_S):
+            results_volume.commit()
+
+    threading.Thread(target=commit_periodically, daemon=True).start()
     try:
         subprocess.run(
             ["python", "scripts/full_train.py", "--config", cfg_path],
@@ -108,13 +123,22 @@ def train(dataset: str = "ZELDA", overrides: list[str] | None = None):
             check=True,
         )
     finally:
+        stop.set()
         results_volume.commit()  # keep whatever checkpoints exist, even if a stage fails
 
 
 @app.local_entrypoint()
-def main(dataset: str = "ZELDA", no_wandb: bool = False, overrides: str = ""):
-    """modal run scripts/modal_train.py --dataset ZELDA --overrides "video_tokenizer_config=..." """
+def main(
+    dataset: str = "ZELDA",
+    no_wandb: bool = False,
+    overrides: str = "",
+    training_config: str = "configs/training.yaml",
+):
+    """modal run scripts/modal_train.py --dataset ZELDA --training-config configs/training.yaml --overrides "k=v,k=v" """
     extra = [o for o in overrides.split(",") if o]
     if no_wandb:
         extra.append("use_wandb=false")
-    train.remote(dataset=dataset, overrides=extra)
+    # spawn (not .remote) so this local process returns immediately: with `--detach` the app then
+    # runs on its own, and a laptop going to sleep or losing wifi cannot take the training down.
+    call = train.spawn(dataset=dataset, overrides=extra, training_config=training_config)
+    print(f"training started (function call {call.object_id}); follow it with:  modal app logs tinyworlds")
