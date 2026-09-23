@@ -1,0 +1,21 @@
+# Ablation arm "none": identical to the other two arms except action_dropout_prob (see PROTOCOL.md).
+batch_size_per_gpu: 256
+gradient_accumulation_steps: 1
+n_updates: 20001     # so that a step-20000 checkpoint is written (log_interval multiple)
+learning_rate: 0.0003
+log_interval: 1000   # checkpoint + prediction PNG every 1000 steps
+seed: 0
+
+use_actions: true
+action_dropout_prob: 1.0        # 0.0 = LAM actions always, 1.0 = learned null action always, 0.5 = per-sample mix
+full_last_frame_mask_prob: 0.5   # half the batches trained like inference: clean context, last frame fully masked
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 8
+
+# filled in by full_train.py from find_latest_checkpoint (the shared v3 tokenizer / LAM)
+video_tokenizer_path:
+latent_actions_path:
+checkpoint:

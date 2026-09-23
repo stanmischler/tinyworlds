@@ -295,6 +295,8 @@ def load_dynamics_from_checkpoint(checkpoint_path, device, model = None, is_dist
         'num_experts': cfg.get('num_experts', 4),
         'top_k_experts': cfg.get('top_k_experts', 2),
         'moe_aux_loss_coeff': cfg.get('moe_aux_loss_coeff', 0.01),
+        'full_last_frame_mask_prob': cfg.get('full_last_frame_mask_prob', 0.0),
+        'action_dropout_prob': cfg.get('action_dropout_prob', 0.0),
     }
     if model is None:
         model = DynamicsModel(**kwargs)

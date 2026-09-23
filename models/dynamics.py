@@ -9,8 +9,17 @@ from einops import repeat
 class DynamicsModel(nn.Module):
     def __init__(self, frame_size=(128, 128), patch_size=4, embed_dim=128, num_heads=8,
                  hidden_dim=128, num_blocks=4, num_bins=4, n_actions=8, conditioning_dim=3, latent_dim=5,
-                 use_moe=False, num_experts=4, top_k_experts=2, moe_aux_loss_coeff=0.01):
+                 use_moe=False, num_experts=4, top_k_experts=2, moe_aux_loss_coeff=0.01,
+                 full_last_frame_mask_prob=0.0, action_dropout_prob=0.0):
         super().__init__()
+        # probability that a training batch uses the inference-style mask (clean context, last frame fully masked)
+        # instead of MaskGIT's random 50-100% masking over all frames. 0.0 = original behaviour.
+        self.full_last_frame_mask_prob = float(full_last_frame_mask_prob)
+        # probability that a training sample's whole action sequence is replaced by a learned "no action" latent
+        # (0.0 = original behaviour, 1.0 = unconditioned model). The null latent only exists when dropout is on,
+        # so older checkpoints keep loading.
+        self.action_dropout_prob = float(action_dropout_prob)
+        self.null_action = nn.Parameter(torch.zeros(1, 1, conditioning_dim)) if self.action_dropout_prob > 0 else None  # [1, 1, A]
         H, W = frame_size
         codebook_size = num_bins**latent_dim
 
@@ -42,14 +51,26 @@ class DynamicsModel(nn.Module):
 
         # apply MaskGIT random masking during training
         if training and self.training:
-            # per-batch mask ratio in [0.5, 1.0)
-            mask_ratio = 0.5 + torch.rand((), device=discrete_latents.device) * 0.5 
-            mask_positions = (torch.rand(B, T, P, device=discrete_latents.device) < mask_ratio) # [B, T, P]
+            dev = discrete_latents.device
+            # every random draw below happens in every configuration, so runs that differ only in the two
+            # probabilities consume the RNG identically (same masks, same batch order); torch.where instead of
+            # Python branches keeps the compiled graph static
+            use_full_last = torch.rand((), device=dev) < self.full_last_frame_mask_prob  # scalar bool
+            drop_action = torch.rand(B, 1, 1, device=dev) < self.action_dropout_prob  # [B, 1, 1]
 
-            # guarantee at least one unmasked temporal anchor per (B, P)
-            # pick a random timestep for each (B,P) and force it to unmask
-            anchor_idx = torch.randint(0, T, (B, P), device=discrete_latents.device)  # [B, P]
-            mask_positions[torch.arange(B)[:, None], anchor_idx, torch.arange(P)[None, :]] = False # [B, T, P]
+            # MaskGIT mask: per-batch ratio in [0.5, 1.0) over all frames, one unmasked temporal anchor per (B, P)
+            mask_ratio = 0.5 + torch.rand((), device=dev) * 0.5
+            maskgit_mask = torch.rand(B, T, P, device=dev) < mask_ratio  # [B, T, P]
+            anchor_idx = torch.randint(0, T, (B, P), device=dev)  # [B, P]
+            maskgit_mask[torch.arange(B, device=dev)[:, None], anchor_idx, torch.arange(P, device=dev)[None, :]] = False
+            # inference-style mask: context frames clean, last frame fully masked (matches forward_inference)
+            last_frame_mask = torch.zeros(B, T, P, dtype=torch.bool, device=dev)  # [B, T, P]
+            last_frame_mask[:, -1] = True
+            mask_positions = torch.where(use_full_last, last_frame_mask, maskgit_mask)  # [B, T, P]
+
+            if conditioning is not None and self.null_action is not None:
+                # per-sample action dropout: a dropped sample's whole action sequence becomes the learned null action
+                conditioning = torch.where(drop_action, self.null_action.to(conditioning.dtype), conditioning)  # [B, T-1, A]
 
             # replace selected latents with mask tokens
             mask_token = repeat(self.mask_token.to(discrete_latents.device, discrete_latents.dtype), '1 1 1 L -> B T P L', B=B, T=T, P=P) # [B, T, P, L]

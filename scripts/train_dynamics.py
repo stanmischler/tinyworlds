@@ -41,6 +41,16 @@ def main():
     if is_main:
         print(f"Dynamics Training")
         print(f"Results will be saved in {stage_dir}")
+        print(f"video_tokenizer_path: {args.video_tokenizer_path}")
+        print(f"latent_actions_path:  {args.latent_actions_path}")
+
+    # seed init, masking/dropout draws and (via the loader generator below) the batch order
+    loader_generator = None
+    if args.seed is not None:
+        import random
+        import numpy as np
+        random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
+        loader_generator = torch.Generator().manual_seed(args.seed)
 
     # load video tokenizer and latent action model
     if os.path.isdir(args.video_tokenizer_path):
@@ -81,6 +91,8 @@ def main():
         num_experts=getattr(args, 'num_experts', 4),
         top_k_experts=getattr(args, 'top_k_experts', 2),
         moe_aux_loss_coeff=getattr(args, 'moe_aux_loss_coeff', 0.01),
+        full_last_frame_mask_prob=getattr(args, 'full_last_frame_mask_prob', 0.0),
+        action_dropout_prob=getattr(args, 'action_dropout_prob', 0.0),
     ).to(args.device)
     if args.checkpoint:
         dynamics_model, _ = load_dynamics_from_checkpoint(
@@ -155,6 +167,10 @@ def main():
         data_overrides['fps'] = args.fps
     if hasattr(args, 'preload_ratio') and args.preload_ratio is not None:
         data_overrides['preload_ratio'] = args.preload_ratio
+    for k in ('num_workers', 'pin_memory'):  # dataloader throughput knobs; None = module defaults
+        if getattr(args, k, None) is not None:
+            data_overrides[k] = getattr(args, k)
+    data_overrides['generator'] = loader_generator
     _, _, training_loader, _, _ = load_data_and_data_loaders(
         dataset=args.dataset, 
         batch_size=args.batch_size_per_gpu,
