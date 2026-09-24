@@ -168,3 +168,58 @@ apps are named `tinyworlds`). Pull each run's step-20000 and step-10000 dynamics
    `dynamics_mixed.yaml`.
 7. Smoke: CPU copy of `configs/dev/dev_training_cpu.yaml` with the knobs, 2 steps per arm, checkpoint
    reload, eval `--limit 8` in each mode; then delete the `results/<timestamp>/` dirs.
+
+## Results (2026-09-24)
+
+Three concurrent H100 apps, 1 h 40 each at 3.5 it/s (lam `ap-G9h4DdLdbhokmf0ffXAntw`, none `ap-PPRuxgQsc5pqtDRSgNqf9K`,
+mixed `ap-YADy6QdO7o2CzjFRZTvFm1`). Checkpoints in `results/action_ablation/<arm>/`, evals in `eval_results/`.
+
+| eval (arm / action mode) | step | token acc | PSNR | SSIM |
+|---|---|---|---|---|
+| lam / true action   | 10000 | 0.389 | 18.46 | 0.580 |
+| lam / true action   | 20000 | 0.383 | 18.57 | 0.583 |
+| lam / random action | 20000 | 0.330 | 16.23 | 0.505 |
+| none / null         | 10000 | 0.389 | 18.46 | 0.578 |
+| none / null         | 20000 | 0.378 | 18.36 | 0.572 |
+| mixed / true action | 10000 | 0.393 | 18.69 | 0.587 |
+| mixed / true action | 20000 | 0.383 | 18.40 | 0.578 |
+| mixed / null        | 20000 | 0.381 | 18.34 | 0.576 |
+| mixed / random      | 20000 | 0.362 | 17.44 | 0.549 |
+| copy-last baseline  |       | 0.432 | 23.98 | 0.629 |
+| tokenizer ceiling   |       |       | 24.83 | 0.826 |
+| v2 (no masking fix, 60k steps) / true action | 59000 | 0.293 | 14.44 | 0.392 |
+
+Contrasts, paired token-accuracy difference with block-bootstrap 95% CI (`*` = excludes zero):
+
+| contrast | step 20000 | step 10000 |
+|---|---|---|
+| 1. lam-true minus none-null (does conditioning help) | +0.005 [+0.001, +0.010] * ; code!=0: +0.012 * | +0.000 [-0.004, +0.005] ; code!=0: +0.009 |
+| 2. mixed-true minus mixed-null (action value in one model) | +0.002 [+0.001, +0.004] * ; code!=0: +0.010 * | +0.002 [+0.001, +0.004] * ; code!=0: +0.015 * |
+| 3. mixed-true minus lam-true (mix cost, conditioned) | 0.000 [-0.005, +0.005] ; PSNR -0.17 dB * | |
+| 4. mixed-null minus none-null (mix cost, unconditioned) | +0.003 [-0.001, +0.007] | |
+| 5. lam-true minus lam-random | +0.054 * (PSNR +2.3 dB) | |
+| 5. mixed-true minus mixed-random | +0.021 * (PSNR +1.0 dB) | |
+
+Reading:
+- **The masking fix is the big effect**, not the actions: every arm at 20k steps sits at 0.38 token accuracy versus
+  0.29 for v2 at 60k without it, and 18.4-18.6 dB versus 14.4. All arms still lose to copy-last (0.43 / 24.0 dB).
+- **Action conditioning is worth very little with this LAM.** The within-model contrast (2) is the clean number:
+  +0.002 token accuracy overall, +0.010 to +0.015 on the 83 windows whose target transition carries a non-zero
+  LAM code, significant at both checkpoints. The between-arm contrast (1) agrees in sign but is only significant
+  at 20k, where `none` had drifted down slightly more; at 10k it is zero. With one seed per arm, contrast 1 is at
+  the noise floor. So the honest statement is: the oracle latent action adds about half a percentage point of
+  token accuracy, concentrated on the ~17% of transitions the LAM does not map to code 0.
+- **Dropout is free.** `mixed` matches `lam` on true actions (token accuracy identical, 0.17 dB lower PSNR) and
+  matches `none` on the null action. It is also far more robust to a wrong action: a random code costs `lam` 0.054
+  token accuracy and 2.3 dB, `mixed` only 0.021 and 1.0 dB. If one model has to serve interactive play with
+  user-supplied codes, `mixed` is the better default.
+- **All arms peak before 20k.** Token accuracy is higher at 10k than at 20k in every arm (0.389-0.393 vs
+  0.378-0.383) while training loss keeps falling: mild overfitting on ~140 epochs of 36.8k frames. 10k steps
+  would have been enough at this width.
+- The learned null action of `none` converged to about (-0.74, +0.84, +0.84), i.e. next to a real FSQ code; in
+  `mixed` the null and the codes are distinguishable enough for contrast 2 to be positive.
+
+Next levers, in order: the tokenizer ceiling (24.8 dB) is not the bottleneck yet, copy-last is; so the next
+question is why a model that sees three clean frames cannot beat "repeat the last one" (candidates: MaskGIT
+decoding vs single-shot argmax, the context-masking mismatch noted above, LAM collapse). A second seed of
+arms lam and none would settle whether contrast 1 is real.
