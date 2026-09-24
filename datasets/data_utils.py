@@ -120,7 +120,13 @@ def load_zelda(num_frames=4, fps=15, preload_ratio=1):
     )
 
 
-def data_loaders(train_data, val_data, batch_size, distributed=False, rank=0, world_size=1):
+def data_loaders(train_data, val_data, batch_size, distributed=False, rank=0, world_size=1,
+                 num_workers=None, pin_memory=None):
+    # num_workers / pin_memory: None keeps the module defaults (2 workers, no pinning)
+    num_workers = DEFAULT_NUM_WORKERS if num_workers is None else int(num_workers)
+    pin_memory = DEFAULT_PIN_MEMORY if pin_memory is None else bool(pin_memory)
+    persistent_workers = DEFAULT_PERSISTENT_WORKERS and num_workers > 0
+    prefetch_factor = DEFAULT_PREFETCH_FACTOR if num_workers > 0 else None
     train_sampler = None
     val_sampler = None
     if distributed:
@@ -132,10 +138,10 @@ def data_loaders(train_data, val_data, batch_size, distributed=False, rank=0, wo
         batch_size=batch_size,
         shuffle=False if train_sampler is not None else True,
         sampler=train_sampler,
-        num_workers=DEFAULT_NUM_WORKERS,
-        pin_memory=DEFAULT_PIN_MEMORY,
-        persistent_workers=DEFAULT_PERSISTENT_WORKERS,
-        prefetch_factor=DEFAULT_PREFETCH_FACTOR,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers,
+        prefetch_factor=prefetch_factor,
         drop_last=True
     )
 
@@ -144,16 +150,17 @@ def data_loaders(train_data, val_data, batch_size, distributed=False, rank=0, wo
         batch_size=batch_size,
         shuffle=False if val_sampler is not None else True,
         sampler=val_sampler,
-        num_workers=DEFAULT_NUM_WORKERS,
-        pin_memory=DEFAULT_PIN_MEMORY,
-        persistent_workers=DEFAULT_PERSISTENT_WORKERS,
-        prefetch_factor=DEFAULT_PREFETCH_FACTOR,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers,
+        prefetch_factor=prefetch_factor,
         drop_last=True
     )
     return train_loader, val_loader
 
 
-def load_data_and_data_loaders(dataset, batch_size, num_frames=1, distributed=False, rank=0, world_size=1, fps=15, preload_ratio=1):
+def load_data_and_data_loaders(dataset, batch_size, num_frames=1, distributed=False, rank=0, world_size=1, fps=15, preload_ratio=1,
+                               num_workers=None, pin_memory=None):
     if dataset == 'PONG':
         training_data, validation_data = load_pong(num_frames=num_frames, fps=fps, preload_ratio=preload_ratio)
     elif dataset == 'SONIC':
@@ -171,7 +178,8 @@ def load_data_and_data_loaders(dataset, batch_size, num_frames=1, distributed=Fa
 
     training_loader, validation_loader = data_loaders(
         training_data, validation_data, batch_size,
-        distributed=distributed, rank=rank, world_size=world_size
+        distributed=distributed, rank=rank, world_size=world_size,
+        num_workers=num_workers, pin_memory=pin_memory,
     )
     x_train_var = np.var(training_data.data)
 
