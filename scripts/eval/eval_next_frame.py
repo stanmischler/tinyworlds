@@ -7,6 +7,9 @@ Protocol (fixed, deterministic):
     greedy decoding (temperature 0) over `num_steps` MaskGIT iterations
   - actions: `lam`   = latent action model run on context + target, so the true transition is given
              `random`= LAM actions for the context transitions, a seeded random action for the target
+             `none`  = the dynamics model's learned null action on every transition (zeros if it has none);
+                       for models trained with action_dropout_prob > 0
+    the LAM code of the target transition is recorded per window in every mode (`lam_code`)
   - reported next to two references: copy-last-context-frame baseline, and the tokenizer's own
     reconstruction of the target (the ceiling any token prediction can reach)
   - metrics per window, then mean / per-block mean: PSNR, SSIM, token accuracy, LPIPS if the
@@ -108,7 +111,7 @@ def main():
     p.add_argument('--test-h5', default='data/sonic_test_frames.h5')
     p.add_argument('--run-dir', help='results dir holding the three stage checkpoints (latest step of each is used)')
     p.add_argument('--video-tokenizer-path'); p.add_argument('--latent-actions-path'); p.add_argument('--dynamics-path')
-    p.add_argument('--action-mode', choices=['lam', 'random'], default='lam')
+    p.add_argument('--action-mode', choices=['lam', 'random', 'none'], default='lam')
     p.add_argument('--context', type=int, default=3, help='real context frames; training used sequences of context+1')
     p.add_argument('--frame-skip', type=int, default=4, help='stored frames between sequence frames (60 // fps in the loader)')
     p.add_argument('--sample-stride', type=int, default=8, help='stored frames between window starts inside a block')
@@ -154,7 +157,7 @@ def main():
 
     per = {k: [] for k in ('block', 'source_start', 'psnr', 'ssim', 'lpips', 'token_acc',
                            'copy_psnr', 'copy_ssim', 'copy_lpips', 'copy_token_acc',
-                           'recon_psnr', 'recon_ssim', 'recon_lpips', 'action')}
+                           'recon_psnr', 'recon_ssim', 'recon_lpips', 'action', 'lam_code')}
     seed_rows = []  # (context frames, target, prediction, copy) for the PNG
     seed_starts = {}
     for block_id, s in windows:
@@ -173,9 +176,15 @@ def main():
             ctx_lat = idx_to_latents(ctx_idx)  # [B, Tc, P, L]
             target_idx = tok.tokenize(target)  # [B, 1, P]
 
+            lam_cond = lam.encode(x)  # [B, T-1, A]: every transition incl. the one into the target
+            lam_code = lam.quantizer.get_indices_from_latents(lam_cond[:, -1])  # [B] true code of the target transition
             if args.action_mode == 'lam':
-                cond = lam.encode(x)  # [B, T-1, A]: every transition incl. the one into the target
-                last_action = lam.quantizer.get_indices_from_latents(cond[:, -1])  # [B]
+                cond, last_action = lam_cond, lam_code
+            elif args.action_mode == 'none':
+                # the model's learned null action on every transition, as dropped samples saw in training
+                null = dyn.null_action if getattr(dyn, 'null_action', None) is not None else torch.zeros(1, 1, lam_cond.shape[-1], device=device)
+                cond = null.to(lam_cond.dtype).expand(B, lam_cond.shape[1], -1)  # [B, T-1, A]
+                last_action = torch.full((B,), -1, device=device)  # [B] no action fed
             else:
                 ctx_actions = lam.encode(context)  # [B, Tc-1, A]
                 last_action = torch.randint(0, n_actions, (B,), generator=rng).to(device)  # [B]
@@ -196,7 +205,7 @@ def main():
 
             per['block'] += [b for b, _ in batch]
             per['source_start'] += [int(source_index[s]) for _, s in batch]
-            per['action'] += last_action.tolist()
+            per['action'] += last_action.tolist(); per['lam_code'] += lam_code.tolist()
             per['psnr'] += psnr(pred, tgt).tolist(); per['ssim'] += ssim(pred, tgt).tolist(); per['lpips'] += lp(pred, tgt).tolist()
             per['token_acc'] += (pred_idx == target_idx).float().flatten(1).mean(1).tolist()
             per['copy_psnr'] += psnr(copy, tgt).tolist(); per['copy_ssim'] += ssim(copy, tgt).tolist(); per['copy_lpips'] += lp(copy, tgt).tolist()
@@ -226,8 +235,8 @@ def main():
         'name': name, 'n_windows': len(windows), 'test_h5': args.test_h5,
         'config': {k: v for k, v in vars(args).items() if k not in ('out_dir', 'name')},
         'summary': summary, 'per_block': per_block,
-        'windows': {'block': per['block'], 'source_start': per['source_start'], 'action': per['action'],
-                    'psnr': per['psnr'], 'token_acc': per['token_acc'], 'copy_psnr': per['copy_psnr']},
+        'windows': {k: per[k] for k in ('block', 'source_start', 'action', 'lam_code', 'psnr', 'ssim', 'token_acc',
+                                        'copy_psnr', 'copy_ssim', 'copy_token_acc')},
     }
     json_path = os.path.join(args.out_dir, f'{name}.json')
     with open(json_path, 'w') as f:
@@ -244,7 +253,7 @@ def main():
         axes = np.atleast_2d(axes)
         for r, (w, ctx, tgt_i, pred_i, copy_i, act) in enumerate(seed_rows):
             imgs = [ctx[k] for k in range(args.context)] + [tgt_i, pred_i, copy_i]
-            titles = [f'ctx {k + 1}' for k in range(args.context)] + ['target', f'pred (a={act})', 'copy-last']
+            titles = [f'ctx {k + 1}' for k in range(args.context)] + ['target', f'pred (a={"null" if act < 0 else act})', 'copy-last']
             for c, (img, title) in enumerate(zip(imgs, titles)):
                 ax = axes[r, c]
                 ax.imshow(img.permute(1, 2, 0).numpy()); ax.set_xticks([]); ax.set_yticks([])
