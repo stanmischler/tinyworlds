@@ -1,0 +1,26 @@
+# sonic_v3 dynamics: same model and schedule as sonic_v2 (embed 256 / hidden 512 / 8 blocks, 60k steps, batch 256)
+# plus the masking fix below. Batch 512 OOMs on an 80 GB H100 (v2 already reserved 49 GB at batch 256), so the
+# throughput knobs are only the dataloader ones in training.yaml.
+batch_size_per_gpu: 256
+gradient_accumulation_steps: 1
+n_updates: 60000
+learning_rate: 0.0003
+log_interval: 1000   # checkpoint + prediction PNG every 1000 steps
+
+use_actions: true
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 8
+
+# Masking fix: with this probability a batch is trained exactly like inference (clean context frames, last
+# frame 100% masked) instead of MaskGIT's random 50-100% masking over all frames. 0.0 = original behaviour.
+full_last_frame_mask_prob: 0.5
+
+# filled in by full_train.py from the earlier stages
+video_tokenizer_path:
+latent_actions_path:
+
+# resume: set to a checkpoint dir (…/dynamics/checkpoints/dynamics_step_N) to restore weights, optimizer, scheduler and step
+checkpoint:

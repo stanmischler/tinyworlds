@@ -38,6 +38,9 @@ def main():
         data_overrides['fps'] = args.fps
     if hasattr(args, 'preload_ratio') and args.preload_ratio is not None:
         data_overrides['preload_ratio'] = args.preload_ratio
+    for k in ('num_workers', 'pin_memory'):  # dataloader throughput knobs; None = module defaults
+        if getattr(args, k, None) is not None:
+            data_overrides[k] = getattr(args, k)
     training_data, validation_data, training_loader, validation_loader, x_train_var = load_data_and_data_loaders(
         dataset=args.dataset, 
         batch_size=args.batch_size_per_gpu, 

@@ -81,6 +81,7 @@ def main():
         num_experts=getattr(args, 'num_experts', 4),
         top_k_experts=getattr(args, 'top_k_experts', 2),
         moe_aux_loss_coeff=getattr(args, 'moe_aux_loss_coeff', 0.01),
+        full_last_frame_mask_prob=getattr(args, 'full_last_frame_mask_prob', 0.0),
     ).to(args.device)
     if args.checkpoint:
         dynamics_model, _ = load_dynamics_from_checkpoint(
@@ -155,6 +156,9 @@ def main():
         data_overrides['fps'] = args.fps
     if hasattr(args, 'preload_ratio') and args.preload_ratio is not None:
         data_overrides['preload_ratio'] = args.preload_ratio
+    for k in ('num_workers', 'pin_memory'):  # dataloader throughput knobs; None = module defaults
+        if getattr(args, k, None) is not None:
+            data_overrides[k] = getattr(args, k)
     _, _, training_loader, _, _ = load_data_and_data_loaders(
         dataset=args.dataset, 
         batch_size=args.batch_size_per_gpu,

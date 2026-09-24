@@ -71,6 +71,7 @@ def download(pattern: str = "zelda_frames.h5"):
 
 @app.function(
     gpu=GPU,
+    cpu=8,  # reserve cores for the dataloader workers (configs may set num_workers up to 8)
     volumes=VOLUMES,
     secrets=SECRETS,
     timeout=24 * 60 * 60,  # Modal's per-call maximum

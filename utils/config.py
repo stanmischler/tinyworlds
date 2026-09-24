@@ -117,6 +117,9 @@ class VideoTokenizerConfig:
 	# other params
 	fps: Optional[int] = None
 	preload_ratio: Optional[float] = None
+	# dataloader throughput (None = defaults in datasets/data_utils.py: 2 workers, no pin_memory)
+	num_workers: Optional[int] = None
+	pin_memory: Optional[bool] = None
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)
@@ -163,6 +166,9 @@ class LatentActionsConfig:
 	# other params
 	fps: Optional[int] = None
 	preload_ratio: Optional[float] = None
+	# dataloader throughput (None = defaults in datasets/data_utils.py: 2 workers, no pin_memory)
+	num_workers: Optional[int] = None
+	pin_memory: Optional[bool] = None
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)
@@ -212,6 +218,8 @@ class DynamicsConfig:
 	num_experts: int = 4
 	top_k_experts: int = 2
 	moe_aux_loss_coeff: float = 0.01
+	# Masking: prob. that a batch uses clean context + fully masked last frame (0.0 = original MaskGIT-only masking)
+	full_last_frame_mask_prob: float = 0.0
 	# Optimizer
 	optimizer: str = "adamw"
 	muon_momentum: float = 0.95
@@ -221,6 +229,9 @@ class DynamicsConfig:
 	# other params
 	fps: Optional[int] = None
 	preload_ratio: Optional[float] = None
+	# dataloader throughput (None = defaults in datasets/data_utils.py: 2 workers, no pin_memory)
+	num_workers: Optional[int] = None
+	pin_memory: Optional[bool] = None
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)
@@ -272,6 +283,9 @@ class TrainingConfig:
 	n_updates: Optional[int] = None # number of optimizer.step(), excluding grad_accum_step
 	fps: Optional[int] = None
 	preload_ratio: Optional[float] = None
+	# dataloader throughput (None = defaults in datasets/data_utils.py: 2 workers, no pin_memory)
+	num_workers: Optional[int] = None
+	pin_memory: Optional[bool] = None
 	# MoE (dynamics only)
 	use_moe: bool = False
 	num_experts: int = 4
