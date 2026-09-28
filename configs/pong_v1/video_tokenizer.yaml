@@ -1,0 +1,16 @@
+# pong_v1 tokenizer: the Sonic width (128/256/4 blocks) trained longer (10k vs 8k) since the reconstruction ceiling
+# bounds every downstream metric and Pong's signal is single pixels on black (smooth-L1 on mostly-black frames is
+# small even when the ball is dropped: judge this stage by the recon PNG / codes-used, not the loss).
+# lr 4e-4 was stable for this width on Sonic; the FSQ collapse seen on Zelda was at 256-wide, 128px.
+batch_size_per_gpu: 256
+gradient_accumulation_steps: 1
+n_updates: 10000
+learning_rate: 0.0004
+log_interval: 500   # checkpoint + reconstruction PNG every 500 steps
+
+embed_dim: 128
+num_heads: 8
+hidden_dim: 256
+num_blocks: 4
+
+checkpoint:

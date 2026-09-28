@@ -1,0 +1,14 @@
+# pong_v1 LAM: kept small on purpose (a big LAM leaks next-frame appearance through the action code);
+# the zelda_v3 schedule (6k @ 3e-4, longer and lower than Sonic's 2.5k @ 1e-3) against codebook collapse.
+batch_size_per_gpu: 256
+gradient_accumulation_steps: 1
+n_updates: 6000
+learning_rate: 0.0003
+log_interval: 500   # checkpoint + reconstruction PNG every 500 steps
+
+embed_dim: 128
+num_heads: 8
+hidden_dim: 256
+num_blocks: 4
+
+checkpoint: null

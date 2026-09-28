@@ -64,6 +64,18 @@ def load_pong(num_frames=1, fps=15, preload_ratio=1):
     )
 
 
+def load_pong_train(num_frames=1, fps=15, preload_ratio=1):
+    """Pong minus the held-out test blocks (see scripts/eval/split_dataset.py); same class and fps as PONG."""
+    return _load_video_dataset_pair(
+        PongDataset,
+        '/data/pong.mp4',
+        '/data/pong_train_frames.h5',
+        num_frames=num_frames,
+        fps=fps,
+        preload_ratio=preload_ratio
+    )
+
+
 def load_sonic(num_frames=4, fps=15, preload_ratio=1):
     return _load_video_dataset_pair(
         SonicDataset,
@@ -177,6 +189,8 @@ def load_data_and_data_loaders(dataset, batch_size, num_frames=1, distributed=Fa
                                num_workers=None, pin_memory=None, generator=None):
     if dataset == 'PONG':
         training_data, validation_data = load_pong(num_frames=num_frames, fps=fps, preload_ratio=preload_ratio)
+    elif dataset == 'PONG_TRAIN':
+        training_data, validation_data = load_pong_train(num_frames=num_frames, fps=fps, preload_ratio=preload_ratio)
     elif dataset == 'SONIC':
         training_data, validation_data = load_sonic(num_frames=num_frames, fps=fps, preload_ratio=preload_ratio)
     elif dataset == 'SONIC_TRAIN':
