@@ -18,6 +18,8 @@ Outputs: <out_dir>/<name>.json (all numbers + the source indices of every window
 Usage (from the repo root, PYTHONPATH=$PWD):
     python scripts/eval/eval_next_frame.py --run-dir results/sonic_short_2026_09_22 --action-mode lam
     python scripts/eval/eval_next_frame.py --run-dir results/... --action-mode random --limit 64   # smoke
+    # another game: point --test-h5 at its split (same protocol; frame_skip 4 = 60 // 15 fps for zelda as for sonic)
+    python scripts/eval/eval_next_frame.py --run-dir results/zelda_v3_... --test-h5 data/zelda_test_frames.h5 --action-mode lam
 """
 
 import argparse

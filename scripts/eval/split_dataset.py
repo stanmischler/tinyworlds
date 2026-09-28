@@ -47,10 +47,13 @@ def split_masks(n_frames: int, blocks, margin: int):
     return is_test, ~is_excluded
 
 
-def write_subset(path: str, src: h5py.Dataset, indices: np.ndarray, attrs: dict, chunk: int = 2000):
+def write_subset(path: str, src: h5py.Dataset, indices: np.ndarray, attrs: dict, chunk: int = 2000, h5_chunk: int = 64):
     with h5py.File(path, 'w') as out:
         shape = (len(indices),) + src.shape[1:]
-        frames = out.create_dataset('frames', shape=shape, dtype=src.dtype, chunks=(min(chunk, len(indices)),) + src.shape[1:])
+        # lzf like the original caches (about half the size on disk, so half the upload to the Modal volume);
+        # whole-frame chunks of `h5_chunk` frames keep random single-frame reads (the eval script) cheap
+        frames = out.create_dataset('frames', shape=shape, dtype=src.dtype, compression='lzf',
+                                    chunks=(min(h5_chunk, len(indices)),) + src.shape[1:])
         # copy in contiguous runs so we read the source sequentially
         pos = 0
         run_start = 0

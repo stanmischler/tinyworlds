@@ -72,6 +72,7 @@ def download(pattern: str = "zelda_frames.h5"):
 @app.function(
     gpu=GPU,
     cpu=8,  # reserve cores for the dataloader workers (configs may set num_workers up to 8)
+    memory=16384,  # MiB; preload_ratio 1.0 on zelda_train (65k x 128x128x3) is ~3.2 GB per dataset object, x2 (train + val)
     volumes=VOLUMES,
     secrets=SECRETS,
     timeout=24 * 60 * 60,  # Modal's per-call maximum

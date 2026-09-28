@@ -120,6 +120,18 @@ def load_zelda(num_frames=4, fps=15, preload_ratio=1):
     )
 
 
+def load_zelda_train(num_frames=4, fps=15, preload_ratio=1):
+    """Zelda minus the held-out test blocks (see scripts/eval/split_dataset.py); same class and fps as ZELDA."""
+    return _load_video_dataset_pair(
+        ZeldaDataset,
+        '/data/Zelda oot2d 1 Cut.mp4',
+        '/data/zelda_train_frames.h5',
+        num_frames=num_frames,
+        fps=fps,
+        preload_ratio=preload_ratio
+    )
+
+
 def data_loaders(train_data, val_data, batch_size, distributed=False, rank=0, world_size=1,
                  num_workers=None, pin_memory=None):
     # num_workers / pin_memory: None keeps the module defaults (2 workers, no pinning)
@@ -173,6 +185,8 @@ def load_data_and_data_loaders(dataset, batch_size, num_frames=1, distributed=Fa
         training_data, validation_data = load_picodoom(num_frames=num_frames, fps=fps, preload_ratio=preload_ratio)
     elif dataset == 'ZELDA':
         training_data, validation_data = load_zelda(num_frames=num_frames, fps=fps, preload_ratio=preload_ratio)
+    elif dataset == 'ZELDA_TRAIN':
+        training_data, validation_data = load_zelda_train(num_frames=num_frames, fps=fps, preload_ratio=preload_ratio)
     else:
         raise ValueError('Invalid dataset')
 
