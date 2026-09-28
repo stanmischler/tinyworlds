@@ -31,12 +31,9 @@ class SpatialAttention(nn.Module):
         k = rearrange(self.k_proj(x), 'B T P (H D) -> (B T) H P D', H=self.num_heads)
         v = rearrange(self.v_proj(x), 'B T P (H D) -> (B T) H P D', H=self.num_heads)
 
-        k_t = k.transpose(-2, -1) # [(B*T), H, P, D, P]
-
-        # attention(q, k, v) = softmax(qk^T / sqrt(d)) v
-        scores = torch.matmul(q, k_t) / math.sqrt(self.head_dim) # [(B*T), H, P, P]
-        attn_weights = F.softmax(scores, dim=-1) # [(B*T), H, P, P]
-        attn_output = torch.matmul(attn_weights, v) # [(B*T), H, P, D]
+        # attention(q, k, v) = softmax(qk^T / sqrt(d)) v, as a fused kernel (flash / memory-efficient on CUDA):
+        # never materializes the [(B*T), H, P, P] scores, which is 4 GB per layer at P = 1024 (128px, patch 4)
+        attn_output = F.scaled_dot_product_attention(q, k, v) # [(B*T), H, P, D]
         attn_output = rearrange(attn_output, '(B T) H P D -> B T P (H D)', B=B, T=T) # [B, T, P, E]
 
         # out proj to mix head information
@@ -72,9 +69,11 @@ class TemporalAttention(nn.Module):
         k = rearrange(self.k_proj(x), 'b t p (h d) -> (b p) h t d', h=self.num_heads)
         v = rearrange(self.v_proj(x), 'b t p (h d) -> (b p) h t d', h=self.num_heads) # [B, P, H, T, D]
 
-        k_t = k.transpose(-2, -1) # [(B*P), H, T, D, T]
+        k_t = k.transpose(-2, -1) # [(B*P), H, D, T]
 
-        # attention(q, k, v) = softmax(qk^T / sqrt(d)) v
+        # attention(q, k, v) = softmax(qk^T / sqrt(d)) v. Kept explicit on purpose: the scores are only [.., T, T]
+        # (T = 4), and the fused flash kernel rejects this call at 128px / patch 4 because its batch axis
+        # (B*P = 64 * 1024 = 65536) exceeds the CUDA grid limit of 65535 ("CUDA error: invalid argument").
         scores = torch.matmul(q, k_t) / math.sqrt(self.head_dim) # [(B*P), H, T, T]
 
         # causal mask for each token t in seq, mask out all tokens to the right of t (after t)
