@@ -1,0 +1,30 @@
+# pong_v1 dynamics: the sonic_v3 model (embed 256 / hidden 512 / 8 blocks, batch 256, lr 3e-4) for 40k steps.
+# Sonic's action ablation overfit after ~10k steps on 37k frames; Pong has 97k frames but far less variety, so 40k
+# (not v3's 60k) with a checkpoint every 1000 steps, and the best step is picked by the held-out eval afterwards.
+batch_size_per_gpu: 256
+gradient_accumulation_steps: 1
+n_updates: 40000
+learning_rate: 0.0003
+log_interval: 1000   # checkpoint + prediction PNG every 1000 steps
+seed: 0
+
+use_actions: true
+action_dropout_prob: 0.0         # LAM actions on every sample (no learned null action)
+
+# Masking fix: with this probability a batch is trained exactly like inference (clean context frames, last frame
+# 100% masked) instead of MaskGIT's random 50-100% masking over all frames. 0.0 = original behaviour.
+# 0.5 was confirmed on Sonic (+3.9 dB); 0.8 (as zelda_v3) spends most batches on the objective the eval measures and
+# keeps a fifth on infilling for MaskGIT steps 2-10.
+full_last_frame_mask_prob: 0.8
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 8
+
+# filled in by full_train.py from the earlier stages
+video_tokenizer_path:
+latent_actions_path:
+
+# resume: set to a checkpoint dir (…/dynamics/checkpoints/dynamics_step_N) to restore weights, optimizer, scheduler and step
+checkpoint:
