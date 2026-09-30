@@ -1,0 +1,26 @@
+# sonic_v4 dynamics: same model as sonic_v3 (embed 256 / hidden 512 / 8 blocks, batch 256, lr 3e-4) trained
+# 2.5x longer (150k steps; v3's loss was still falling at 60k) with full_last_frame_mask_prob 0.8 (v3: 0.5).
+# From scratch: the warm-started tokenizer has a new vocabulary. Checkpoints every 5000 to keep the volume small.
+batch_size_per_gpu: 256
+gradient_accumulation_steps: 1
+n_updates: 150000
+learning_rate: 0.0003
+log_interval: 5000   # checkpoint + prediction PNG every 5000 steps (30 checkpoints)
+
+use_actions: true
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 8
+
+# With this probability a batch is trained exactly like inference (clean context frames, last frame 100% masked)
+# instead of MaskGIT's random 50-100% masking over all frames. 0.0 = original behaviour.
+full_last_frame_mask_prob: 0.8
+
+# left empty: full_train.py fills them from the tokenizer/LAM stages of this same run
+video_tokenizer_path:
+latent_actions_path:
+
+# resume: set to a checkpoint dir (…/dynamics/checkpoints/dynamics_step_N) to restore weights, optimizer, scheduler and step
+checkpoint:
