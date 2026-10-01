@@ -216,7 +216,7 @@ def main():
     s.add_argument('--lam', action='append', default=[], help='name=<latent_actions checkpoint dir>; repeatable')
     s.add_argument('--codes', action='append', default=[], help='name=<codes.json {transition id: code}>; repeatable')
     s.add_argument('--labels', default=f'{SET}/labels.json')
-    s.add_argument('--device', default='mps' if torch.backends.mps.is_available() else 'cpu')
+    s.add_argument('--device', default='cpu', help='cpu: ~40 s per LAM; mps hung in Metal once (2026-10-02)')
     a = p.parse_args()
     {'build': build, 'consensus': consensus, 'score': score}[a.cmd](a)
 
