@@ -257,6 +257,7 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, i
         'continuous_actions': cfg.get('continuous_actions', False),
         'action_kl_capacity': cfg.get('action_kl_capacity', 2.0794),
         'action_kl_weight': cfg.get('action_kl_weight', 1.0),
+        'action_fixed_noise': cfg.get('action_fixed_noise', False),
     }
     if model is None:
         model = LatentActionModel(**kwargs)

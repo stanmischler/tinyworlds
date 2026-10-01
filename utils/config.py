@@ -183,6 +183,7 @@ class LatentActionsConfig:
 	continuous_actions: bool = False
 	action_kl_capacity: float = 2.0794
 	action_kl_weight: float = 1.0
+	action_fixed_noise: bool = False
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)

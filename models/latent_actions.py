@@ -125,20 +125,24 @@ class LatentActionModel(nn.Module):
                  num_heads=8, hidden_dim=256, num_blocks=4,
                  decoder_keep_rate=0.0, decoder_residual=False, entropy_loss_weight=0.0, entropy_sample_weight=0.1,
                  encoder_pooling='mean', recon_change_weight=0.0, continuous_actions=False,
-                 action_kl_capacity=math.log(8), action_kl_weight=1.0):
+                 action_kl_capacity=math.log(8), action_kl_weight=1.0, action_fixed_noise=False):
         super().__init__()
         assert math.log(n_actions, NUM_LATENT_ACTIONS_BINS).is_integer(), f"n_actions must be a power of {NUM_LATENT_ACTIONS_BINS}"
         self.action_dim=int(math.log(n_actions, NUM_LATENT_ACTIONS_BINS))
         # continuous_actions: no FSQ; the action is a Gaussian sample mean + std * noise in training (its mean otherwise),
         #   and the KL to N(0, I) is held at action_kl_capacity nats (ln 8 = the information of 8 discrete codes)
         #   by action_kl_weight * |KL - capacity|. The quantizer is kept for the code diagnostics (sign pattern of the mean).
+        # action_fixed_noise: unit noise and KL = 0.5 E||mean - batch mean||^2, which bounds the information the action
+        #   carries; the learned-variance KL to N(0, I) can instead be met by a constant offset carrying none
+        self.action_fixed_noise = bool(action_fixed_noise)
         self.continuous_actions = bool(continuous_actions)
         self.action_kl_capacity = float(action_kl_capacity)
         self.action_kl_weight = float(action_kl_weight)
         # recon_change_weight: pixels that change between frame t and t+1 weigh 1 + this in the reconstruction loss
         self.recon_change_weight = float(recon_change_weight)
         self.encoder = LatentActionsEncoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, action_dim=self.action_dim,
-                                            pooling=encoder_pooling, out_dim=2 * self.action_dim if self.continuous_actions else None)
+                                            pooling=encoder_pooling,
+                                            out_dim=2 * self.action_dim if self.continuous_actions and not self.action_fixed_noise else None)
         self.quantizer = FiniteScalarQuantizer(latent_dim=self.action_dim, num_bins=NUM_LATENT_ACTIONS_BINS)
         self.decoder = LatentActionsDecoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, conditioning_dim=self.action_dim,
                                             keep_rate=decoder_keep_rate, residual=decoder_residual)
@@ -167,8 +171,15 @@ class LatentActionModel(nn.Module):
         # mu, logvar: [B, T-1, A] -> KL(N(mu, exp(logvar)) || N(0, I)) in nats, mean over transitions
         return 0.5 * (mu.pow(2) + logvar.exp() - 1 - logvar).sum(-1).mean()
 
+    @staticmethod
+    def spread_kl(mu):
+        # mu: [B, T-1, A] -> 0.5 E||mu - batch mean||^2, nats per transition (unit-noise information bound)
+        return 0.5 * (mu - mu.mean(dim=(0, 1), keepdim=True)).pow(2).sum(-1).mean()
+
     def action_kl(self, frames):
         # frames: [B, T, C, H, W] -> KL of the continuous action posterior (nats per transition), for logging
+        if self.action_fixed_noise:
+            return self.spread_kl(self.encoder(frames).float())
         mu, logvar = self.encoder(frames).float().chunk(2, dim=-1)
         return self.gaussian_kl(mu, logvar.clamp(-10, 10))
 
@@ -181,7 +192,11 @@ class LatentActionModel(nn.Module):
 
         # get (quantized or sampled) action latents
         action_latents = self.encoder(frames) # [B, T - 1, A] (continuous: [B, T - 1, 2A])
-        if self.continuous_actions:
+        if self.continuous_actions and self.action_fixed_noise:
+            mu = action_latents.float()  # [B, T - 1, A]
+            action_latents_quantized = mu + torch.randn_like(mu)  # [B, T - 1, A]
+            kl = self.spread_kl(mu)
+        elif self.continuous_actions:
             mu, logvar = action_latents.float().chunk(2, dim=-1)  # [B, T - 1, A] each
             logvar = logvar.clamp(-10, 10)
             action_latents_quantized = mu + torch.randn_like(mu) * (0.5 * logvar).exp()  # [B, T - 1, A]

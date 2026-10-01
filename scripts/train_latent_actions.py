@@ -69,6 +69,7 @@ def main():
         continuous_actions=args.continuous_actions,
         action_kl_capacity=args.action_kl_capacity,
         action_kl_weight=args.action_kl_weight,
+        action_fixed_noise=args.action_fixed_noise,
     ).to(args.device)
     if args.checkpoint:
         model, _ = load_latent_actions_from_checkpoint(
