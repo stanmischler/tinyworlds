@@ -50,8 +50,14 @@ class LatentActionsEncoder(nn.Module):
 
 class LatentActionsDecoder(nn.Module):
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8,
-                 hidden_dim=256, num_blocks=4, conditioning_dim=3):
+                 hidden_dim=256, num_blocks=4, conditioning_dim=3, keep_rate=0.0, residual=False):
         super().__init__()
+        # keep_rate: fraction of patches of frames 1..T-2 left visible in training (frame 0 always is).
+        #   0.0 = original (decoder sees frame 0 only), 1.0 = Genie (decoder sees every past frame)
+        # residual: predict frame t+1 as the most recent visible frame + a correction instead of from scratch,
+        #   so copying is free and the action only has to explain what changed
+        self.keep_rate = float(keep_rate)
+        self.residual = bool(residual)
         self.patch_embed = PatchEmbedding(frame_size, patch_size, embed_dim)
         self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, causal=True, conditioning_dim=conditioning_dim)
 
@@ -61,6 +67,10 @@ class LatentActionsDecoder(nn.Module):
             nn.Linear(embed_dim, 3 * patch_size * patch_size),
             nn.Tanh()
         )
+        if self.residual:
+            # start as an exact copy of the last visible frame (correction 0)
+            nn.init.zeros_(self.frame_head[1].weight)
+            nn.init.zeros_(self.frame_head[1].bias)
 
         self.frame_size = frame_size
         self.patch_size = patch_size
@@ -77,9 +87,9 @@ class LatentActionsDecoder(nn.Module):
 
         # mask certain tokens from all frames except first frame
         # this strongly forces actions to contain most useful info (I recommend to keep based on experiments)
+        keep = torch.ones(B, T-1, P, 1, dtype=torch.bool, device=frames.device)  # [B, T-1, P, 1]
         if training and self.training:
-            keep_rate = 0.0
-            keep = (torch.rand(B, T-1, P, 1, device=frames.device) < keep_rate)
+            keep = (torch.rand(B, T-1, P, 1, device=frames.device) < self.keep_rate)
             keep[:, 0] = 1  # never mask first frame tokens (anchor) TODO: try rid of ablation
             video_embeddings = torch.where(
                 keep, video_embeddings,
@@ -94,19 +104,47 @@ class LatentActionsDecoder(nn.Module):
         pred_frames = rearrange(
             patches, 'b t c (h w) p1 p2 -> b t c (h p1) (w p2)', h=H//self.patch_size, w=W//self.patch_size
         ) # [B, T-1, C, H, W]
+        if self.residual:
+            # per patch, the most recent visible frame (frame 0 always is), plus a correction in [-2, 2]
+            keep_px = repeat(
+                keep[..., 0], 'b t (h w) -> b t 1 (h p1) (w p2)', h=H//self.patch_size, p1=self.patch_size, p2=self.patch_size
+            )  # [B, T-1, 1, H, W]
+            base = [frames[:, 0]]  # each [B, C, H, W]
+            for t in range(1, T-1):
+                base.append(torch.where(keep_px[:, t], frames[:, t], base[-1]))
+            pred_frames = torch.stack(base, dim=1) + 2 * pred_frames  # [B, T-1, C, H, W]
         return pred_frames  # [B, T-1, C, H, W]
 
 class LatentActionModel(nn.Module):
     def __init__(self, frame_size=(128, 128), n_actions=8, patch_size=8, embed_dim=128, 
-                 num_heads=8, hidden_dim=256, num_blocks=4):
+                 num_heads=8, hidden_dim=256, num_blocks=4,
+                 decoder_keep_rate=0.0, decoder_residual=False, entropy_loss_weight=0.0, entropy_sample_weight=0.1):
         super().__init__()
         assert math.log(n_actions, NUM_LATENT_ACTIONS_BINS).is_integer(), f"n_actions must be a power of {NUM_LATENT_ACTIONS_BINS}"
         self.action_dim=int(math.log(n_actions, NUM_LATENT_ACTIONS_BINS))
         self.encoder = LatentActionsEncoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, action_dim=self.action_dim)
         self.quantizer = FiniteScalarQuantizer(latent_dim=self.action_dim, num_bins=NUM_LATENT_ACTIONS_BINS)
-        self.decoder = LatentActionsDecoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, conditioning_dim=self.action_dim)
+        self.decoder = LatentActionsDecoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, conditioning_dim=self.action_dim,
+                                            keep_rate=decoder_keep_rate, residual=decoder_residual)
         self.var_target = 0.01
         self.var_lambda = 100.0
+        # code-usage loss (0.0 = original: variance penalty only). Replaces the variance penalty when on.
+        self.entropy_loss_weight = float(entropy_loss_weight)
+        self.entropy_sample_weight = float(entropy_sample_weight)
+        # all codes as {-1, 1} bit patterns, for the soft code distribution
+        codes = self.quantizer.get_latents_from_indices(torch.arange(self.quantizer.codebook_size))  # [n_actions, A]
+        self.register_buffer('code_bits', (codes > 0).float(), persistent=False)
+
+    def code_entropies(self, action_latents):
+        # action_latents: [B, T-1, A] pre-tanh -> (mean per-sample entropy, entropy of the batch-mean distribution), nats
+        # soft bit prob P(bit = 1) = (tanh z + 1) / 2, so the gradient flows through the same tanh as the quantizer
+        p1 = ((torch.tanh(action_latents.float()) + 1) / 2).reshape(-1, 1, self.action_dim)  # [N, 1, A]
+        bits = self.code_bits.to(p1.device)  # [n_actions, A]
+        probs = (bits * p1 + (1 - bits) * (1 - p1)).prod(-1)  # [N, n_actions] joint code distribution per sample
+        h_sample = -(probs * probs.clamp_min(1e-8).log()).sum(-1).mean()
+        mean_probs = probs.mean(0)  # [n_actions]
+        h_batch = -(mean_probs * mean_probs.clamp_min(1e-8).log()).sum()
+        return h_sample, h_batch
 
     def forward(self, frames):
         # frames: [B, T, C, H, W]
@@ -122,10 +160,15 @@ class LatentActionModel(nn.Module):
         target_frames = frames[:, 1:]  # All frames except first [B, T - 1, C, H, W]
         recon_loss = F.smooth_l1_loss(pred_frames, target_frames)
 
-        # variance loss across batch dim for pre-quant encoder outputs (helps prevent action collapse)
-        z_var = action_latents.var(dim=0, unbiased=False).mean()
-        var_penalty = F.relu(self.var_target - z_var)
-        total_loss = recon_loss + self.var_lambda * var_penalty
+        if self.entropy_loss_weight > 0:
+            # confident per sample, uniform over the batch (LFQ / MAGVIT-v2 style), on the joint code distribution
+            h_sample, h_batch = self.code_entropies(action_latents)
+            total_loss = recon_loss + self.entropy_loss_weight * (self.entropy_sample_weight * h_sample - h_batch)
+        else:
+            # variance loss across batch dim for pre-quant encoder outputs (helps prevent action collapse)
+            z_var = action_latents.var(dim=0, unbiased=False).mean()
+            var_penalty = F.relu(self.var_target - z_var)
+            total_loss = recon_loss + self.var_lambda * var_penalty
 
         return total_loss, pred_frames
 

@@ -169,6 +169,13 @@ class LatentActionsConfig:
 	# dataloader throughput (None = defaults in datasets/data_utils.py: 2 workers, no pin_memory)
 	num_workers: Optional[int] = None
 	pin_memory: Optional[bool] = None
+	# anti-collapse (defaults = original behaviour): fraction of past-frame patches the decoder sees (0 = frame 0 only,
+	# 1 = all), decoder predicts a correction to the last visible frame, weight of the code-usage entropy loss
+	# (replaces the variance penalty when > 0) and of its per-sample confidence term
+	decoder_keep_rate: float = 0.0
+	decoder_residual: bool = False
+	entropy_loss_weight: float = 0.0
+	entropy_sample_weight: float = 0.1
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)

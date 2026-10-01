@@ -60,6 +60,10 @@ def main():
         hidden_dim=args.hidden_dim,
         num_blocks=args.num_blocks,
         n_actions=args.n_actions,
+        decoder_keep_rate=args.decoder_keep_rate,
+        decoder_residual=args.decoder_residual,
+        entropy_loss_weight=args.entropy_loss_weight,
+        entropy_sample_weight=args.entropy_sample_weight,
     ).to(args.device)
     if args.checkpoint:
         model, _ = load_latent_actions_from_checkpoint(
@@ -157,6 +161,10 @@ def main():
                     idx = unwrap_model(model).quantizer.get_indices_from_latents(actions_quantized)
                     codebook_usage = idx.unique().numel() / unwrap_model(model).quantizer.codebook_size
                     z_e_var = actions.var(dim=0, unbiased=False).mean().item()
+                    counts = torch.bincount(idx.flatten(), minlength=unwrap_model(model).quantizer.codebook_size).float()
+                    freq = counts / counts.sum()
+                    code_entropy = -(freq[freq > 0] * freq[freq > 0].log()).sum().item()  # nats, hard codes
+                    saturated = (torch.tanh(actions).abs() > 0.99).float().mean().item()
                     pred_frames_var = pred_frames.var(dim=0, unbiased=False).mean().item()
 
             if args.use_wandb and is_main:
@@ -164,6 +172,8 @@ def main():
                     "latent_actions/codebook_usage": codebook_usage,
                     "latent_actions/encoder_variance": z_e_var,
                     "latent_actions/decoder_variance": pred_frames_var,
+                    "latent_actions/code_entropy": code_entropy,
+                    "latent_actions/saturated_fraction": saturated,
                 }, step=i)
                 log_action_distribution(idx, i, args.n_actions)
 
@@ -173,7 +183,7 @@ def main():
                 save_path = os.path.join(visualizations_dir, f'reconstructions_latent_actions_step_{i}.png')
                 visualize_reconstruction(x, pred_frames, save_path)
             
-                print('\n Step', i, 'Loss:', loss.item(), 'Codebook Usage:', codebook_usage, 'Encoder Variance:', z_e_var, 'Decoder Variance:', pred_frames_var)
+                print('\n Step', i, 'Loss:', loss.item(), 'Codebook Usage:', codebook_usage, 'Encoder Variance:', z_e_var, 'Decoder Variance:', pred_frames_var, 'Code Entropy:', code_entropy, 'Saturated:', saturated)
 
     # finish wandb
     if args.use_wandb and is_main:

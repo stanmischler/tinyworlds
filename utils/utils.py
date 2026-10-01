@@ -248,6 +248,10 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, i
         'num_heads': cfg.get('num_heads', 8),
         'hidden_dim': cfg.get('hidden_dim', 256),
         'num_blocks': cfg.get('num_blocks', 4),
+        'decoder_keep_rate': cfg.get('decoder_keep_rate', 0.0),
+        'decoder_residual': cfg.get('decoder_residual', False),
+        'entropy_loss_weight': cfg.get('entropy_loss_weight', 0.0),
+        'entropy_sample_weight': cfg.get('entropy_sample_weight', 0.1),
     }
     if model is None:
         model = LatentActionModel(**kwargs)

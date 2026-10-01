@@ -7,14 +7,18 @@ sequence), starting every `sample_stride` frames inside each test block. Every t
                 straight-through gradient is ~0)
   - decoder:    reconstruction error (smooth L1 and PSNR) of frames 1..T-1 with the true actions vs the actions of a random
                 other window (seeded global permutation; shuffle gap = relative loss increase; ~0 means the decoder ignores actions), in two regimes:
-                `masked` = the training regime (only frame 0 visible), `full` = every context frame visible
+                `masked` = the model's own training regime (its decoder_keep_rate, seeded; frame 0 only for the original
+                LAM), `full` = every context frame visible
+  - two-frame:  frame 1 rebuilt from frame 0 + the inferred action a_0 (the first transition of a window), PSNR vs
+                copying frame 0, with the true and the shuffled action
   - spread:     mean per-pixel std (in [0, 1]) of the decoded last frame across all n_actions codes for the last
                 transition; ~0 means every action decodes to the same frame
   - motion:     global shift (dx, dy) between consecutive frames by phase correlation, binned by sign into 9 classes
                 (|shift| <= 1 px counts as 0); normalized mutual information NMI(code, motion class) in [0, 1]
 
-Outputs per model: <out_dir>/<name>.json and <out_dir>/<name>.png (code histogram, code-vs-motion table, and for
-4 windows spread over the split: frame 0, true last frame, decoded last frame under each action, masked regime).
+Outputs per model: <out_dir>/<name>.json, <out_dir>/<name>.png (code histogram, code-vs-motion table, and for
+4 windows spread over the split: frame 0, true last frame, decoded last frame under each action, masked regime) and
+<out_dir>/<name>_twoframe.png (3 windows: frame 0, frame 1, frame 1 rebuilt from frame 0 + action).
 
 Usage (from the repo root, PYTHONPATH=$PWD):
     python scripts/eval/eval_lam.py --lam v4=results/sonic_v4_2026_10_01/latent_actions/checkpoints/latent_actions_step_9000 \
@@ -81,7 +85,9 @@ def nmi(table):
 
 def decode(lam, x, actions, masked):
     # x: [B, T, C, H, W], actions: [B, T-1, A] -> predicted frames 1..T-1 [B, T-1, C, H, W]
-    # the decoder masks frames 1.. only when in train mode (no other layer of the LAM depends on the mode)
+    # the decoder masks frames 1.. only when in train mode (no other layer of the LAM depends on the mode);
+    # reseeded so the true and shuffled decodes see the same mask
+    torch.manual_seed(0)
     lam.decoder.train(masked)
     out = lam.decoder(x, actions, training=True)
     lam.decoder.eval()
@@ -105,6 +111,9 @@ def evaluate(label, ckpt, args, windows, frames_dset, device):
 
     codes, bits, absz, sat, motion = [], [], [], [], []
     acc = {f'{r}_{k}': [] for r in ('masked', 'full') for k in ('l1_true', 'l1_shuf', 'psnr_true', 'psnr_shuf')}
+    two = {k: [] for k in ('true', 'shuf', 'copy')}
+    two_ids = set(np.linspace(0, len(windows) - 1, 3).round().astype(int).tolist())
+    two_rows = []
     spread = {'masked': [], 'full': []}
     seeds = []
     seed_ids = set(np.linspace(0, len(windows) - 1, 4).round().astype(int).tolist())  # 4 windows spread over the split
@@ -134,6 +143,16 @@ def evaluate(label, ckpt, args, windows, frames_dset, device):
 
             target = x[:, 1:]  # [B, T-1, C, H, W]
             zq_shuf = zq_all[perm[i:i + B]]  # [B, T-1, A] a random other window's actions
+
+            # two-frame: frame 1 from frame 0 + a_0 (causal model, so identical to the first transition of the window)
+            f1 = to_unit(x[:, 1])  # [B, C, H, W]
+            rec = to_unit(decode(lam, x[:, :2], zq[:, :1], False)[:, 0])  # [B, C, H, W]
+            two['true'].append(psnr(rec, f1).cpu())
+            two['shuf'].append(psnr(to_unit(decode(lam, x[:, :2], zq_shuf[:, :1], False)[:, 0]), f1).cpu())
+            two['copy'].append(psnr(to_unit(x[:, 0]), f1).cpu())
+            for j in [w - i for w in sorted(two_ids) if i <= w < i + B]:
+                two_rows.append((to_unit(x[j, 0]).cpu(), f1[j].cpu(), rec[j].cpu(), idx[j, 0].item(),
+                                 two['true'][-1][j].item(), two['copy'][-1][j].item()))
             for regime in ('masked', 'full'):
                 masked = regime == 'masked'
                 l1_t, p_t = per_sample_loss(decode(lam, x, zq, masked), target)
@@ -175,7 +194,25 @@ def evaluate(label, ckpt, args, windows, frames_dset, device):
             'psnr_shuffled': torch.cat(acc[f'{regime}_psnr_shuf']).mean().item(),
             'action_spread': torch.cat(spread[regime]).mean().item(),
         }
-    return res, seeds
+    res['two_frame'] = {k: torch.cat(v).mean().item() for k, v in two.items()}
+    res['two_frame']['gain_over_copy_db'] = res['two_frame']['true'] - res['two_frame']['copy']
+    res['two_frame']['shuffle_loss_db'] = res['two_frame']['true'] - res['two_frame']['shuf']
+    return res, seeds, two_rows
+
+
+def plot_two_frame(label, rows, path):
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    fig, axes = plt.subplots(len(rows), 3, figsize=(7.5, 2.7 * len(rows)), squeeze=False)
+    for r, (f0, f1, rec, code, p_rec, p_copy) in enumerate(rows):
+        for a, im, t in zip(axes[r], [f0, f1, rec], [f'frame 0 (copy {p_copy:.1f} dB)', 'frame 1 (target)',
+                                                    f'rebuilt, action {code}: {p_rec:.1f} dB']):
+            a.imshow(im.permute(1, 2, 0).numpy(), interpolation='nearest'); a.set_title(t, fontsize=8); a.axis('off')
+    fig.suptitle(f'{label}: frame 1 rebuilt from frame 0 + action', fontsize=10)
+    fig.tight_layout()
+    fig.savefig(path, dpi=110)
+    plt.close(fig)
 
 
 def plot(res, seeds, path):
@@ -235,20 +272,22 @@ def main():
         label, ckpt = spec.split('=', 1)
         assert os.path.isdir(ckpt), f'checkpoint dir missing: {ckpt}'
         t0 = time.time()
-        res, seeds = evaluate(label, ckpt, args, windows, h5['frames'], device)
+        res, seeds, two_rows = evaluate(label, ckpt, args, windows, h5['frames'], device)
         stem = os.path.join(args.out_dir, f'{args.prefix}{label}')
         with open(stem + '.json', 'w') as f:
             json.dump(res, f, indent=1)
         plot(res, seeds, stem + '.png')
+        plot_two_frame(label, two_rows, stem + '_twoframe.png')
         print(f'== {label} ({time.time() - t0:.0f}s) -> {stem}.json/.png')
         rows.append(res)
 
     print(f"\n{'model':<8}{'H nats':>8}{'used':>6}{'top code':>10}{'sat bits':>18}{'gap mask':>10}{'gap full':>10}"
-          f"{'spread m':>10}{'NMI':>7}")
+          f"{'spread m':>10}{'NMI':>7}{'2f dB':>8}{'vs copy':>9}{'shuf -dB':>9}")
     for r in rows:
         print(f"{r['label']:<8}{r['entropy_nats']:>8.3f}{r['codes_used_1pct']:>6}{max(r['code_freq']):>10.3f}"
               f"{' '.join(f'{s:.2f}' for s in r['bit_saturated']):>18}{r['masked']['shuffle_gap_rel']:>10.4f}"
-              f"{r['full']['shuffle_gap_rel']:>10.4f}{r['masked']['action_spread']:>10.4f}{r['nmi_code_motion']:>7.3f}")
+              f"{r['full']['shuffle_gap_rel']:>10.4f}{r['masked']['action_spread']:>10.4f}{r['nmi_code_motion']:>7.3f}"
+              f"{r['two_frame']['true']:>8.2f}{r['two_frame']['gain_over_copy_db']:>+9.2f}{r['two_frame']['shuffle_loss_db']:>9.2f}")
 
 
 if __name__ == '__main__':
