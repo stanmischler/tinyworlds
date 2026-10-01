@@ -189,6 +189,7 @@ class LatentActionsDecoder(nn.Module):
         hint = torch.stack([y * valid, x * valid, valid], dim=-1)  # [B, T-1, 3]
         return idx, hint
 
+    @torch.compiler.disable  # inductor stalled >8 min at step 0 on the grouped conv with dynamic shapes (H100, 2026-10-02)
     def warp_frames(self, frames, actions):
         # frames: [B, T-1, C, H, W] (frames t), actions: [B, T-1, A] -> frames t warped by the action's kernel [B, T-1, C, H, W]
         B, T1, C, H, W = frames.shape
