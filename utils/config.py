@@ -184,9 +184,9 @@ class LatentActionsConfig:
 	action_kl_capacity: float = 2.0794
 	action_kl_weight: float = 1.0
 	action_fixed_noise: bool = False
-	# encoder reads only frame differences ('frames' | 'diff'); decoder also gets the location of the largest change
+	# encoder reads only frame differences ('frames' | 'diff'); decoder also gets where the player is (models/latent_actions.py)
 	encoder_input: str = "frames"
-	decoder_change_hint: bool = False
+	decoder_hint: str = "none"   # 'none' | 'max_diff' | 'player'
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)

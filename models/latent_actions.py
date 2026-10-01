@@ -70,14 +70,17 @@ class LatentActionsEncoder(nn.Module):
 
 class LatentActionsDecoder(nn.Module):
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8,
-                 hidden_dim=256, num_blocks=4, conditioning_dim=3, keep_rate=0.0, residual=False, change_hint=False):
+                 hidden_dim=256, num_blocks=4, conditioning_dim=3, keep_rate=0.0, residual=False, hint='none'):
         super().__init__()
-        # change_hint: also give the decoder where frame t -> t+1 changes most (the patch with the largest mean |diff|):
+        # hint: also tell the decoder where the player is in each transition t -> t+1 (one patch per transition):
         #   its (y, x) centre in [-1, 1] and a has-change flag are appended to the action for FiLM, and a learned marker is
-        #   added to that patch's token, so the decoder knows where the moving object is and the action only says how.
-        #   The hint is read from frame t+1, so it is extra (not bottlenecked) information about the target.
-        self.change_hint = bool(change_hint)
-        if self.change_hint:
+        #   added to that patch's token, so the action only has to say how the player moves, not where it is.
+        #   'none' = original; 'max_diff' = the patch with the largest mean |x_{t+1} - x_t| (hits Link 0/35 on hand-labelled
+        #   Zelda frames: scrolling edges, water and text win); 'player' = see player_location (Link 25/35, 4/5 off-centre).
+        #   Both read frame t+1, so the hint is extra (not bottlenecked) information about the target.
+        assert hint in ('none', 'max_diff', 'player'), hint
+        self.hint = hint
+        if self.hint != 'none':
             conditioning_dim = conditioning_dim + 3
             self.hint_token = nn.Parameter(torch.zeros(1, 1, 1, embed_dim))
             nn.init.normal_(self.hint_token, std=0.02)
@@ -106,18 +109,65 @@ class LatentActionsDecoder(nn.Module):
         self.num_patches = (frame_size[0] // patch_size) * (frame_size[1] // patch_size)
         self.mask_token = nn.Parameter(torch.zeros(1, 1, 1, embed_dim))
 
+    @torch.compiler.disable
+    @torch.no_grad()
+    def player_location(self, a, b, blur=9, sigma=0.125, ratio=2.0):
+        # a, b: [N, C, H, W] frames t and t+1 -> change map [N, H, W] whose peak patch is the player, and whether to trust it [N].
+        # Tuned on 35 hand-labelled held-out Zelda transitions (the camera follows Link, so he sits near (64, 62)):
+        #   1. global camera shift by phase correlation; while scrolling (|shift| > 1 px), the player is what changes only once
+        #      the shift is removed (fixed on screen while the world moves): relu(|b - shift(a)| - |b - a|), border band zeroed;
+        #      when the camera is still, the plain |b - a|
+        #   2. 9x9 box blur (sprite scale), times a Gaussian prior at the screen centre (sigma = 1/8 of the frame)
+        #   3. the peak counts only if it beats the value at the centre by 2x, else the centre is used (no hint if nothing changed)
+        a, b = a.float(), b.float()
+        N, C, H, W = a.shape
+        R = torch.fft.fft2(b.mean(1)) * torch.fft.fft2(a.mean(1)).conj()  # [N, H, W]
+        r = torch.fft.ifft2(R / R.abs().clamp_min(1e-8)).real.flatten(1).argmax(1)  # [N]
+        dy, dx = r // W, r % W
+        dy = torch.where(dy > H // 2, dy - H, dy)
+        dx = torch.where(dx > W // 2, dx - W, dx)
+        ys = torch.arange(H, device=a.device)[None, :, None]  # [1, H, 1]
+        xs = torch.arange(W, device=a.device)[None, None, :]  # [1, 1, W]
+        src_y = (ys - dy[:, None, None]) % H  # [N, H, 1]
+        src_x = (xs - dx[:, None, None]) % W  # [N, 1, W]
+        shifted = a[torch.arange(N, device=a.device)[:, None, None], :, src_y, src_x].permute(0, 3, 1, 2)  # [N, C, H, W]
+        raw = (b - a).abs().mean(1)  # [N, H, W]
+        stab = (b - shifted).abs().mean(1)  # [N, H, W]
+        border = ((ys < dy.clamp(min=0)[:, None, None]) | (ys >= H + dy.clamp(max=0)[:, None, None]) |
+                  (xs < dx.clamp(min=0)[:, None, None]) | (xs >= W + dx.clamp(max=0)[:, None, None]))  # [N, H, W]
+        stab = stab.masked_fill(border, 0)
+        scroll = ((dy.abs() + dx.abs()) > 1)[:, None, None]  # [N, 1, 1]
+        m = torch.where(scroll, (stab - raw).clamp(min=0), raw)  # [N, H, W]
+        m = F.avg_pool2d(m[:, None], blur, 1, blur // 2, count_include_pad=False)[:, 0]
+        yy = torch.arange(H, device=a.device).float()[:, None]
+        xx = torch.arange(W, device=a.device).float()[None, :]
+        cy, cx = H * 62 / 128, W / 2
+        m = m * torch.exp(-((xx - cx) / (sigma * W)) ** 2 / 2 - ((yy - cy) / (sigma * H)) ** 2 / 2)  # [N, H, W]
+        return m, cy, cx
+
+    @torch.no_grad()
     def change_location(self, frames, thr=0.02):
-        # frames: [B, T, C, H, W] -> patch index of the largest change per transition [B, T-1],
+        # frames: [B, T, C, H, W] -> hint patch index per transition [B, T-1],
         #   FiLM hint [B, T-1, 3] = (y, x) of that patch centre in [-1, 1] and 1 if anything changed (else all 0)
         S = self.patch_size
-        change = (frames[:, 1:] - frames[:, :-1]).abs().mean(dim=2)  # [B, T-1, H, W]
-        per_patch = reduce(change, 'b t (h p1) (w p2) -> b t (h w)', 'mean', p1=S, p2=S)  # [B, T-1, P]
+        B, T, C, H, W = frames.shape
+        Hp, Wp = H // S, W // S
+        change = (frames[:, 1:] - frames[:, :-1]).abs().float().mean(dim=2)  # [B, T-1, H, W]
+        changed = reduce(change, 'b t (h p1) (w p2) -> b t (h w)', 'mean', p1=S, p2=S).amax(-1) > thr  # [B, T-1]
+        if self.hint == 'max_diff':
+            score = change
+        else:
+            m, cy, cx = self.player_location(rearrange(frames[:, :-1], 'b t c h w -> (b t) c h w'),
+                                             rearrange(frames[:, 1:], 'b t c h w -> (b t) c h w'))
+            score = rearrange(m, '(b t) h w -> b t h w', b=B)  # [B, T-1, H, W]
+        per_patch = reduce(score, 'b t (h p1) (w p2) -> b t (h w)', 'mean', p1=S, p2=S)  # [B, T-1, P]
         peak, idx = per_patch.max(dim=-1)  # [B, T-1] each
-        Wp = self.frame_size[1] // S
-        Hp = self.frame_size[0] // S
+        if self.hint == 'player':
+            centre = int(cy) // S * Wp + int(cx) // S
+            idx = torch.where(peak > 2.0 * per_patch[..., centre].clamp_min(1e-6), idx, torch.full_like(idx, centre))
         y = ((idx // Wp).float() + 0.5) / Hp * 2 - 1  # [B, T-1]
         x = ((idx % Wp).float() + 0.5) / Wp * 2 - 1  # [B, T-1]
-        valid = (peak > thr).float()  # [B, T-1]
+        valid = changed.float()  # [B, T-1]
         hint = torch.stack([y * valid, x * valid, valid], dim=-1)  # [B, T-1, 3]
         return idx, hint
 
@@ -141,7 +191,7 @@ class LatentActionsDecoder(nn.Module):
                 self.mask_token.to(video_embeddings.dtype).expand_as(video_embeddings)
             )
 
-        if self.change_hint:
+        if self.hint != 'none':
             idx, hint = self.change_location(frames_full)  # [B, T-1], [B, T-1, 3]
             marker = F.one_hot(idx, P).to(video_embeddings.dtype)[..., None] * hint[..., 2:, None].to(video_embeddings.dtype)  # [B, T-1, P, 1]
             video_embeddings = video_embeddings + marker * self.hint_token.to(video_embeddings.dtype)
@@ -172,7 +222,7 @@ class LatentActionModel(nn.Module):
                  decoder_keep_rate=0.0, decoder_residual=False, entropy_loss_weight=0.0, entropy_sample_weight=0.1,
                  encoder_pooling='mean', recon_change_weight=0.0, continuous_actions=False,
                  action_kl_capacity=math.log(8), action_kl_weight=1.0, action_fixed_noise=False,
-                 encoder_input='frames', decoder_change_hint=False):
+                 encoder_input='frames', decoder_hint='none'):
         super().__init__()
         assert math.log(n_actions, NUM_LATENT_ACTIONS_BINS).is_integer(), f"n_actions must be a power of {NUM_LATENT_ACTIONS_BINS}"
         self.action_dim=int(math.log(n_actions, NUM_LATENT_ACTIONS_BINS))
@@ -192,7 +242,7 @@ class LatentActionModel(nn.Module):
                                             out_dim=2 * self.action_dim if self.continuous_actions and not self.action_fixed_noise else None)
         self.quantizer = FiniteScalarQuantizer(latent_dim=self.action_dim, num_bins=NUM_LATENT_ACTIONS_BINS)
         self.decoder = LatentActionsDecoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, conditioning_dim=self.action_dim,
-                                            keep_rate=decoder_keep_rate, residual=decoder_residual, change_hint=decoder_change_hint)
+                                            keep_rate=decoder_keep_rate, residual=decoder_residual, hint=decoder_hint)
         self.var_target = 0.01
         self.var_lambda = 100.0
         # code-usage loss (0.0 = original: variance penalty only). Replaces the variance penalty when on.

@@ -71,7 +71,7 @@ def main():
         action_kl_weight=args.action_kl_weight,
         action_fixed_noise=args.action_fixed_noise,
         encoder_input=args.encoder_input,
-        decoder_change_hint=args.decoder_change_hint,
+        decoder_hint=args.decoder_hint,
     ).to(args.device)
     if args.checkpoint:
         model, _ = load_latent_actions_from_checkpoint(
