@@ -2,6 +2,7 @@
 # One training.yaml, one stage yaml per variant; pick the variant with --overrides:
 #   TINYWORLDS_GPU=H100 modal run --detach scripts/modal_train.py --dataset SONIC_TRAIN \
 #     --training-config configs/lam_v5/training.yaml --overrides "latent_actions_config=configs/lam_v5/latent_actions_B.yaml"
+# Round 2 (v4-length, 10k steps): add ",n_updates=10001,log_interval=1000" to --overrides (training-level keys beat the stage yaml).
 # Selection protocol: scripts/eval/eval_lam.py on data/sonic_test_frames.h5 (see the stage yamls).
 use_wandb: true
 wandb_project: tinyworlds
