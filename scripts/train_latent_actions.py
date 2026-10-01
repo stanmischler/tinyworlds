@@ -72,6 +72,8 @@ def main():
         action_fixed_noise=args.action_fixed_noise,
         encoder_input=args.encoder_input,
         decoder_hint=args.decoder_hint,
+        decoder_warp=args.decoder_warp,
+        decoder_warp_radius=args.decoder_warp_radius,
     ).to(args.device)
     if args.checkpoint:
         model, _ = load_latent_actions_from_checkpoint(

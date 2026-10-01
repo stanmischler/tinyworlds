@@ -260,6 +260,8 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, i
         'action_fixed_noise': cfg.get('action_fixed_noise', False),
         'encoder_input': cfg.get('encoder_input', 'frames'),
         'decoder_hint': cfg.get('decoder_hint', 'none'),
+        'decoder_warp': cfg.get('decoder_warp', 'none'),
+        'decoder_warp_radius': cfg.get('decoder_warp_radius', 12),
     }
     if model is None:
         model = LatentActionModel(**kwargs)

@@ -70,8 +70,26 @@ class LatentActionsEncoder(nn.Module):
 
 class LatentActionsDecoder(nn.Module):
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8,
-                 hidden_dim=256, num_blocks=4, conditioning_dim=3, keep_rate=0.0, residual=False, hint='none'):
+                 hidden_dim=256, num_blocks=4, conditioning_dim=3, keep_rate=0.0, residual=False, hint='none',
+                 warp='none', warp_radius=12):
         super().__init__()
+        # warp: an action-conditioned global warp of frame t is the base of the prediction (CDNA, Finn et al. 2016:
+        #   the action predicts transformation kernels applied to the previous frame). The action alone (not the hint,
+        #   not the history) gives a separable kernel = softmax over 2 * warp_radius + 1 vertical and horizontal taps,
+        #   so a full-screen scroll (Zelda walking = ~9 px per transition at 128px) is a few-parameter function of the code.
+        #   'none' = original; 'global' = base is the warped (true, unmasked) frame t, plus the residual correction of the
+        #   transformer; 'global_only' = the warp alone (no transformer: the code can only explain a global shift)
+        assert warp in ('none', 'global', 'global_only'), warp
+        self.warp = warp
+        self.warp_radius = int(warp_radius)
+        if self.warp != 'none':
+            K = 2 * self.warp_radius + 1
+            self.warp_head = nn.Sequential(nn.Linear(conditioning_dim, 64), nn.GELU(), nn.Linear(64, 2 * K))
+            nn.init.zeros_(self.warp_head[2].weight)
+            with torch.no_grad():  # start near identity: the centre tap holds ~45% of each 1D kernel
+                self.warp_head[2].bias.zero_()
+                self.warp_head[2].bias[self.warp_radius] = 3.0
+                self.warp_head[2].bias[K + self.warp_radius] = 3.0
         # hint: also tell the decoder where the player is in each transition t -> t+1 (one patch per transition):
         #   its (y, x) centre in [-1, 1] and a has-change flag are appended to the action for FiLM, and a learned marker is
         #   added to that patch's token, so the action only has to say how the player moves, not where it is.
@@ -99,7 +117,7 @@ class LatentActionsDecoder(nn.Module):
             nn.Linear(embed_dim, 3 * patch_size * patch_size),
             nn.Tanh()
         )
-        if self.residual:
+        if self.residual or self.warp != 'none':
             # start as an exact copy of the last visible frame (correction 0)
             nn.init.zeros_(self.frame_head[1].weight)
             nn.init.zeros_(self.frame_head[1].bias)
@@ -171,12 +189,30 @@ class LatentActionsDecoder(nn.Module):
         hint = torch.stack([y * valid, x * valid, valid], dim=-1)  # [B, T-1, 3]
         return idx, hint
 
+    def warp_frames(self, frames, actions):
+        # frames: [B, T-1, C, H, W] (frames t), actions: [B, T-1, A] -> frames t warped by the action's kernel [B, T-1, C, H, W]
+        B, T1, C, H, W = frames.shape
+        r, K = self.warp_radius, 2 * self.warp_radius + 1
+        with torch.autocast(device_type=frames.device.type, enabled=False):  # fp32: the taps must sum to 1 exactly
+            logits = self.warp_head(actions.float())  # [B, T-1, 2K]
+            ky, kx = logits[..., :K].softmax(-1), logits[..., K:].softmax(-1)  # [B, T-1, K] each
+            x = rearrange(frames.float(), 'b t c h w -> 1 (b t c) h w')  # [1, B*(T-1)*C, H, W]
+            wy = repeat(ky, 'b t k -> (b t c) 1 k 1', c=C)  # [B*(T-1)*C, 1, K, 1]
+            wx = repeat(kx, 'b t k -> (b t c) 1 1 k', c=C)  # [B*(T-1)*C, 1, 1, K]
+            x = F.conv2d(F.pad(x, (0, 0, r, r), mode='replicate'), wy, groups=x.shape[1])
+            x = F.conv2d(F.pad(x, (r, r, 0, 0), mode='replicate'), wx, groups=x.shape[1])
+        return rearrange(x, '1 (b t c) h w -> b t c h w', b=B, t=T1)  # [B, T-1, C, H, W]
+
     def forward(self, frames, actions, training=True):
         # frames: [B, T, C, H, W]
         # actions: [B, T - 1, A]
         B, T, C, H, W = frames.shape
         frames_full = frames  # [B, T, C, H, W]
         frames = frames[:, :-1] # [B, T-1, C, H, W]
+        if self.warp != 'none':
+            warped = self.warp_frames(frames, actions)  # [B, T-1, C, H, W]
+            if self.warp == 'global_only':
+                return warped.to(frames.dtype)
         video_embeddings = self.patch_embed(frames)  # [B, T-1, P, E]
         _, _, P, E = video_embeddings.shape
 
@@ -205,7 +241,9 @@ class LatentActionsDecoder(nn.Module):
         pred_frames = rearrange(
             patches, 'b t c (h w) p1 p2 -> b t c (h p1) (w p2)', h=H//self.patch_size, w=W//self.patch_size
         ) # [B, T-1, C, H, W]
-        if self.residual:
+        if self.warp != 'none':
+            pred_frames = warped.to(pred_frames.dtype) + 2 * pred_frames  # [B, T-1, C, H, W]
+        elif self.residual:
             # per patch, the most recent visible frame (frame 0 always is), plus a correction in [-2, 2]
             keep_px = repeat(
                 keep[..., 0], 'b t (h w) -> b t 1 (h p1) (w p2)', h=H//self.patch_size, p1=self.patch_size, p2=self.patch_size
@@ -222,7 +260,7 @@ class LatentActionModel(nn.Module):
                  decoder_keep_rate=0.0, decoder_residual=False, entropy_loss_weight=0.0, entropy_sample_weight=0.1,
                  encoder_pooling='mean', recon_change_weight=0.0, continuous_actions=False,
                  action_kl_capacity=math.log(8), action_kl_weight=1.0, action_fixed_noise=False,
-                 encoder_input='frames', decoder_hint='none'):
+                 encoder_input='frames', decoder_hint='none', decoder_warp='none', decoder_warp_radius=12):
         super().__init__()
         assert math.log(n_actions, NUM_LATENT_ACTIONS_BINS).is_integer(), f"n_actions must be a power of {NUM_LATENT_ACTIONS_BINS}"
         self.action_dim=int(math.log(n_actions, NUM_LATENT_ACTIONS_BINS))
@@ -242,7 +280,8 @@ class LatentActionModel(nn.Module):
                                             out_dim=2 * self.action_dim if self.continuous_actions and not self.action_fixed_noise else None)
         self.quantizer = FiniteScalarQuantizer(latent_dim=self.action_dim, num_bins=NUM_LATENT_ACTIONS_BINS)
         self.decoder = LatentActionsDecoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, conditioning_dim=self.action_dim,
-                                            keep_rate=decoder_keep_rate, residual=decoder_residual, hint=decoder_hint)
+                                            keep_rate=decoder_keep_rate, residual=decoder_residual, hint=decoder_hint,
+                                            warp=decoder_warp, warp_radius=decoder_warp_radius)
         self.var_target = 0.01
         self.var_lambda = 100.0
         # code-usage loss (0.0 = original: variance penalty only). Replaces the variance penalty when on.

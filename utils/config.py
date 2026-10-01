@@ -187,6 +187,9 @@ class LatentActionsConfig:
 	# encoder reads only frame differences ('frames' | 'diff'); decoder also gets where the player is (models/latent_actions.py)
 	encoder_input: str = "frames"
 	decoder_hint: str = "none"   # 'none' | 'max_diff' | 'player'
+	# action-conditioned global warp of frame t as the decoder's base ('none' | 'global' | 'global_only', CDNA-style)
+	decoder_warp: str = "none"
+	decoder_warp_radius: int = 12
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)
