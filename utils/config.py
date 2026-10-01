@@ -169,6 +169,24 @@ class LatentActionsConfig:
 	# dataloader throughput (None = defaults in datasets/data_utils.py: 2 workers, no pin_memory)
 	num_workers: Optional[int] = None
 	pin_memory: Optional[bool] = None
+	# anti-collapse (defaults = original behaviour): fraction of past-frame patches the decoder sees (0 = frame 0 only,
+	# 1 = all), decoder predicts a correction to the last visible frame, weight of the code-usage entropy loss
+	# (replaces the variance penalty when > 0) and of its per-sample confidence term
+	decoder_keep_rate: float = 0.0
+	decoder_residual: bool = False
+	entropy_loss_weight: float = 0.0
+	entropy_sample_weight: float = 0.1
+	# encoder pooling ('mean' | 'attention'), extra reconstruction weight on pixels that change between frames,
+	# continuous (Gaussian) actions with the KL held at action_kl_capacity nats instead of FSQ codes
+	encoder_pooling: str = "mean"
+	recon_change_weight: float = 0.0
+	continuous_actions: bool = False
+	action_kl_capacity: float = 2.0794
+	action_kl_weight: float = 1.0
+	action_fixed_noise: bool = False
+	# encoder reads only frame differences ('frames' | 'diff'); decoder also gets the location of the largest change
+	encoder_input: str = "frames"
+	decoder_change_hint: bool = False
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)

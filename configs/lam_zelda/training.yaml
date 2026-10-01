@@ -1,0 +1,48 @@
+# lam_zelda: Zelda latent action model variants Z1-Z5 (LAM stage only, pixel-based, so no tokenizer is involved).
+# One training.yaml, one stage yaml per variant; pick the variant with --overrides:
+#   TINYWORLDS_GPU=H100 modal run --detach scripts/modal_train.py --dataset ZELDA_TRAIN \
+#     --training-config configs/lam_zelda/training.yaml --overrides "latent_actions_config=configs/lam_zelda/latent_actions_Z3.yaml"
+# Baseline = the zelda_v3 LAM (configs/zelda_v3/latent_actions.yaml, step 5500): same data, size, batch, lr and steps.
+# Selection protocol: scripts/eval/eval_lam.py --test-h5 data/zelda_test_frames.h5 (see the stage yamls).
+use_wandb: true
+wandb_project: tinyworlds
+
+dataset: ZELDA_TRAIN      # zelda_train_frames.h5: all frames minus the 10 held-out test blocks (scripts/eval/split_dataset.py)
+preload_ratio: 1.0        # all ~65k train frames (ZeldaDataset defaults to 0.2)
+
+patch_size: 4             # 48 pixel values per code, same density as the Sonic runs; 1024 tokens per 128px frame
+context_length: 4
+frame_size: 128           # zelda_frames.h5 is 128x128; the Modal launcher re-reads it from the .h5
+latent_dim: 6             # tokenizer vocab = num_bins**latent_dim = 4096
+num_bins: 4
+n_actions: 8              # Genie's number; more codes let the LAM leak next-frame appearance through the action
+
+amp: true
+tf32: true
+compile: true
+
+# dataloader throughput; remove both lines (or set them to null) to return to the defaults (2 workers, no pinning)
+num_workers: 8
+pin_memory: true
+
+distributed:
+  use_ddp: false
+  use_fsdp: false
+  reshard_after_forward: false
+nproc_per_node: 1
+standalone: true
+
+video_tokenizer_config: configs/zelda_v3/video_tokenizer.yaml
+latent_actions_config: configs/lam_zelda/latent_actions_Z1.yaml
+dynamics_config: configs/zelda_v3/dynamics.yaml
+run_video_tokenizer: false
+run_latent_actions: true
+run_dynamics: false
+
+optimizer: adamw
+muon_momentum: 0.95
+muon_backend_steps: 5
+use_moe: false
+num_experts: 4
+top_k_experts: 2
+moe_aux_loss_coeff: 0.01

@@ -1,0 +1,16 @@
+# sonic_v4 tokenizer: warm start from the sonic_v3 step-7500 weights (checkpoint below, path on the Modal results
+# volume) and train 30k more steps. NOTE: `checkpoint` only restores the weights here: optimizer, cosine schedule
+# (5% warmup) and the step counter start fresh, so this is a warm restart, not a continuation. Peak lr halved to
+# 2e-4 because we start from converged weights and 4e-4 collapsed the FSQ codebook on Zelda.
+batch_size_per_gpu: 256
+gradient_accumulation_steps: 1
+n_updates: 30000
+learning_rate: 0.0002
+log_interval: 1000   # checkpoint + reconstruction PNG every 1000 steps
+
+embed_dim: 128
+num_heads: 8
+hidden_dim: 256
+num_blocks: 4
+
+checkpoint: results/2026_09_23_17_38_44/video_tokenizer/checkpoints/video_tokenizer_step_7500

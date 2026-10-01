@@ -1,0 +1,24 @@
+# lam_zelda Z2: Z1 without the per-sample confidence term (it pushed every bit to saturation on Sonic)
+# Same budget for every variant = the zelda_v3 LAM: 6k steps, batch 64, lr 3e-4, 128/256/4, n_actions 8.
+batch_size_per_gpu: 64
+gradient_accumulation_steps: 1
+n_updates: 6001       # +1 so the last checkpoint is step 6000
+learning_rate: 0.0003
+log_interval: 500     # checkpoint + reconstruction PNG every 500 steps
+
+embed_dim: 128
+num_heads: 8
+hidden_dim: 256
+num_blocks: 4
+
+decoder_keep_rate: 0.5
+decoder_residual: true
+entropy_loss_weight: 0.1
+entropy_sample_weight: 0.0
+encoder_pooling: mean
+recon_change_weight: 0.0
+continuous_actions: false
+action_kl_capacity: 2.0794   # ln 8 nats: the information of 8 discrete codes (continuous_actions only)
+action_kl_weight: 1.0
+
+checkpoint: null

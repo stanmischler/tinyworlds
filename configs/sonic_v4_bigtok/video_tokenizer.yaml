@@ -1,0 +1,16 @@
+# Zelda-v3-sized tokenizer (256/512/8 blocks) on Sonic. Attempt 1 (from scratch, lr 2e-4, batch 256) collapsed the FSQ
+# codebook to ~1 code between step 9000 and 10000 (loss 0.0045 -> 0.105, usage 1.0 -> 0.001), the same failure Zelda
+# showed at 4e-4. Attempt 2 warm-starts from the last clean checkpoint (step 9000, on the Modal results volume) with
+# the peak lr halved again to 1e-4 and 40k more steps. `checkpoint` restores weights only (fresh optimizer/schedule).
+batch_size_per_gpu: 256
+gradient_accumulation_steps: 1
+n_updates: 40000
+learning_rate: 0.0001
+log_interval: 1000   # checkpoint + reconstruction PNG every 1000 steps
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 8
+
+checkpoint: results/2026_09_30_23_07_03/video_tokenizer/checkpoints/video_tokenizer_step_9000

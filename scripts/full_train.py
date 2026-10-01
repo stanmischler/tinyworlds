@@ -50,15 +50,28 @@ def main():
         if not run_command(latent_actions_cmd, "Latent Actions Training"):
             return
 
-    # need to get above checkpoints and pass in to dynamics
-    video_tokenizer_checkpoint = find_latest_checkpoint(".", "video_tokenizer")
-    try:
-        latent_actions_checkpoint = find_latest_checkpoint(".", "latent_actions")
-    except Exception:
-        # none anywhere: fine for dynamics with action_source=gt (ground-truth actions, no LAM stage)
-        latent_actions_checkpoint = None
+    # checkpoints handed to dynamics, in order of preference: an explicit path set in the dynamics yaml, the stage
+    # that just ran in this pipeline (own run dir), and only then the newest run dir on disk (the legacy
+    # cwd-wide search, which picks the wrong run when several runs share results/ or a volume)
+    from omegaconf import OmegaConf
+    dyn_yaml = OmegaConf.load(train_config.dynamics_config)
 
+    def stage_checkpoint(stage, ran_here):
+        explicit = dyn_yaml.get(f"{stage}_path")
+        if explicit:
+            return explicit
+        if ran_here:
+            return find_latest_checkpoint(".", stage, run_root_dir=run_root, stage_name=stage)
+        return find_latest_checkpoint(".", stage)
+
+    video_tokenizer_checkpoint = latent_actions_checkpoint = None
     if train_config.run_dynamics:
+        video_tokenizer_checkpoint = stage_checkpoint("video_tokenizer", train_config.run_video_tokenizer)
+        try:
+            latent_actions_checkpoint = stage_checkpoint("latent_actions", train_config.run_latent_actions)
+        except Exception:
+            # none anywhere: fine for dynamics with action_source=gt (ground-truth actions, no LAM stage)
+            latent_actions_checkpoint = None
         dyn_cmd = launcher + [
             "scripts/train_dynamics.py",
             "--config", train_config.dynamics_config,
@@ -70,7 +83,7 @@ def main():
         if not run_command(dyn_cmd, "Dynamics Model Training"):
             return
 
-    dynamics_checkpoint = find_latest_checkpoint(".", "dynamics")
+    dynamics_checkpoint = find_latest_checkpoint(".", "dynamics", run_root_dir=run_root, stage_name="dynamics") if train_config.run_dynamics else None
     print("\n📁 Results Summary:")
     print(f"Video Tokenizer: {video_tokenizer_checkpoint}")
     print(f"Latent Actions: {latent_actions_checkpoint}")

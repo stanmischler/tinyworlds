@@ -1,0 +1,14 @@
+# sonic_v4 LAM: from scratch, 4x longer than v3 (2.5k) at the Zelda/Pong lr 3e-4 instead of 1e-3.
+# Pixel-based, so independent of the tokenizer. n_actions comes from training.yaml (8).
+batch_size_per_gpu: 256
+gradient_accumulation_steps: 1
+n_updates: 10000
+learning_rate: 0.0003
+log_interval: 1000   # checkpoint + reconstruction PNG every 1000 steps
+
+embed_dim: 128
+num_heads: 8
+hidden_dim: 256
+num_blocks: 4
+
+checkpoint: null
