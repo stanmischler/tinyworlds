@@ -18,6 +18,11 @@ sequence), starting every `sample_stride` frames inside each test block. Every t
                 the decoder are the means themselves (no quantization), and the bit columns describe the sign of the mean
   - motion:     global shift (dx, dy) between consecutive frames by phase correlation, binned by sign into 9 classes
                 (|shift| <= 1 px counts as 0); normalized mutual information NMI(code, motion class) in [0, 1]
+  - player:     a proxy of the player's move per transition (no sprite tracker): if the screen scrolls, minus the
+                global shift; otherwise the dominant local shift (block matching, 8 px blocks, +-4 px) among the blocks
+                that changed, or still. Reported as NMI(code, player class) and as the held-out R^2 of a linear fit
+                from the action (pre-quantization latent; one-hot code) to the (dy, dx) move, fit on the first half of
+                the windows and scored on the second
 
 Outputs per model: <out_dir>/<name>.json, <out_dir>/<name>.png (code histogram, code-vs-motion table, and for
 4 windows spread over the split: frame 0, true last frame, decoded last frame under each action, masked regime) and
@@ -68,6 +73,38 @@ def motion_class(shift, tol=1):
     v = torch.where(shift[:, 0] < -tol, 0, torch.where(shift[:, 0] > tol, 2, 1))
     h = torch.where(shift[:, 1] < -tol, 0, torch.where(shift[:, 1] > tol, 2, 1))
     return v * 3 + h
+
+
+def local_shift(a, b, max_shift=4, block=8, thr=0.08, min_frac=0.05):
+    # a, b: [N, H, W] grayscale in [0, 1] -> dominant integer (dy, dx) [N, 2] of the blocks that changed (0 if none)
+    pool = lambda t: F.avg_pool2d(t[:, None], block)[:, 0]  # [N, h, w]
+    changed = pool(((a - b).abs() > thr).float()) > min_frac  # [N, h, w]
+    shifts = [(dy, dx) for dy in range(-max_shift, max_shift + 1) for dx in range(-max_shift, max_shift + 1)]
+    err = torch.stack([pool((torch.roll(a, (dy, dx), (1, 2)) - b).abs()) for dy, dx in shifts])  # [S, N, h, w]
+    best = torch.tensor(shifts, device=a.device)[err.argmin(0)]  # [N, h, w, 2]
+    moving = changed & (best.abs().sum(-1) > 0)  # [N, h, w]
+    out = torch.zeros(a.shape[0], 2, dtype=torch.long, device=a.device)
+    for n in torch.nonzero(moving.flatten(1).any(1)).flatten().tolist():
+        v, c = best[n][moving[n]].unique(dim=0, return_counts=True)
+        out[n] = v[c.argmax()]
+    return out  # [N, 2]
+
+
+def player_move(a, b):
+    # a, b: [N, H, W] -> (dy, dx) [N, 2]: minus the camera scroll if there is one, else the dominant local move
+    cam = global_shift(a, b)  # content shift
+    scrolling = (cam.abs() > 1).any(1, keepdim=True)
+    return torch.where(scrolling, -cam, local_shift(a, b))
+
+
+def heldout_r2(feats, target):
+    # feats: [N, D], target: [N, 2] -> R^2 of least squares (with bias) fit on the first half, scored on the second
+    X = torch.cat([feats.double(), torch.ones(len(feats), 1, dtype=torch.double)], 1)
+    y = target.double()
+    h = len(X) // 2
+    w = torch.linalg.lstsq(X[:h], y[:h]).solution
+    resid = y[h:] - X[h:] @ w
+    return float(1 - resid.pow(2).sum() / (y[h:] - y[h:].mean(0)).pow(2).sum().clamp_min(1e-8))
 
 
 def entropy_nats(counts):
@@ -127,7 +164,7 @@ def evaluate(label, ckpt, args, windows, frames_dset, device):
     n_actions, A = q.codebook_size, lam.action_dim
     continuous = getattr(lam, 'continuous_actions', False)
 
-    codes, bits, absz, sat, motion = [], [], [], [], []
+    codes, bits, absz, sat, motion, player, pre = [], [], [], [], [], [], []
     acc = {f'{r}_{k}': [] for r in ('masked', 'full') for k in ('l1_true', 'l1_shuf', 'psnr_true', 'psnr_shuf')}
     two = {k: [] for k in ('true', 'shuf', 'copy')}
     two_ids = set(np.linspace(0, len(windows) - 1, 3).round().astype(int).tolist())
@@ -164,6 +201,9 @@ def evaluate(label, ckpt, args, windows, frames_dset, device):
             gray = to_unit(x).mean(2)  # [B, T, H, W]
             shift = global_shift(gray[:, :-1].reshape(-1, *gray.shape[2:]), gray[:, 1:].reshape(-1, *gray.shape[2:]))  # [B*(T-1), 2]
             motion.append(motion_class(shift).cpu())
+            mv = player_move(gray[:, :-1].reshape(-1, *gray.shape[2:]), gray[:, 1:].reshape(-1, *gray.shape[2:]))  # [B*(T-1), 2]
+            player.append(mv.cpu())
+            pre.append(z.reshape(-1, A).float().cpu())
 
             target = x[:, 1:]  # [B, T-1, C, H, W]
             zq_shuf = zq_all[perm[i:i + B]]  # [B, T-1, A] a random other window's actions
@@ -197,6 +237,10 @@ def evaluate(label, ckpt, args, windows, frames_dset, device):
                         seeds.append((to_unit(x[j, 0]).cpu(), to_unit(x[j, -1]).cpu(), outs[j].cpu(), idx[j, -1].item()))
 
     codes, motion = torch.cat(codes).numpy(), torch.cat(motion).numpy()
+    player, pre = torch.cat(player), torch.cat(pre)  # [N, 2], [N, A]
+    pclass = motion_class(player, tol=0).numpy()
+    ptable = np.zeros((n_actions, 9))
+    np.add.at(ptable, (codes, pclass), 1)
     bits, absz, sat = torch.cat(bits), torch.cat(absz), torch.cat(sat)
     counts = np.bincount(codes, minlength=n_actions).astype(float)
     table = np.zeros((n_actions, 9))
@@ -209,6 +253,10 @@ def evaluate(label, ckpt, args, windows, frames_dset, device):
         'bit_p1': bits.mean(0).tolist(), 'bit_abs_z': absz.mean(0).tolist(), 'bit_saturated': sat.mean(0).tolist(),
         'motion_freq': (table.sum(0) / table.sum()).tolist(), 'motion_labels': MOTION_LABELS,
         'code_motion_counts': table.astype(int).tolist(), 'nmi_code_motion': nmi(table),
+        'player_freq': (ptable.sum(0) / ptable.sum()).tolist(), 'code_player_counts': ptable.astype(int).tolist(),
+        'nmi_code_player': nmi(ptable),
+        'r2_player_latent': heldout_r2(pre, player.float()),
+        'r2_player_code': heldout_r2(F.one_hot(torch.from_numpy(codes), n_actions)[:, 1:], player.float()),
     }
     for regime in ('masked', 'full'):
         l1_t, l1_s = torch.cat(acc[f'{regime}_l1_true']).mean().item(), torch.cat(acc[f'{regime}_l1_shuf']).mean().item()
@@ -306,11 +354,11 @@ def main():
         rows.append(res)
 
     print(f"\n{'model':<8}{'H nats':>8}{'used':>6}{'top code':>10}{'sat bits':>18}{'gap mask':>10}{'gap full':>10}"
-          f"{'spread m':>10}{'NMI':>7}{'2f dB':>8}{'vs copy':>9}{'shuf -dB':>9}")
+          f"{'spread m':>10}{'NMI':>7}{'NMI pl':>8}{'R2 lat':>8}{'2f dB':>8}{'vs copy':>9}{'shuf -dB':>9}")
     for r in rows:
         print(f"{r['label']:<8}{r['entropy_nats']:>8.3f}{r['codes_used_1pct']:>6}{max(r['code_freq']):>10.3f}"
               f"{' '.join(f'{s:.2f}' for s in r['bit_saturated']):>18}{r['masked']['shuffle_gap_rel']:>10.4f}"
-              f"{r['full']['shuffle_gap_rel']:>10.4f}{r['masked']['action_spread']:>10.4f}{r['nmi_code_motion']:>7.3f}"
+              f"{r['full']['shuffle_gap_rel']:>10.4f}{r['masked']['action_spread']:>10.4f}{r['nmi_code_motion']:>7.3f}{r['nmi_code_player']:>8.3f}{r['r2_player_latent']:>8.3f}"
               f"{r['two_frame']['true']:>8.2f}{r['two_frame']['gain_over_copy_db']:>+9.2f}{r['two_frame']['shuffle_loss_db']:>9.2f}")
 
 
