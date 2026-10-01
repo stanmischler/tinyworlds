@@ -197,6 +197,8 @@ class LatentActionsDecoder(nn.Module):
         with torch.autocast(device_type=frames.device.type, enabled=False):  # fp32: the taps must sum to 1 exactly
             logits = self.warp_head(actions.float())  # [B, T-1, 2K]
             ky, kx = logits[..., :K].softmax(-1), logits[..., K:].softmax(-1)  # [B, T-1, K] each
+            # mean entropy of the 1D kernels (nats), for the optional sharpness penalty (decoder_warp_entropy_weight)
+            self.last_warp_entropy = -(ky * ky.clamp_min(1e-8).log()).sum(-1).mean() - (kx * kx.clamp_min(1e-8).log()).sum(-1).mean()
             x = rearrange(frames.float(), 'b t c h w -> 1 (b t c) h w')  # [1, B*(T-1)*C, H, W]
             wy = repeat(ky, 'b t k -> (b t c) 1 k 1', c=C)  # [B*(T-1)*C, 1, K, 1]
             wx = repeat(kx, 'b t k -> (b t c) 1 1 k', c=C)  # [B*(T-1)*C, 1, 1, K]
@@ -261,7 +263,8 @@ class LatentActionModel(nn.Module):
                  decoder_keep_rate=0.0, decoder_residual=False, entropy_loss_weight=0.0, entropy_sample_weight=0.1,
                  encoder_pooling='mean', recon_change_weight=0.0, continuous_actions=False,
                  action_kl_capacity=math.log(8), action_kl_weight=1.0, action_fixed_noise=False,
-                 encoder_input='frames', decoder_hint='none', decoder_warp='none', decoder_warp_radius=12):
+                 encoder_input='frames', decoder_hint='none', decoder_warp='none', decoder_warp_radius=12,
+                 decoder_warp_entropy_weight=0.0, decoder_warp_entropy_ramp=3000):
         super().__init__()
         assert math.log(n_actions, NUM_LATENT_ACTIONS_BINS).is_integer(), f"n_actions must be a power of {NUM_LATENT_ACTIONS_BINS}"
         self.action_dim=int(math.log(n_actions, NUM_LATENT_ACTIONS_BINS))
@@ -283,6 +286,12 @@ class LatentActionModel(nn.Module):
         self.decoder = LatentActionsDecoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, conditioning_dim=self.action_dim,
                                             keep_rate=decoder_keep_rate, residual=decoder_residual, hint=decoder_hint,
                                             warp=decoder_warp, warp_radius=decoder_warp_radius)
+        # decoder_warp_entropy_weight: penalty on the entropy of the warp kernels so each code commits to ONE shift
+        #   (a bimodal kernel = two shifted copies serves up- and down-scrolls with one code); ramped in linearly over
+        #   decoder_warp_entropy_ramp training steps so the kernels first move away from the identity. 0 = off
+        self.warp_entropy_weight = float(decoder_warp_entropy_weight)
+        self.warp_entropy_ramp = max(int(decoder_warp_entropy_ramp), 1)
+        self.register_buffer('train_steps', torch.zeros((), dtype=torch.long), persistent=False)
         self.var_target = 0.01
         self.var_lambda = 100.0
         # code-usage loss (0.0 = original: variance penalty only). Replaces the variance penalty when on.
@@ -366,6 +375,12 @@ class LatentActionModel(nn.Module):
             z_var = action_latents.var(dim=0, unbiased=False).mean()
             var_penalty = F.relu(self.var_target - z_var)
             total_loss = recon_loss + self.var_lambda * var_penalty
+
+        if self.warp_entropy_weight > 0:
+            ramp = (self.train_steps.float() / self.warp_entropy_ramp).clamp(max=1.0)
+            total_loss = total_loss + self.warp_entropy_weight * ramp * self.decoder.last_warp_entropy
+            if self.training:
+                self.train_steps += 1
 
         return total_loss, pred_frames
 

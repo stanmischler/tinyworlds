@@ -262,6 +262,8 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, i
         'decoder_hint': cfg.get('decoder_hint', 'none'),
         'decoder_warp': cfg.get('decoder_warp', 'none'),
         'decoder_warp_radius': cfg.get('decoder_warp_radius', 12),
+        'decoder_warp_entropy_weight': cfg.get('decoder_warp_entropy_weight', 0.0),
+        'decoder_warp_entropy_ramp': cfg.get('decoder_warp_entropy_ramp', 3000),
     }
     if model is None:
         model = LatentActionModel(**kwargs)

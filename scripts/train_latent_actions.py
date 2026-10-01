@@ -74,6 +74,8 @@ def main():
         decoder_hint=args.decoder_hint,
         decoder_warp=args.decoder_warp,
         decoder_warp_radius=args.decoder_warp_radius,
+        decoder_warp_entropy_weight=args.decoder_warp_entropy_weight,
+        decoder_warp_entropy_ramp=args.decoder_warp_entropy_ramp,
     ).to(args.device)
     if args.checkpoint:
         model, _ = load_latent_actions_from_checkpoint(

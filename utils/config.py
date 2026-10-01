@@ -190,6 +190,8 @@ class LatentActionsConfig:
 	# action-conditioned global warp of frame t as the decoder's base ('none' | 'global' | 'global_only', CDNA-style)
 	decoder_warp: str = "none"
 	decoder_warp_radius: int = 12
+	decoder_warp_entropy_weight: float = 0.0   # warp-kernel sharpness penalty (0 = off), ramped in over the next knob's steps
+	decoder_warp_entropy_ramp: int = 3000
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)
