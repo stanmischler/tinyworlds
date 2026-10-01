@@ -176,6 +176,13 @@ class LatentActionsConfig:
 	decoder_residual: bool = False
 	entropy_loss_weight: float = 0.0
 	entropy_sample_weight: float = 0.1
+	# encoder pooling ('mean' | 'attention'), extra reconstruction weight on pixels that change between frames,
+	# continuous (Gaussian) actions with the KL held at action_kl_capacity nats instead of FSQ codes
+	encoder_pooling: str = "mean"
+	recon_change_weight: float = 0.0
+	continuous_actions: bool = False
+	action_kl_capacity: float = 2.0794
+	action_kl_weight: float = 1.0
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)

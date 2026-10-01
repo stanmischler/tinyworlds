@@ -252,6 +252,11 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, i
         'decoder_residual': cfg.get('decoder_residual', False),
         'entropy_loss_weight': cfg.get('entropy_loss_weight', 0.0),
         'entropy_sample_weight': cfg.get('entropy_sample_weight', 0.1),
+        'encoder_pooling': cfg.get('encoder_pooling', 'mean'),
+        'recon_change_weight': cfg.get('recon_change_weight', 0.0),
+        'continuous_actions': cfg.get('continuous_actions', False),
+        'action_kl_capacity': cfg.get('action_kl_capacity', 2.0794),
+        'action_kl_weight': cfg.get('action_kl_weight', 1.0),
     }
     if model is None:
         model = LatentActionModel(**kwargs)

@@ -64,6 +64,11 @@ def main():
         decoder_residual=args.decoder_residual,
         entropy_loss_weight=args.entropy_loss_weight,
         entropy_sample_weight=args.entropy_sample_weight,
+        encoder_pooling=args.encoder_pooling,
+        recon_change_weight=args.recon_change_weight,
+        continuous_actions=args.continuous_actions,
+        action_kl_capacity=args.action_kl_capacity,
+        action_kl_weight=args.action_kl_weight,
     ).to(args.device)
     if args.checkpoint:
         model, _ = load_latent_actions_from_checkpoint(
@@ -156,7 +161,7 @@ def main():
         if i % args.log_interval == 0:
             if args.use_wandb:
                 with torch.no_grad():
-                    actions = unwrap_model(model).encoder(x)
+                    actions = unwrap_model(model).pre_quant(x)  # continuous actions: codes = sign pattern of the mean
                     actions_quantized = unwrap_model(model).quantizer(actions)
                     idx = unwrap_model(model).quantizer.get_indices_from_latents(actions_quantized)
                     codebook_usage = idx.unique().numel() / unwrap_model(model).quantizer.codebook_size
@@ -174,6 +179,7 @@ def main():
                     "latent_actions/decoder_variance": pred_frames_var,
                     "latent_actions/code_entropy": code_entropy,
                     "latent_actions/saturated_fraction": saturated,
+                    **({"latent_actions/action_kl": unwrap_model(model).action_kl(x).item()} if args.continuous_actions else {}),
                 }, step=i)
                 log_action_distribution(idx, i, args.n_actions)
 

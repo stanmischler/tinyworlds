@@ -13,6 +13,9 @@ sequence), starting every `sample_stride` frames inside each test block. Every t
                 copying frame 0, with the true and the shuffled action
   - spread:     mean per-pixel std (in [0, 1]) of the decoded last frame across all n_actions codes for the last
                 transition; ~0 means every action decodes to the same frame
+  - continuous: for a LAM with continuous actions the 'codes' are the k-means clusters (n_actions, seeded) of the
+                mean action over the evaluated windows, the per-code decodes use the cluster centres, the actions fed to
+                the decoder are the means themselves (no quantization), and the bit columns describe the sign of the mean
   - motion:     global shift (dx, dy) between consecutive frames by phase correlation, binned by sign into 9 classes
                 (|shift| <= 1 px counts as 0); normalized mutual information NMI(code, motion class) in [0, 1]
 
@@ -83,6 +86,21 @@ def nmi(table):
     return mi / math.sqrt(hx * hy) if hx > 0 and hy > 0 else 0.0
 
 
+def kmeans(z, k, iters=50, seed=0):
+    # z: [N, A] -> centres [k, A] (Lloyd, k-means++ init, seeded)
+    g = torch.Generator().manual_seed(seed)
+    zc = z.cpu().float()
+    centres = [zc[torch.randint(len(zc), (1,), generator=g)].squeeze(0)]
+    for _ in range(1, k):
+        d = torch.cdist(zc, torch.stack(centres)).min(1).values.pow(2)
+        centres.append(zc[torch.multinomial(d / d.sum(), 1, generator=g)].squeeze(0))
+    c = torch.stack(centres)
+    for _ in range(iters):
+        a = torch.cdist(zc, c).argmin(1)
+        c = torch.stack([zc[a == j].mean(0) if (a == j).any() else c[j] for j in range(k)])
+    return c.to(z.device)
+
+
 def decode(lam, x, actions, masked):
     # x: [B, T, C, H, W], actions: [B, T-1, A] -> predicted frames 1..T-1 [B, T-1, C, H, W]
     # the decoder masks frames 1.. only when in train mode (no other layer of the LAM depends on the mode);
@@ -107,7 +125,7 @@ def evaluate(label, ckpt, args, windows, frames_dset, device):
     lam.eval()
     q = lam.quantizer
     n_actions, A = q.codebook_size, lam.action_dim
-    all_codes = q.get_latents_from_indices(torch.arange(n_actions, device=device))  # [n_actions, A]
+    continuous = getattr(lam, 'continuous_actions', False)
 
     codes, bits, absz, sat, motion = [], [], [], [], []
     acc = {f'{r}_{k}': [] for r in ('masked', 'full') for k in ('l1_true', 'l1_shuf', 'psnr_true', 'psnr_shuf')}
@@ -120,18 +138,24 @@ def evaluate(label, ckpt, args, windows, frames_dset, device):
     with torch.no_grad():
         # pass 1: quantized actions of every window, so the shuffled actions come from anywhere in the split
         # (neighbouring windows of a block have near-identical actions)
-        zq_all = torch.cat([q(lam.encoder(to_model_range(load_window_batch(
-            frames_dset, windows[i:i + args.batch_size], args.seq_len - 1, args.frame_skip), device)))
+        zq_all = torch.cat([lam.encode(to_model_range(load_window_batch(
+            frames_dset, windows[i:i + args.batch_size], args.seq_len - 1, args.frame_skip), device))
             for i in range(0, len(windows), args.batch_size)])  # [N, T-1, A]
+        if continuous:
+            all_codes = kmeans(zq_all.reshape(-1, A), n_actions)  # [n_actions, A] cluster centres act as the codes
+            to_idx = lambda zq: torch.cdist(zq.reshape(-1, A).float(), all_codes).argmin(1).reshape(zq.shape[:-1])
+        else:
+            all_codes = q.get_latents_from_indices(torch.arange(n_actions, device=device))  # [n_actions, A]
+            to_idx = q.get_indices_from_latents
         perm = torch.randperm(len(windows), generator=torch.Generator().manual_seed(0)).to(device)  # [N]
 
         for i in range(0, len(windows), args.batch_size):
             batch = windows[i:i + args.batch_size]
             x = to_model_range(load_window_batch(frames_dset, batch, args.seq_len - 1, args.frame_skip), device)  # [B, T, C, H, W]
             B, T = x.shape[:2]
-            z = lam.encoder(x)  # [B, T-1, A]
-            zq = q(z)  # [B, T-1, A]
-            idx = q.get_indices_from_latents(zq)  # [B, T-1]
+            z = lam.pre_quant(x)  # [B, T-1, A]
+            zq = z if continuous else q(z)  # [B, T-1, A]
+            idx = to_idx(zq)  # [B, T-1]
             codes.append(idx.flatten().cpu())
             bits.append((z > 0).reshape(-1, A).float().cpu())
             absz.append(z.abs().reshape(-1, A).cpu())
@@ -179,7 +203,7 @@ def evaluate(label, ckpt, args, windows, frames_dset, device):
     np.add.at(table, (codes, motion), 1)
     H = entropy_nats(counts)
     res = {
-        'label': label, 'checkpoint': ckpt, 'n_actions': n_actions, 'windows': len(windows), 'transitions': int(len(codes)),
+        'label': label, 'checkpoint': ckpt, 'continuous': continuous, 'n_actions': n_actions, 'windows': len(windows), 'transitions': int(len(codes)),
         'entropy_nats': H, 'max_entropy_nats': math.log(n_actions), 'perplexity': math.exp(H),
         'codes_used_1pct': int((counts / counts.sum() >= 0.01).sum()), 'code_freq': (counts / counts.sum()).tolist(),
         'bit_p1': bits.mean(0).tolist(), 'bit_abs_z': absz.mean(0).tolist(), 'bit_saturated': sat.mean(0).tolist(),
