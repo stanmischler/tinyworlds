@@ -77,7 +77,7 @@ def download(pattern: str = "zelda_frames.h5"):
     secrets=SECRETS,
     timeout=24 * 60 * 60,  # Modal's per-call maximum
 )
-def train(dataset: str = "ZELDA", overrides: list[str] | None = None, training_config: str = "configs/training.yaml"):
+def train(dataset: str = "ZELDA", overrides: list[str] | None = None, training_config: str = "configs/training.yaml", run_name: str = ""):
     """Run the three-stage pipeline (video tokenizer -> latent actions -> dynamics)."""
     import subprocess
 
@@ -123,6 +123,7 @@ def train(dataset: str = "ZELDA", overrides: list[str] | None = None, training_c
             ["python", "scripts/full_train.py", "--config", cfg_path],
             cwd=REPO_DIR,
             check=True,
+            env={**os.environ, "NG_RUN_NAME": run_name},  # empty -> timestamped results/<run dir>
         )
     finally:
         stop.set()
@@ -135,12 +136,13 @@ def main(
     no_wandb: bool = False,
     overrides: str = "",
     training_config: str = "configs/training.yaml",
+    run_name: str = "",
 ):
-    """modal run scripts/modal_train.py --dataset ZELDA --training-config configs/training.yaml --overrides "k=v,k=v" """
+    """modal run scripts/modal_train.py --dataset ZELDA --training-config configs/training.yaml --overrides "k=v,k=v" [--run-name <name>]"""
     extra = [o for o in overrides.split(",") if o]
     if no_wandb:
         extra.append("use_wandb=false")
     # spawn (not .remote) so this local process returns immediately: with `--detach` the app then
     # runs on its own, and a laptop going to sleep or losing wifi cannot take the training down.
-    call = train.spawn(dataset=dataset, overrides=extra, training_config=training_config)
+    call = train.spawn(dataset=dataset, overrides=extra, training_config=training_config, run_name=run_name)
     print(f"training started (function call {call.object_id}); follow it with:  modal app logs tinyworlds")
