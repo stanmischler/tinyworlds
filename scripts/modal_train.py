@@ -130,6 +130,31 @@ def train(dataset: str = "ZELDA", overrides: list[str] | None = None, training_c
         results_volume.commit()  # keep whatever checkpoints exist, even if a stage fails
 
 
+@app.function(gpu="L4", cpu=4, memory=16384, volumes=VOLUMES, timeout=60 * 60)
+def eval_lam(arms: str):
+    """Score LAM checkpoints on the held-out Zelda judge set + eval_lam diagnostic, on a GPU (keeps the laptop free).
+
+    arms: "<name>=<checkpoint dir relative to the results volume>,<name>=...". Outputs go to the results volume under
+    evals/<name>/ (lam_judge score.json + code_<k>.png, eval_lam lam_diag_<name>.{json,png}); fetch them with
+    `modal volume get tinyworlds-results evals/<name> eval_results/lam_judge/`.
+        modal run scripts/modal_train.py::eval_lam --arms "i1_warp=lamloop_i1_warp/latent_actions/checkpoints/latent_actions_step_6000"
+    """
+    import shutil
+    import subprocess
+
+    for spec in [a for a in arms.split(",") if a]:
+        name, ckpt = spec.split("=", 1)
+        ckpt = f"{REPO_DIR}/results/{ckpt}"
+        out = f"{REPO_DIR}/results/evals/{name}"
+        os.makedirs(out, exist_ok=True)
+        subprocess.run(["python", "scripts/eval/lam_judge.py", "score", "--device", "cuda", "--lam", f"{name}={ckpt}"], cwd=REPO_DIR, check=True)
+        shutil.copytree(f"{REPO_DIR}/eval_results/lam_judge/{name}", out, dirs_exist_ok=True)
+        subprocess.run(["python", "scripts/eval/eval_lam.py", "--device", "cuda", "--lam", f"{name}={ckpt}",
+                        "--test-h5", "data/zelda_test_frames.h5", "--out-dir", out], cwd=REPO_DIR, check=True)
+        results_volume.commit()
+        print(f"EVAL DONE {name} -> evals/{name}")
+
+
 @app.local_entrypoint()
 def main(
     dataset: str = "ZELDA",
