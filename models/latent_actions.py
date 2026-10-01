@@ -12,8 +12,12 @@ NUM_LATENT_ACTIONS_BINS = 2
 
 class LatentActionsEncoder(nn.Module):
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8, 
-                 hidden_dim=256, num_blocks=4, action_dim=3, pooling='mean', out_dim=None):
+                 hidden_dim=256, num_blocks=4, action_dim=3, pooling='mean', out_dim=None, input_mode='frames'):
         super().__init__()
+        # input_mode: 'frames' = the raw frames (original); 'diff' = only the differences x_{t+1} - x_t, so the action of
+        #   transition t is read from diff t alone (pooled over its own patches) and cannot carry frame appearance
+        assert input_mode in ('frames', 'diff'), input_mode
+        self.input_mode = input_mode
         # pooling: 'mean' = mean over patches, then concat(frame t, frame t+1) (original);
         #   'attention' = per patch concat(frame t, frame t+1), then a learned softmax over patches, so the action can
         #   come from the few patches that changed (a small sprite) instead of being averaged away
@@ -22,14 +26,15 @@ class LatentActionsEncoder(nn.Module):
         self.pooling = pooling
         self.patch_embed = PatchEmbedding(frame_size, patch_size, embed_dim)
         self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, causal=True)
+        feat_dim = embed_dim if input_mode == 'diff' else embed_dim * 2
         if pooling == 'attention':
-            self.pool_score = nn.Sequential(nn.LayerNorm(embed_dim * 2), nn.Linear(embed_dim * 2, 1))
+            self.pool_score = nn.Sequential(nn.LayerNorm(feat_dim), nn.Linear(feat_dim, 1))
 
         # embeddings to discrete latent bottleneck actions
         out_dim = out_dim or action_dim
         self.action_head = nn.Sequential(
-            nn.LayerNorm(embed_dim * 2),
-            nn.Linear(embed_dim * 2, 4 * out_dim),
+            nn.LayerNorm(feat_dim),
+            nn.Linear(feat_dim, 4 * out_dim),
             nn.GELU(),
             nn.Linear(4 * out_dim, out_dim)
         )
@@ -37,6 +42,16 @@ class LatentActionsEncoder(nn.Module):
     def forward(self, frames):
         # frames: [B, T, C, H, W]
         batch_size, seq_len, C, H, W = frames.shape
+
+        if self.input_mode == 'diff':
+            diffs = frames[:, 1:] - frames[:, :-1]  # [B, T-1, C, H, W] in [-2, 2]
+            transformed = self.transformer(self.patch_embed(diffs))  # [B, T-1, P, E]
+            if self.pooling == 'attention':
+                weights = self.pool_score(transformed).softmax(dim=2)  # [B, T-1, P, 1]
+                combined = (weights * transformed).sum(dim=2)  # [B, T-1, E]
+            else:
+                combined = transformed.mean(dim=2)  # [B, T-1, E]
+            return self.action_head(combined)  # [B, T-1, A] (or [B, T-1, 2A])
 
         embeddings = self.patch_embed(frames)  # [B, T, P, E]
         transformed = self.transformer(embeddings)
@@ -55,8 +70,17 @@ class LatentActionsEncoder(nn.Module):
 
 class LatentActionsDecoder(nn.Module):
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8,
-                 hidden_dim=256, num_blocks=4, conditioning_dim=3, keep_rate=0.0, residual=False):
+                 hidden_dim=256, num_blocks=4, conditioning_dim=3, keep_rate=0.0, residual=False, change_hint=False):
         super().__init__()
+        # change_hint: also give the decoder where frame t -> t+1 changes most (the patch with the largest mean |diff|):
+        #   its (y, x) centre in [-1, 1] and a has-change flag are appended to the action for FiLM, and a learned marker is
+        #   added to that patch's token, so the decoder knows where the moving object is and the action only says how.
+        #   The hint is read from frame t+1, so it is extra (not bottlenecked) information about the target.
+        self.change_hint = bool(change_hint)
+        if self.change_hint:
+            conditioning_dim = conditioning_dim + 3
+            self.hint_token = nn.Parameter(torch.zeros(1, 1, 1, embed_dim))
+            nn.init.normal_(self.hint_token, std=0.02)
         # keep_rate: fraction of patches of frames 1..T-2 left visible in training (frame 0 always is).
         #   0.0 = original (decoder sees frame 0 only), 1.0 = Genie (decoder sees every past frame)
         # residual: predict frame t+1 as the most recent visible frame + a correction instead of from scratch,
@@ -82,10 +106,26 @@ class LatentActionsDecoder(nn.Module):
         self.num_patches = (frame_size[0] // patch_size) * (frame_size[1] // patch_size)
         self.mask_token = nn.Parameter(torch.zeros(1, 1, 1, embed_dim))
 
+    def change_location(self, frames, thr=0.02):
+        # frames: [B, T, C, H, W] -> patch index of the largest change per transition [B, T-1],
+        #   FiLM hint [B, T-1, 3] = (y, x) of that patch centre in [-1, 1] and 1 if anything changed (else all 0)
+        S = self.patch_size
+        change = (frames[:, 1:] - frames[:, :-1]).abs().mean(dim=2)  # [B, T-1, H, W]
+        per_patch = reduce(change, 'b t (h p1) (w p2) -> b t (h w)', 'mean', p1=S, p2=S)  # [B, T-1, P]
+        peak, idx = per_patch.max(dim=-1)  # [B, T-1] each
+        Wp = self.frame_size[1] // S
+        Hp = self.frame_size[0] // S
+        y = ((idx // Wp).float() + 0.5) / Hp * 2 - 1  # [B, T-1]
+        x = ((idx % Wp).float() + 0.5) / Wp * 2 - 1  # [B, T-1]
+        valid = (peak > thr).float()  # [B, T-1]
+        hint = torch.stack([y * valid, x * valid, valid], dim=-1)  # [B, T-1, 3]
+        return idx, hint
+
     def forward(self, frames, actions, training=True):
         # frames: [B, T, C, H, W]
         # actions: [B, T - 1, A]
         B, T, C, H, W = frames.shape
+        frames_full = frames  # [B, T, C, H, W]
         frames = frames[:, :-1] # [B, T-1, C, H, W]
         video_embeddings = self.patch_embed(frames)  # [B, T-1, P, E]
         _, _, P, E = video_embeddings.shape
@@ -100,6 +140,12 @@ class LatentActionsDecoder(nn.Module):
                 keep, video_embeddings,
                 self.mask_token.to(video_embeddings.dtype).expand_as(video_embeddings)
             )
+
+        if self.change_hint:
+            idx, hint = self.change_location(frames_full)  # [B, T-1], [B, T-1, 3]
+            marker = F.one_hot(idx, P).to(video_embeddings.dtype)[..., None] * hint[..., 2:, None].to(video_embeddings.dtype)  # [B, T-1, P, 1]
+            video_embeddings = video_embeddings + marker * self.hint_token.to(video_embeddings.dtype)
+            actions = torch.cat([actions, hint.to(actions.dtype)], dim=-1)  # [B, T-1, A+3]
 
         transformed = self.transformer(video_embeddings, conditioning=actions)  # [B, T-1, P, E]
         patches = self.frame_head(transformed)  # [B, T-1, P, 3 * S * S]
@@ -125,7 +171,8 @@ class LatentActionModel(nn.Module):
                  num_heads=8, hidden_dim=256, num_blocks=4,
                  decoder_keep_rate=0.0, decoder_residual=False, entropy_loss_weight=0.0, entropy_sample_weight=0.1,
                  encoder_pooling='mean', recon_change_weight=0.0, continuous_actions=False,
-                 action_kl_capacity=math.log(8), action_kl_weight=1.0, action_fixed_noise=False):
+                 action_kl_capacity=math.log(8), action_kl_weight=1.0, action_fixed_noise=False,
+                 encoder_input='frames', decoder_change_hint=False):
         super().__init__()
         assert math.log(n_actions, NUM_LATENT_ACTIONS_BINS).is_integer(), f"n_actions must be a power of {NUM_LATENT_ACTIONS_BINS}"
         self.action_dim=int(math.log(n_actions, NUM_LATENT_ACTIONS_BINS))
@@ -141,11 +188,11 @@ class LatentActionModel(nn.Module):
         # recon_change_weight: pixels that change between frame t and t+1 weigh 1 + this in the reconstruction loss
         self.recon_change_weight = float(recon_change_weight)
         self.encoder = LatentActionsEncoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, action_dim=self.action_dim,
-                                            pooling=encoder_pooling,
+                                            pooling=encoder_pooling, input_mode=encoder_input,
                                             out_dim=2 * self.action_dim if self.continuous_actions and not self.action_fixed_noise else None)
         self.quantizer = FiniteScalarQuantizer(latent_dim=self.action_dim, num_bins=NUM_LATENT_ACTIONS_BINS)
         self.decoder = LatentActionsDecoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, conditioning_dim=self.action_dim,
-                                            keep_rate=decoder_keep_rate, residual=decoder_residual)
+                                            keep_rate=decoder_keep_rate, residual=decoder_residual, change_hint=decoder_change_hint)
         self.var_target = 0.01
         self.var_lambda = 100.0
         # code-usage loss (0.0 = original: variance penalty only). Replaces the variance penalty when on.

@@ -258,6 +258,8 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, i
         'action_kl_capacity': cfg.get('action_kl_capacity', 2.0794),
         'action_kl_weight': cfg.get('action_kl_weight', 1.0),
         'action_fixed_noise': cfg.get('action_fixed_noise', False),
+        'encoder_input': cfg.get('encoder_input', 'frames'),
+        'decoder_change_hint': cfg.get('decoder_change_hint', False),
     }
     if model is None:
         model = LatentActionModel(**kwargs)
