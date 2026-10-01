@@ -1,0 +1,19 @@
+# lam_v5 variant B: decoder sees every past frame and predicts a correction + code-usage loss: the main bet
+# Same budget for every variant: 3k steps (collapse shows by 30% of training), batch 256, lr 3e-4, n_actions 8.
+batch_size_per_gpu: 256
+gradient_accumulation_steps: 1
+n_updates: 3001       # +1 so the last checkpoint is step 3000
+learning_rate: 0.0003
+log_interval: 500     # checkpoint + reconstruction PNG every 500 steps
+
+embed_dim: 128
+num_heads: 8
+hidden_dim: 256
+num_blocks: 4
+
+decoder_keep_rate: 1.0
+decoder_residual: true
+entropy_loss_weight: 0.1
+entropy_sample_weight: 0.1
+
+checkpoint: null
