@@ -9,7 +9,7 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from torchvision.utils import make_grid
-from datasets.datasets import PongDataset, SonicDataset, PolePositionDataset, PicoDoomDataset, ZeldaDataset
+from datasets.datasets import PongDataset, SonicDataset, PolePositionDataset, PicoDoomDataset, ZeldaDataset, PushTDataset
 
 DEFAULT_NUM_WORKERS = 2
 DEFAULT_PREFETCH_FACTOR = 2
@@ -144,6 +144,25 @@ def load_zelda_train(num_frames=4, fps=15, preload_ratio=1):
     )
 
 
+PUSHT_TRAIN_H5 = '/data/pusht_frames.h5'
+
+
+def load_pusht(num_frames=4, fps=None, preload_ratio=1):
+    """DINO-WM Push-T train split (scripts/convert_pusht.py), with ground-truth actions; fps is fixed by the .h5
+    (every 5th env step). Val is the same object (as every other game here); the held-out eval is eval_pusht.py."""
+    train = PushTDataset(os.getcwd() + PUSHT_TRAIN_H5, num_frames=num_frames, preload_ratio=preload_ratio)
+    return train, train
+
+
+def dataset_action_dim(dataset):
+    """Ground-truth action size of a dataset (None for the action-less video games)."""
+    if dataset == 'PUSHT':
+        import h5py
+        with h5py.File(os.getcwd() + PUSHT_TRAIN_H5, 'r') as f:
+            return int(f['actions'].shape[1])
+    return None
+
+
 def data_loaders(train_data, val_data, batch_size, distributed=False, rank=0, world_size=1,
                  num_workers=None, pin_memory=None, generator=None):
     # num_workers / pin_memory: None keeps the module defaults (2 workers, no pinning)
@@ -203,6 +222,8 @@ def load_data_and_data_loaders(dataset, batch_size, num_frames=1, distributed=Fa
         training_data, validation_data = load_zelda(num_frames=num_frames, fps=fps, preload_ratio=preload_ratio)
     elif dataset == 'ZELDA_TRAIN':
         training_data, validation_data = load_zelda_train(num_frames=num_frames, fps=fps, preload_ratio=preload_ratio)
+    elif dataset == 'PUSHT':
+        training_data, validation_data = load_pusht(num_frames=num_frames, preload_ratio=preload_ratio)
     else:
         raise ValueError('Invalid dataset')
 
@@ -211,7 +232,10 @@ def load_data_and_data_loaders(dataset, batch_size, num_frames=1, distributed=Fa
         distributed=distributed, rank=rank, world_size=world_size,
         num_workers=num_workers, pin_memory=pin_memory, generator=generator,
     )
-    x_train_var = np.var(training_data.data)
+    # np.var materialises a float64 copy: subsample to ~10k frames past 100k (Push-T's 23 GB would need ~180 GB);
+    # exact (unchanged) for the smaller games
+    data = training_data.data
+    x_train_var = np.var(data if len(data) <= 100_000 else data[::len(data) // 10_000])
 
     return training_data, validation_data, training_loader, validation_loader, x_train_var
 

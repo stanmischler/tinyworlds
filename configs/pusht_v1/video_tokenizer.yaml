@@ -1,0 +1,14 @@
+# pusht_v1 tokenizer: the zelda_v3 tokenizer unchanged (256/512/8 blocks, batch 64, lr 2e-4: 4e-4 collapsed the FSQ
+# codebook on Zelda). 30k steps with a checkpoint every 1000; eval_pusht.py reports its reconstruction ceiling.
+batch_size_per_gpu: 64
+gradient_accumulation_steps: 1
+n_updates: 30000
+learning_rate: 0.0002
+log_interval: 1000
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 8
+
+checkpoint:
