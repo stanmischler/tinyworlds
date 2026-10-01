@@ -7,6 +7,7 @@ One-time setup (from the repo root):
 
 Then:
     modal run scripts/modal_train.py::download --pattern "zelda_frames.h5"
+    modal run scripts/modal_train.py::convert_pusht           # Push-T: download from OSF + convert in the volume
     modal run --detach scripts/modal_train.py --dataset ZELDA   # returns immediately; --detach keeps the app alive
     modal app logs tinyworlds                                   # follow training; `modal app stop tinyworlds` cancels
 
@@ -69,10 +70,43 @@ def download(pattern: str = "zelda_frames.h5"):
     data_volume.commit()
 
 
+@app.function(volumes=VOLUMES, cpu=16, memory=32768, timeout=4 * 60 * 60)
+def convert_pusht():
+    """Download DINO-WM's pusht_noise into the data volume and convert it (scripts/convert_pusht.py).
+    Leaves the raw dataset at data/pusht_noise/ (NanoWM's eval reads it) next to pusht_frames.h5 / pusht_val_frames.h5."""
+    import subprocess
+
+    subprocess.run(
+        ["python", "scripts/convert_pusht.py", "--raw-dir", "data/pusht_noise", "--out-dir", "data", "--workers", "16"],
+        cwd=REPO_DIR,
+        check=True,
+    )
+    data_volume.commit()
+
+
+@app.function(gpu=GPU, volumes=VOLUMES, memory=16384, timeout=2 * 60 * 60)
+def eval_pusht(run_dir: str, extra_args: str = ""):
+    """Run scripts/eval/eval_pusht.py on a run in the results volume (run_dir relative to results/), e.g.
+    modal run scripts/modal_train.py::eval_pusht --run-dir 2026_10_01_17_00_00 --extra-args "--nanowm-npz results/nanowm_pusht_rescore/predictions_f16.npz"
+    Writes results/eval_results/<name>.{json,png} in the volume."""
+    import shlex
+    import subprocess
+
+    subprocess.run(
+        ["python", "scripts/eval/eval_pusht.py", "--run-dir", f"results/{run_dir}", "--out-dir", "results/eval_results",
+         "--batch-size", "64", *shlex.split(extra_args)],
+        cwd=REPO_DIR,
+        check=True,
+    )
+    results_volume.commit()
+
+
 @app.function(
     gpu=GPU,
     cpu=8,  # reserve cores for the dataloader workers (configs may set num_workers up to 8)
-    memory=16384,  # MiB; preload_ratio 1.0 on zelda_train (65k x 128x128x3) is ~3.2 GB per dataset object, x2 (train + val)
+    # MiB; preload_ratio 1.0 on zelda_train (65k x 128x128x3) is ~3.2 GB per dataset object, x2 (train + val).
+    # Push-T's 467k x 128x128x3 train set is ~23 GB in RAM: launch with TINYWORLDS_MEMORY_MB=65536
+    memory=int(os.environ.get("TINYWORLDS_MEMORY_MB", 16384)),
     volumes=VOLUMES,
     secrets=SECRETS,
     timeout=24 * 60 * 60,  # Modal's per-call maximum

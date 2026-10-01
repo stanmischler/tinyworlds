@@ -10,8 +10,14 @@ class DynamicsModel(nn.Module):
     def __init__(self, frame_size=(128, 128), patch_size=4, embed_dim=128, num_heads=8,
                  hidden_dim=128, num_blocks=4, num_bins=4, n_actions=8, conditioning_dim=3, latent_dim=5,
                  use_moe=False, num_experts=4, top_k_experts=2, moe_aux_loss_coeff=0.01,
-                 full_last_frame_mask_prob=0.0, action_dropout_prob=0.0):
+                 full_last_frame_mask_prob=0.0, action_dropout_prob=0.0, mask_mode="maskgit"):
         super().__init__()
+        # "maskgit": the masking below (MaskGIT over all frames, or the inference-style last-frame mask).
+        # "random_target": per sample a target frame k in [1, T-1]; frames < k clean, frame k masked at a ratio in
+        # [0.5, 1), loss on frame k only (later frames cannot reach k through the causal attention). Trains every
+        # step of an autoregressive rollout from a single context frame equally; full_last_frame_mask_prob is unused.
+        assert mask_mode in ("maskgit", "random_target"), mask_mode
+        self.mask_mode = mask_mode
         # probability that a training batch uses the inference-style mask (clean context, last frame fully masked)
         # instead of MaskGIT's random 50-100% masking over all frames. 0.0 = original behaviour.
         self.full_last_frame_mask_prob = float(full_last_frame_mask_prob)
@@ -67,6 +73,11 @@ class DynamicsModel(nn.Module):
             last_frame_mask = torch.zeros(B, T, P, dtype=torch.bool, device=dev)  # [B, T, P]
             last_frame_mask[:, -1] = True
             mask_positions = torch.where(use_full_last, last_frame_mask, maskgit_mask)  # [B, T, P]
+            if self.mask_mode == "random_target":
+                target_t = torch.randint(1, T, (B,), device=dev)  # [B] frame to predict
+                target_ratio = 0.5 + 0.5 * torch.rand(B, 1, device=dev)  # [B, 1]
+                mask_positions = torch.zeros(B, T, P, dtype=torch.bool, device=dev)  # [B, T, P]
+                mask_positions[torch.arange(B, device=dev), target_t] = torch.rand(B, P, device=dev) < target_ratio
 
             if conditioning is not None and self.null_action is not None:
                 # per-sample action dropout: a dropped sample's whole action sequence becomes the learned null action

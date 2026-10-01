@@ -52,7 +52,11 @@ def main():
 
     # need to get above checkpoints and pass in to dynamics
     video_tokenizer_checkpoint = find_latest_checkpoint(".", "video_tokenizer")
-    latent_actions_checkpoint = find_latest_checkpoint(".", "latent_actions")
+    try:
+        latent_actions_checkpoint = find_latest_checkpoint(".", "latent_actions")
+    except Exception:
+        # none anywhere: fine for dynamics with action_source=gt (ground-truth actions, no LAM stage)
+        latent_actions_checkpoint = None
 
     if train_config.run_dynamics:
         dyn_cmd = launcher + [
@@ -60,8 +64,9 @@ def main():
             "--config", train_config.dynamics_config,
             "--training_config", training_cfg_path,
             f"video_tokenizer_path={video_tokenizer_checkpoint}",
-            f"latent_actions_path={latent_actions_checkpoint}",
         ]
+        if latent_actions_checkpoint is not None:
+            dyn_cmd.append(f"latent_actions_path={latent_actions_checkpoint}")
         if not run_command(dyn_cmd, "Dynamics Model Training"):
             return
 

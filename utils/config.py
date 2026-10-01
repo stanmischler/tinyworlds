@@ -223,6 +223,11 @@ class DynamicsConfig:
 	# Action dropout: prob. that a sample's actions are replaced by a learned null action (0.0 = always LAM actions,
 	# 1.0 = unconditioned model). Stage-yaml only: a value in training.yaml would override every arm of an ablation.
 	action_dropout_prob: float = 0.0
+	# Where the dynamics model's actions come from: "lam" = latent action model (Genie, action-less video),
+	# "gt" = the dataset's ground-truth actions (Push-T); gt needs no LAM checkpoint and sets conditioning_dim from the data
+	action_source: str = "lam"
+	# Dynamics training mask: "maskgit" (default, see full_last_frame_mask_prob) or "random_target" (models/dynamics.py)
+	mask_mode: str = "maskgit"
 	# Seed for init, masking and batch order (None = unseeded, as before)
 	seed: Optional[int] = None
 	# Optimizer
