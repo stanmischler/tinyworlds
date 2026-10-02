@@ -196,6 +196,10 @@ class LatentActionsConfig:
 	decoder_warp_wta: bool = False
 	wta_sinkhorn_eps: float = 0.05
 	wta_encoder_weight: float = 1.0
+	# warp_local: window radius (px) moved by the flipped kernel where the camera is still (0 = off)
+	decoder_warp_local: int = 0
+	decoder_warp_local_mask: bool = False   # move only changed pixels inside the window
+	wta_balance: float = 1.0   # Sinkhorn column-normalisation exponent (1 = equal partition)
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)

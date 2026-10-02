@@ -71,7 +71,7 @@ class LatentActionsEncoder(nn.Module):
 class LatentActionsDecoder(nn.Module):
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8,
                  hidden_dim=256, num_blocks=4, conditioning_dim=3, keep_rate=0.0, residual=False, hint='none',
-                 warp='none', warp_radius=12, warp_init_std=0.0):
+                 warp='none', warp_radius=12, warp_init_std=0.0, warp_local=0, warp_local_mask=False):
         super().__init__()
         # warp: an action-conditioned global warp of frame t is the base of the prediction (CDNA, Finn et al. 2016:
         #   the action predicts transformation kernels applied to the previous frame). The action alone (not the hint,
@@ -92,6 +92,15 @@ class LatentActionsDecoder(nn.Module):
                 self.warp_head[2].bias.zero_()
                 self.warp_head[2].bias[self.warp_radius] = 3.0
                 self.warp_head[2].bias[K + self.warp_radius] = 3.0
+        # warp_local: window radius in px (0 = off, original). When the camera does not move between t and t+1 (phase
+        #   correlation |shift| <= 1 px: Link walks on a still screen, stands, or a fade/text plays) the base is frame t with
+        #   only a window around the largest change moved, by the code's kernel FLIPPED: the content scrolls by -v when the
+        #   camera follows a walk by v, the player sprite moves by +v on a still screen, so one code = one walking direction
+        #   in both cases. Needs warp != 'none'. Like hint, it reads frame t+1 (camera moved or not + where the change is),
+        #   never the direction, which only the code gives.
+        self.warp_local = int(warp_local)
+        self.warp_local_mask = bool(warp_local_mask)  # see local_window
+        assert not self.warp_local or self.warp != 'none', 'warp_local needs a warp decoder'
         # hint: also tell the decoder where the player is in each transition t -> t+1 (one patch per transition):
         #   its (y, x) centre in [-1, 1] and a has-change flag are appended to the action for FiLM, and a learned marker is
         #   added to that patch's token, so the action only has to say how the player moves, not where it is.
@@ -191,14 +200,63 @@ class LatentActionsDecoder(nn.Module):
         hint = torch.stack([y * valid, x * valid, valid], dim=-1)  # [B, T-1, 3]
         return idx, hint
 
+    @torch.compiler.disable
+    @torch.no_grad()
+    def local_window(self, frames, thr=0.1, min_px=12):
+        # frames: [B, T, C, H, W] -> (local [B, T-1] bool, move weight [B, T-1, 1, H, W], window [B, T-1, 1, H, W]) for warp_local
+        #   local = camera still (phase correlation |shift| <= 1 px, or the shift does not explain frame t+1) AND >= min_px pixels inside the window changed by > thr;
+        #   elsewhere the global warp is used (a scroll, or nothing changed: then the identity code wins clearly, as before)
+        #   window = flat-topped disc of radius warp_local px at the peak of the blurred change (mild centre prior);
+        #   move weight = window (warp_local_mask False) or window x dilated change mask (True: unchanged pixels stay frame t,
+        #   so a textured background inside the window is not dragged along with the sprite)
+        B, T, C, H, W = frames.shape
+        a = rearrange(frames[:, :-1], 'b t c h w -> (b t) c h w').float().mean(1)  # [N, H, W]
+        b = rearrange(frames[:, 1:], 'b t c h w -> (b t) c h w').float().mean(1)  # [N, H, W]
+        R = torch.fft.fft2(b) * torch.fft.fft2(a).conj()  # [N, H, W]
+        r = torch.fft.ifft2(R / R.abs().clamp_min(1e-8)).real.flatten(1).argmax(1)  # [N]
+        dy, dx = r // W, r % W
+        dy = torch.where(dy > H // 2, dy - H, dy)
+        dx = torch.where(dx > W // 2, dx - W, dx)
+        diff = (b - a).abs()  # [N, H, W]
+        # a scroll only if the global shift explains frame t+1 much better than a copy does (inside a 12 px margin): a sprite
+        #   walking on a smooth, still screen can win the phase correlation, but shifting the whole frame then does not help
+        n = torch.arange(a.shape[0], device=a.device)[:, None, None]
+        src_y = (torch.arange(H, device=a.device)[None, :, None] - dy[:, None, None]) % H  # [N, H, 1]
+        src_x = (torch.arange(W, device=a.device)[None, None, :] - dx[:, None, None]) % W  # [N, 1, W]
+        e_shift = (b - a[n, src_y, src_x]).abs()[:, 12:-12, 12:-12].mean(dim=(1, 2))  # [N]
+        e_copy = diff[:, 12:-12, 12:-12].mean(dim=(1, 2))  # [N]
+        still = ((dy.abs() + dx.abs()) <= 1) | (e_shift > 0.5 * e_copy)  # [N]
+        m = F.avg_pool2d(diff[:, None], 9, 1, 4, count_include_pad=False)[:, 0]  # [N, H, W]
+        yy = torch.arange(H, device=a.device).float()[:, None]  # [H, 1]
+        xx = torch.arange(W, device=a.device).float()[None, :]  # [1, W]
+        m = m * torch.exp(-(((yy - H / 2) / (0.35 * H)) ** 2 + ((xx - W / 2) / (0.35 * W)) ** 2) / 2) + 1e-6
+        idx = m.flatten(1).argmax(1)  # [N]
+        cy, cx = (idx // W).float()[:, None, None], (idx % W).float()[:, None, None]  # [N, 1, 1]
+        d2 = ((yy[None] - cy) ** 2 + (xx[None] - cx) ** 2) / self.warp_local ** 2  # [N, H, W]
+        g = torch.exp(-0.5 * d2 ** 2)  # flat-topped window: ~1 within 0.7 radius, 0.6 at the radius
+        changed = (diff > thr).float()  # [N, H, W]
+        local = still & ((changed * (g > 0.5)).sum(dim=(1, 2)) >= min_px)  # [N]
+        w = g * F.max_pool2d(changed[:, None], 7, 1, 3)[:, 0] if self.warp_local_mask else g  # [N, H, W]
+        to5 = lambda t: rearrange(t, '(b t) h w -> b t 1 h w', b=B)
+        return local.reshape(B, T - 1), to5(w), to5(g)
+
+    def local_base(self, frames_t, warped, flipped, local):
+        # frames_t, warped (global warp), flipped (flipped-kernel warp): [B, T-1, C, H, W]; local = local_window output
+        #   -> base [B, T-1, C, H, W]: the global warp, except frame t with the window moved where local
+        is_local, w, _ = local
+        moved = frames_t.float() + w * (flipped - frames_t.float())  # [B, T-1, C, H, W]
+        return torch.where(is_local[:, :, None, None, None], moved, warped)
+
     @torch.compiler.disable  # inductor stalled >8 min at step 0 on the grouped conv with dynamic shapes (H100, 2026-10-02)
-    def warp_frames(self, frames, actions):
+    def warp_frames(self, frames, actions, flip=False):
         # frames: [B, T-1, C, H, W] (frames t), actions: [B, T-1, A] -> frames t warped by the action's kernel [B, T-1, C, H, W]
         B, T1, C, H, W = frames.shape
         r, K = self.warp_radius, 2 * self.warp_radius + 1
         with torch.autocast(device_type=frames.device.type, enabled=False):  # fp32: the taps must sum to 1 exactly
             logits = self.warp_head(actions.float())  # [B, T-1, 2K]
             ky, kx = logits[..., :K].softmax(-1), logits[..., K:].softmax(-1)  # [B, T-1, K] each
+            if flip:  # the opposite shift (warp_local: the sprite moves by -(content scroll))
+                ky, kx = ky.flip(-1), kx.flip(-1)
             # mean entropy of the 1D kernels (nats), for the optional sharpness penalty (decoder_warp_entropy_weight)
             self.last_warp_entropy = -(ky * ky.clamp_min(1e-8).log()).sum(-1).mean() - (kx * kx.clamp_min(1e-8).log()).sum(-1).mean()
             x = rearrange(frames.float(), 'b t c h w -> 1 (b t c) h w')  # [1, B*(T-1)*C, H, W]
@@ -208,14 +266,18 @@ class LatentActionsDecoder(nn.Module):
             x = F.conv2d(F.pad(x, (r, r, 0, 0), mode='replicate'), wx, groups=x.shape[1])
         return rearrange(x, '1 (b t c) h w -> b t c h w', b=B, t=T1)  # [B, T-1, C, H, W]
 
-    def forward(self, frames, actions, training=True):
+    def forward(self, frames, actions, training=True, local=None):
         # frames: [B, T, C, H, W]
         # actions: [B, T - 1, A]
+        # local: precomputed local_window(frames) (warp_local only; None = compute it)
         B, T, C, H, W = frames.shape
         frames_full = frames  # [B, T, C, H, W]
         frames = frames[:, :-1] # [B, T-1, C, H, W]
         if self.warp != 'none':
             warped = self.warp_frames(frames, actions)  # [B, T-1, C, H, W]
+            if self.warp_local:
+                local = local if local is not None else self.local_window(frames_full)
+                warped = self.local_base(frames, warped, self.warp_frames(frames, actions, flip=True), local)
             if self.warp == 'global_only':
                 return warped.to(frames.dtype)
         video_embeddings = self.patch_embed(frames)  # [B, T-1, P, E]
@@ -267,7 +329,7 @@ class LatentActionModel(nn.Module):
                  action_kl_capacity=math.log(8), action_kl_weight=1.0, action_fixed_noise=False,
                  encoder_input='frames', decoder_hint='none', decoder_warp='none', decoder_warp_radius=12,
                  decoder_warp_entropy_weight=0.0, decoder_warp_entropy_ramp=3000,
-                 decoder_warp_wta=False, wta_sinkhorn_eps=0.05, wta_encoder_weight=1.0):
+                 decoder_warp_wta=False, wta_sinkhorn_eps=0.05, wta_encoder_weight=1.0, decoder_warp_local=0, decoder_warp_local_mask=False, wta_balance=1.0):
         super().__init__()
         assert math.log(n_actions, NUM_LATENT_ACTIONS_BINS).is_integer(), f"n_actions must be a power of {NUM_LATENT_ACTIONS_BINS}"
         self.action_dim=int(math.log(n_actions, NUM_LATENT_ACTIONS_BINS))
@@ -289,7 +351,7 @@ class LatentActionModel(nn.Module):
         self.decoder = LatentActionsDecoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, conditioning_dim=self.action_dim,
                                             keep_rate=decoder_keep_rate, residual=decoder_residual, hint=decoder_hint,
                                             warp=decoder_warp, warp_radius=decoder_warp_radius,
-                                            warp_init_std=0.3 if decoder_warp_wta else 0.0)
+                                            warp_init_std=0.3 if decoder_warp_wta else 0.0, warp_local=decoder_warp_local, warp_local_mask=decoder_warp_local_mask)
         # decoder_warp_wta: winner-takes-all (multiple-choice / best-of-K) training of the warp: frame t is warped under EVERY
         #   code, the per-transition losses are turned into a balanced soft assignment (Sinkhorn-Knopp, SwAV-style equal
         #   partition, so no code dies and none takes everything), each code's kernel is trained only on its assigned
@@ -301,6 +363,7 @@ class LatentActionModel(nn.Module):
         assert not self.warp_wta or (decoder_warp != 'none' and not self.continuous_actions), 'wta needs a warp decoder and FSQ codes'
         self.wta_sinkhorn_eps = float(wta_sinkhorn_eps)
         self.wta_encoder_weight = float(wta_encoder_weight)
+        self.wta_balance = float(wta_balance)  # exponent of the Sinkhorn column normalisation (1 = equal partition, original)
         # decoder_warp_entropy_weight: penalty on the entropy of the warp kernels so each code commits to ONE shift
         #   (a bimodal kernel = two shifted copies serves up- and down-scrolls with one code); ramped in linearly over
         #   decoder_warp_entropy_ramp training steps so the kernels first move away from the identity. 0 = off
@@ -362,7 +425,9 @@ class LatentActionModel(nn.Module):
         N, K = q.shape
         q = q / q.sum()
         for _ in range(iters):
-            q = q / q.sum(dim=0, keepdim=True).clamp_min(1e-30) / K  # each code gets 1/K of the mass
+            # each code gets 1/K of the mass (wta_balance 1); < 1 only partly evens out the columns, so a frequent class
+            #   (STILL, walking R) need not be split over several codes
+            q = q / (q.sum(dim=0, keepdim=True).clamp_min(1e-30) * K) ** self.wta_balance
             q = q / q.sum(dim=1, keepdim=True).clamp_min(1e-30) / N  # each transition is assigned once
         return q * N
 
@@ -376,8 +441,23 @@ class LatentActionModel(nn.Module):
             repeat(frames_t, 'b t c h w -> (k b) t c h w', k=K),
             repeat(codes, 'k a -> (k b) t a', b=B, t=T-1),
         )  # [K*B, T-1, C, H, W] fp32
+        local = None
+        if self.decoder.warp_local:
+            # camera still: frame t with a window around the change moved by the flipped kernel, scored inside the window
+            local = self.decoder.local_window(frames)  # [B, T-1] bool, [B, T-1, 1, H, W]
+            flipped = self.decoder.warp_frames(
+                repeat(frames_t, 'b t c h w -> (k b) t c h w', k=K),
+                repeat(codes, 'k a -> (k b) t a', b=B, t=T-1), flip=True,
+            )  # [K*B, T-1, C, H, W]
+            local_k = (repeat(local[0], 'b t -> (k b) t', k=K),) + tuple(repeat(l, 'b t o h w -> (k b) t o h w', k=K) for l in local[1:])
+            warped = self.decoder.local_base(repeat(frames_t, 'b t c h w -> (k b) t c h w', k=K), warped, flipped, local_k)
         warped = rearrange(warped, '(k b) t c h w -> b t k c h w', k=K)  # [B, T-1, K, C, H, W]
-        losses = F.smooth_l1_loss(warped, target.float()[:, :, None].expand_as(warped), reduction='none').mean(dim=(3, 4, 5))  # [B, T-1, K]
+        per_px = F.smooth_l1_loss(warped, target.float()[:, :, None].expand_as(warped), reduction='none').mean(dim=3)  # [B, T-1, K, H, W]
+        losses = per_px.mean(dim=(3, 4))  # [B, T-1, K]
+        if local is not None:
+            is_local, _, g = local
+            in_window = (per_px * g).sum(dim=(3, 4)) / g.sum(dim=(2, 3, 4))[..., None].clamp_min(1e-6)  # [B, T-1, K]
+            losses = torch.where(is_local[:, :, None], in_window, losses)
         q = self.sinkhorn(losses.detach().reshape(-1, K))  # [N, K]
         warp_loss = (q * losses.reshape(-1, K)).sum(-1).mean()
         winner = q.argmax(-1).reshape(B, T-1)  # [B, T-1]
@@ -388,7 +468,7 @@ class LatentActionModel(nn.Module):
             pred_frames = warped.gather(2, winner[:, :, None, None, None, None].expand(B, T-1, 1, C, H, W))[:, :, 0]  # [B, T-1, C, H, W]
             recon_loss = warp_loss.new_zeros(())
         else:
-            pred_frames = self.decoder(frames, codes[winner], training=True)  # [B, T-1, C, H, W] winner warp + correction
+            pred_frames = self.decoder(frames, codes[winner], training=True, local=local)  # [B, T-1, C, H, W] winner warp + correction
             recon_loss = F.smooth_l1_loss(pred_frames, target)
         total_loss = warp_loss + recon_loss + self.wta_encoder_weight * ce
         if self.entropy_loss_weight > 0:

@@ -79,6 +79,9 @@ def main():
         decoder_warp_wta=args.decoder_warp_wta,
         wta_sinkhorn_eps=args.wta_sinkhorn_eps,
         wta_encoder_weight=args.wta_encoder_weight,
+        decoder_warp_local=args.decoder_warp_local,
+        decoder_warp_local_mask=args.decoder_warp_local_mask,
+        wta_balance=args.wta_balance,
     ).to(args.device)
     if args.checkpoint:
         model, _ = load_latent_actions_from_checkpoint(

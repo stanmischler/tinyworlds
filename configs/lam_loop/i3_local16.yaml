@@ -1,0 +1,35 @@
+# lam_loop i3_local16: i2_wta16 + decoder_warp_local: where the camera is still, the code's FLIPPED kernel moves a window around the change
+# Hypothesis (ledger iteration 3): walks on a still screen then get the same direction code as scrolls (beyond the camera ceiling).
+# Launch with --overrides n_actions=16,compile=false
+batch_size_per_gpu: 64
+gradient_accumulation_steps: 1
+n_updates: 6001       # +1 so the last checkpoint is step 6000
+learning_rate: 0.0003
+log_interval: 500     # checkpoint + reconstruction PNG every 500 steps
+
+embed_dim: 128
+num_heads: 8
+hidden_dim: 256
+num_blocks: 4
+
+decoder_keep_rate: 0.5
+decoder_residual: true
+entropy_loss_weight: 0.0   # balance comes from the Sinkhorn assignment
+entropy_sample_weight: 0.0
+encoder_pooling: attention
+recon_change_weight: 0.0
+continuous_actions: false
+action_kl_capacity: 2.0794   # ln 8 nats: the information of 8 discrete codes (continuous_actions only)
+action_kl_weight: 1.0
+
+checkpoint: null
+encoder_input: frames
+decoder_hint: none
+decoder_warp: global
+decoder_warp_radius: 12   # px at 128px; walking scroll is 7-11 px per transition
+decoder_warp_wta: true
+wta_sinkhorn_eps: 0.05    # on losses normalized by their batch mean
+wta_encoder_weight: 1.0
+n_actions: 16              # NOTE: training.yaml sets n_actions 8 and beats this file: launch with --overrides n_actions=16
+decoder_warp_local: 12        # window radius px (Link ~16 px, walks ~9 px per transition)
+decoder_warp_local_mask: true # move only the (dilated) changed pixels inside the window
