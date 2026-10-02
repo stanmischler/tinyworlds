@@ -202,6 +202,7 @@ class LatentActionsConfig:
 	wta_balance: float = 1.0   # Sinkhorn column-normalisation exponent (1 = equal partition)
 	decoder_warp_local_gate: float = 0.0   # strict blurred-translation gate for the local mode (0 = off)
 	decoder_warp_local_blur: int = 1   # blur (px) for the gate and the local WTA cost (1 = none)
+	wta_kernel_repulsion: float = 0.0   # weight of the summed pairwise warp-kernel overlap (0 = off)
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)

@@ -350,7 +350,7 @@ class LatentActionModel(nn.Module):
                  encoder_input='frames', decoder_hint='none', decoder_warp='none', decoder_warp_radius=12,
                  decoder_warp_entropy_weight=0.0, decoder_warp_entropy_ramp=3000,
                  decoder_warp_wta=False, wta_sinkhorn_eps=0.05, wta_encoder_weight=1.0, decoder_warp_local=0, decoder_warp_local_mask=False, wta_balance=1.0,
-                 decoder_warp_local_gate=0.0, decoder_warp_local_blur=1):
+                 decoder_warp_local_gate=0.0, decoder_warp_local_blur=1, wta_kernel_repulsion=0.0):
         super().__init__()
         assert math.log(n_actions, NUM_LATENT_ACTIONS_BINS).is_integer(), f"n_actions must be a power of {NUM_LATENT_ACTIONS_BINS}"
         self.action_dim=int(math.log(n_actions, NUM_LATENT_ACTIONS_BINS))
@@ -386,6 +386,12 @@ class LatentActionModel(nn.Module):
         self.wta_sinkhorn_eps = float(wta_sinkhorn_eps)
         self.wta_encoder_weight = float(wta_encoder_weight)
         self.wta_balance = float(wta_balance)  # exponent of the Sinkhorn column normalisation (1 = equal partition, original)
+        # wta_kernel_repulsion: weight of sum over code pairs of the overlap of their 2D warp kernels (ky_i . ky_j)(kx_i . kx_j)
+        #   (1 = same sharp shift, 0 = disjoint). Two codes with the same shift tie in the WTA cost, so the split between them
+        #   is arbitrary and the encoder learns it from appearance (duplicate U / L / R codes); repelled, the spare kernel
+        #   moves to another shift (a diagonal, another speed) or dies. 0 = off (original)
+        self.wta_kernel_repulsion = float(wta_kernel_repulsion)
+        self.last_kernel_overlap = torch.zeros(())
         # decoder_warp_entropy_weight: penalty on the entropy of the warp kernels so each code commits to ONE shift
         #   (a bimodal kernel = two shifted copies serves up- and down-scrolls with one code); ramped in linearly over
         #   decoder_warp_entropy_ramp training steps so the kernels first move away from the identity. 0 = off
@@ -453,6 +459,17 @@ class LatentActionModel(nn.Module):
             q = q / q.sum(dim=1, keepdim=True).clamp_min(1e-30) / N  # each transition is assigned once
         return q * N
 
+    def kernel_overlap(self, codes):
+        # codes: [K, A] -> sum over code pairs i < j of the overlap of their separable warp kernels (scalar)
+        Kt = 2 * self.decoder.warp_radius + 1
+        with torch.autocast(device_type=codes.device.type, enabled=False):
+            logits = self.decoder.warp_head(codes.float())  # [K, 2 Kt]
+            ky, kx = logits[:, :Kt].softmax(-1), logits[:, Kt:].softmax(-1)  # [K, Kt] each
+            o = (ky @ ky.T) * (kx @ kx.T)  # [K, K]
+            pair = o.triu(diagonal=1).sum()
+        self.last_kernel_overlap = pair.detach()
+        return pair
+
     def forward_wta(self, frames, action_latents):
         # frames: [B, T, C, H, W], action_latents: [B, T-1, A] pre-quant encoder outputs -> (total loss, pred frames [B, T-1, C, H, W])
         B, T, C, H, W = frames.shape
@@ -495,6 +512,9 @@ class LatentActionModel(nn.Module):
             pred_frames = self.decoder(frames, codes[winner], training=True, local=local)  # [B, T-1, C, H, W] winner warp + correction
             recon_loss = F.smooth_l1_loss(pred_frames, target)
         total_loss = warp_loss + recon_loss + self.wta_encoder_weight * ce
+        overlap = self.kernel_overlap(codes)  # also logged when off
+        if self.wta_kernel_repulsion > 0:
+            total_loss = total_loss + self.wta_kernel_repulsion * overlap
         if self.entropy_loss_weight > 0:
             _, h_batch = self.code_entropies(action_latents)
             total_loss = total_loss - self.entropy_loss_weight * h_batch

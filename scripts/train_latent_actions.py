@@ -84,6 +84,7 @@ def main():
         wta_balance=args.wta_balance,
         decoder_warp_local_gate=args.decoder_warp_local_gate,
         decoder_warp_local_blur=args.decoder_warp_local_blur,
+        wta_kernel_repulsion=args.wta_kernel_repulsion,
     ).to(args.device)
     if args.checkpoint:
         model, _ = load_latent_actions_from_checkpoint(
@@ -205,7 +206,7 @@ def main():
                 visualize_reconstruction(x, pred_frames, save_path)
             
                 print('\n Step', i, 'Loss:', loss.item(), 'Codebook Usage:', codebook_usage, 'Encoder Variance:', z_e_var, 'Decoder Variance:', pred_frames_var, 'Code Entropy:', code_entropy, 'Saturated:', saturated,
-                      *(('WTA encoder agreement:', unwrap_model(model).last_wta_agree.item()) if unwrap_model(model).warp_wta else ()))
+                      *(('WTA encoder agreement:', unwrap_model(model).last_wta_agree.item(), 'Kernel overlap:', unwrap_model(model).last_kernel_overlap.item()) if unwrap_model(model).warp_wta else ()))
 
     # finish wandb
     if args.use_wandb and is_main:
