@@ -437,27 +437,24 @@ class LatentActionModel(nn.Module):
         K = self.code_latents.shape[0]
         frames_t, target = frames[:, :-1], frames[:, 1:]  # [B, T-1, C, H, W] each
         codes = self.code_latents.to(frames.device)  # [K, A]
-        warped = self.decoder.warp_frames(
-            repeat(frames_t, 'b t c h w -> (k b) t c h w', k=K),
-            repeat(codes, 'k a -> (k b) t a', b=B, t=T-1),
-        )  # [K*B, T-1, C, H, W] fp32
+        rep_t = repeat(frames_t, 'b t c h w -> (k b) t c h w', k=K)  # [K*B, T-1, C, H, W]
+        rep_codes = repeat(codes, 'k a -> (k b) t a', b=B, t=T-1)  # [K*B, T-1, A]
+        warped = rearrange(self.decoder.warp_frames(rep_t, rep_codes), '(k b) t c h w -> b t k c h w', k=K)  # [B, T-1, K, C, H, W] fp32
+        tgt = target.float()[:, :, None]  # [B, T-1, 1, C, H, W]
+        losses = F.smooth_l1_loss(warped, tgt.expand_as(warped), reduction='none').mean(dim=(3, 4, 5))  # [B, T-1, K]
         local = None
         if self.decoder.warp_local:
             # camera still: frame t with a window around the change moved by the flipped kernel, scored inside the window
-            local = self.decoder.local_window(frames)  # [B, T-1] bool, [B, T-1, 1, H, W]
-            flipped = self.decoder.warp_frames(
-                repeat(frames_t, 'b t c h w -> (k b) t c h w', k=K),
-                repeat(codes, 'k a -> (k b) t a', b=B, t=T-1), flip=True,
-            )  # [K*B, T-1, C, H, W]
-            local_k = (repeat(local[0], 'b t -> (k b) t', k=K),) + tuple(repeat(l, 'b t o h w -> (k b) t o h w', k=K) for l in local[1:])
-            warped = self.decoder.local_base(repeat(frames_t, 'b t c h w -> (k b) t c h w', k=K), warped, flipped, local_k)
-        warped = rearrange(warped, '(k b) t c h w -> b t k c h w', k=K)  # [B, T-1, K, C, H, W]
-        per_px = F.smooth_l1_loss(warped, target.float()[:, :, None].expand_as(warped), reduction='none').mean(dim=3)  # [B, T-1, K, H, W]
-        losses = per_px.mean(dim=(3, 4))  # [B, T-1, K]
-        if local is not None:
-            is_local, _, g = local
+            local = self.decoder.local_window(frames)  # [B, T-1] bool, [B, T-1, 1, H, W] x 2
+            is_local, w, g = local
+            flipped = rearrange(self.decoder.warp_frames(rep_t, rep_codes, flip=True), '(k b) t c h w -> b t k c h w', k=K)
+            ft = frames_t.float()[:, :, None]  # [B, T-1, 1, C, H, W]
+            moved = ft + w[:, :, None] * (flipped - ft)  # [B, T-1, K, C, H, W]
+            per_px = F.smooth_l1_loss(moved, tgt.expand_as(moved), reduction='none').mean(dim=3)  # [B, T-1, K, H, W]
             in_window = (per_px * g).sum(dim=(3, 4)) / g.sum(dim=(2, 3, 4))[..., None].clamp_min(1e-6)  # [B, T-1, K]
             losses = torch.where(is_local[:, :, None], in_window, losses)
+            if self.decoder.warp == 'global_only':
+                warped = torch.where(is_local[:, :, None, None, None, None], moved, warped)
         q = self.sinkhorn(losses.detach().reshape(-1, K))  # [N, K]
         warp_loss = (q * losses.reshape(-1, K)).sum(-1).mean()
         winner = q.argmax(-1).reshape(B, T-1)  # [B, T-1]
