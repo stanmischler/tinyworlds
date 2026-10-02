@@ -30,7 +30,7 @@ def states():
 t0 = time.time()
 while True:
     st = states()
-    alive = [a for a, s in st.items() if s not in ("stopped", "not listed")]
+    alive = [a for a, s in st.items() if s != "stopped"]  # "not listed" = typo'd id or not registered yet: keep waiting
     if not alive or time.time() - t0 > args.max_wait:
         break
     time.sleep(args.poll)
@@ -40,4 +40,6 @@ for app, run in apps.items():
                         capture_output=True, text=True)
     ckpts = sorted((l.strip() for l in ls.stdout.splitlines() if "_step_" in l), key=lambda s: int(s.rsplit("_", 1)[1]))
     print(f"{app} {run}: {st[app]}; checkpoints: {ckpts[-3:] if ckpts else 'none'}")
+if any(s == "not listed" for s in st.values()):
+    print("WARNING: some app ids are not in `modal app list` (check the id)")
 print("DONE" if not alive else f"WAITING ({len(alive)} alive after {int(time.time() - t0)} s)")
