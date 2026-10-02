@@ -82,6 +82,8 @@ def main():
         decoder_warp_local=args.decoder_warp_local,
         decoder_warp_local_mask=args.decoder_warp_local_mask,
         wta_balance=args.wta_balance,
+        decoder_warp_local_gate=args.decoder_warp_local_gate,
+        decoder_warp_local_blur=args.decoder_warp_local_blur,
     ).to(args.device)
     if args.checkpoint:
         model, _ = load_latent_actions_from_checkpoint(

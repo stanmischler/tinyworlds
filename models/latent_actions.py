@@ -71,7 +71,8 @@ class LatentActionsEncoder(nn.Module):
 class LatentActionsDecoder(nn.Module):
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8,
                  hidden_dim=256, num_blocks=4, conditioning_dim=3, keep_rate=0.0, residual=False, hint='none',
-                 warp='none', warp_radius=12, warp_init_std=0.0, warp_local=0, warp_local_mask=False):
+                 warp='none', warp_radius=12, warp_init_std=0.0, warp_local=0, warp_local_mask=False,
+                 warp_local_gate=0.0, warp_local_blur=1):
         super().__init__()
         # warp: an action-conditioned global warp of frame t is the base of the prediction (CDNA, Finn et al. 2016:
         #   the action predicts transformation kernels applied to the previous frame). The action alone (not the hint,
@@ -100,6 +101,13 @@ class LatentActionsDecoder(nn.Module):
         #   never the direction, which only the code gives.
         self.warp_local = int(warp_local)
         self.warp_local_mask = bool(warp_local_mask)  # see local_window
+        # warp_local_gate: > 0 = the local mode fires only where a sprite-sized blob translates: on warp_local_blur-blurred
+        #   grayscale frames, the best of a fixed set of 3-10 px shifts of the window must explain the window better than
+        #   gate x the copy error (judge set: fires on 16/200, 2/40 STILL; the i3 rule fired on 88% of STILL).
+        #   0 = the i3 rule (any >= 12 changed px on a still screen). warp_local_blur > 1 also scores the local WTA cost on
+        #   blurred frames (Link's walk animation changes the sprite, a rigid shift only fits it at sprite scale)
+        self.warp_local_gate = float(warp_local_gate)
+        self.warp_local_blur = int(warp_local_blur)
         assert not self.warp_local or self.warp != 'none', 'warp_local needs a warp decoder'
         # hint: also tell the decoder where the player is in each transition t -> t+1 (one patch per transition):
         #   its (y, x) centre in [-1, 1] and a has-change flag are appended to the action for FiLM, and a learned marker is
@@ -236,6 +244,18 @@ class LatentActionsDecoder(nn.Module):
         g = torch.exp(-0.5 * d2 ** 2)  # flat-topped window: ~1 within 0.7 radius, 0.6 at the radius
         changed = (diff > thr).float()  # [N, H, W]
         local = still & ((changed * (g > 0.5)).sum(dim=(1, 2)) >= min_px)  # [N]
+        if self.warp_local_gate > 0:
+            k = self.warp_local_blur
+            blur = lambda t: F.avg_pool2d(t[:, None], k, 1, k // 2, count_include_pad=False)[:, 0] if k > 1 else t
+            ab, bb = blur(a), blur(b)  # [N, H, W]
+            g_sum = g.sum(dim=(1, 2)).clamp_min(1e-6)  # [N]
+            e_copy_w = ((bb - ab).abs() * g).sum(dim=(1, 2)) / g_sum  # [N]
+            best = torch.full_like(e_copy_w, float('inf'))  # [N]
+            for s in range(3, 11):
+                for u, v in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)):
+                    moved = ab + g * (torch.roll(ab, (s * u, s * v), (-2, -1)) - ab)  # [N, H, W]
+                    best = torch.minimum(best, ((moved - bb).abs() * g).sum(dim=(1, 2)) / g_sum)
+            local = local & (best < self.warp_local_gate * e_copy_w.clamp_min(1e-6))  # [N]
         w = g * F.max_pool2d(changed[:, None], 7, 1, 3)[:, 0] if self.warp_local_mask else g  # [N, H, W]
         to5 = lambda t: rearrange(t, '(b t) h w -> b t 1 h w', b=B)
         return local.reshape(B, T - 1), to5(w), to5(g)
@@ -329,7 +349,8 @@ class LatentActionModel(nn.Module):
                  action_kl_capacity=math.log(8), action_kl_weight=1.0, action_fixed_noise=False,
                  encoder_input='frames', decoder_hint='none', decoder_warp='none', decoder_warp_radius=12,
                  decoder_warp_entropy_weight=0.0, decoder_warp_entropy_ramp=3000,
-                 decoder_warp_wta=False, wta_sinkhorn_eps=0.05, wta_encoder_weight=1.0, decoder_warp_local=0, decoder_warp_local_mask=False, wta_balance=1.0):
+                 decoder_warp_wta=False, wta_sinkhorn_eps=0.05, wta_encoder_weight=1.0, decoder_warp_local=0, decoder_warp_local_mask=False, wta_balance=1.0,
+                 decoder_warp_local_gate=0.0, decoder_warp_local_blur=1):
         super().__init__()
         assert math.log(n_actions, NUM_LATENT_ACTIONS_BINS).is_integer(), f"n_actions must be a power of {NUM_LATENT_ACTIONS_BINS}"
         self.action_dim=int(math.log(n_actions, NUM_LATENT_ACTIONS_BINS))
@@ -351,7 +372,8 @@ class LatentActionModel(nn.Module):
         self.decoder = LatentActionsDecoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, conditioning_dim=self.action_dim,
                                             keep_rate=decoder_keep_rate, residual=decoder_residual, hint=decoder_hint,
                                             warp=decoder_warp, warp_radius=decoder_warp_radius,
-                                            warp_init_std=0.3 if decoder_warp_wta else 0.0, warp_local=decoder_warp_local, warp_local_mask=decoder_warp_local_mask)
+                                            warp_init_std=0.3 if decoder_warp_wta else 0.0, warp_local=decoder_warp_local, warp_local_mask=decoder_warp_local_mask,
+                                            warp_local_gate=decoder_warp_local_gate, warp_local_blur=decoder_warp_local_blur)
         # decoder_warp_wta: winner-takes-all (multiple-choice / best-of-K) training of the warp: frame t is warped under EVERY
         #   code, the per-transition losses are turned into a balanced soft assignment (Sinkhorn-Knopp, SwAV-style equal
         #   partition, so no code dies and none takes everything), each code's kernel is trained only on its assigned
@@ -450,7 +472,12 @@ class LatentActionModel(nn.Module):
             flipped = rearrange(self.decoder.warp_frames(rep_t, rep_codes, flip=True), '(k b) t c h w -> b t k c h w', k=K)
             ft = frames_t.float()[:, :, None]  # [B, T-1, 1, C, H, W]
             moved = ft + w[:, :, None] * (flipped - ft)  # [B, T-1, K, C, H, W]
-            per_px = F.smooth_l1_loss(moved, tgt.expand_as(moved), reduction='none').mean(dim=3)  # [B, T-1, K, H, W]
+            if self.decoder.warp_local_blur > 1:  # score at sprite scale (see warp_local_gate)
+                kb = self.decoder.warp_local_blur
+                blur = lambda t: F.avg_pool2d(t.flatten(0, -3), kb, 1, kb // 2, count_include_pad=False).reshape(t.shape)
+                per_px = F.smooth_l1_loss(blur(moved), blur(tgt).expand_as(moved), reduction='none').mean(dim=3)  # [B, T-1, K, H, W]
+            else:
+                per_px = F.smooth_l1_loss(moved, tgt.expand_as(moved), reduction='none').mean(dim=3)  # [B, T-1, K, H, W]
             in_window = (per_px * g).sum(dim=(3, 4)) / g.sum(dim=(2, 3, 4))[..., None].clamp_min(1e-6)  # [B, T-1, K]
             losses = torch.where(is_local[:, :, None], in_window, losses)
             if self.decoder.warp == 'global_only':
