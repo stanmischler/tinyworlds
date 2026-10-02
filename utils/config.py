@@ -257,6 +257,8 @@ class DynamicsConfig:
 	# Action dropout: prob. that a sample's actions are replaced by a learned null action (0.0 = always LAM actions,
 	# 1.0 = unconditioned model). Stage-yaml only: a value in training.yaml would override every arm of an ablation.
 	action_dropout_prob: float = 0.0
+	# Copy prior: learned logit bonus for keeping the previous frame's token at each patch (False = original model)
+	copy_prior: bool = False
 	# Seed for init, masking and batch order (None = unseeded, as before)
 	seed: Optional[int] = None
 	# Optimizer

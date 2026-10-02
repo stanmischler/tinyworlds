@@ -93,6 +93,7 @@ def main():
         moe_aux_loss_coeff=getattr(args, 'moe_aux_loss_coeff', 0.01),
         full_last_frame_mask_prob=getattr(args, 'full_last_frame_mask_prob', 0.0),
         action_dropout_prob=getattr(args, 'action_dropout_prob', 0.0),
+        copy_prior=getattr(args, 'copy_prior', False),
     ).to(args.device)
     if args.checkpoint:
         dynamics_model, _ = load_dynamics_from_checkpoint(

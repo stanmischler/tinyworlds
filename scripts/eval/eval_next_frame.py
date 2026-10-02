@@ -131,10 +131,10 @@ def main():
     p.add_argument('--name', help='output file stem; default <run-dir basename>_<action-mode>')
     args = p.parse_args()
 
-    if args.run_dir:
-        args.video_tokenizer_path = find_latest_checkpoint('.', 'video_tokenizer', run_root_dir=args.run_dir)
-        args.latent_actions_path = find_latest_checkpoint('.', 'latent_actions', run_root_dir=args.run_dir)
-        args.dynamics_path = find_latest_checkpoint('.', 'dynamics', run_root_dir=args.run_dir)
+    if args.run_dir:  # explicit paths win (a dynamics-only run dir holds no tokenizer / LAM)
+        for stage in ('video_tokenizer', 'latent_actions', 'dynamics'):
+            if not getattr(args, f'{stage}_path'):
+                setattr(args, f'{stage}_path', find_latest_checkpoint('.', stage, run_root_dir=args.run_dir))
     for k in ('video_tokenizer_path', 'latent_actions_path', 'dynamics_path'):
         assert getattr(args, k) and os.path.exists(getattr(args, k)), f'{k} missing: {getattr(args, k)}'
     name = args.name or f"{os.path.basename(os.path.normpath(args.run_dir or os.path.dirname(args.dynamics_path)))}_{args.action_mode}"
