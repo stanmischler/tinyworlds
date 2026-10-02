@@ -10,10 +10,38 @@ from models.fsq import FiniteScalarQuantizer
 
 NUM_LATENT_ACTIONS_BINS = 2
 
+def ot_features(ot, Wp):
+    # ot: [B, T-1, 2, P] long, per transition t -> t+1 the unbalanced OT plan between the tokenizer tokens of the two frames
+    #   (scripts/eval/patch_similarity.py ot-plans): [:, :, 0] = destination of token i of frame t (-1 = destroyed),
+    #   [:, :, 1] = 1 if token j of frame t+1 is created (fed by nothing)
+    # -> src [B, T-1, P, 4] at frame t positions: (moved, destroyed, drow / 8, dcol / 8) (rows / cols in token cells),
+    #    created [B, T-1, P, 1] at frame t+1 positions, changed [B, T-1, P, 1]: any token leaving, arriving, destroyed or
+    #    created at that position (where the plan says the frame changes, not where things go)
+    sigma, created = ot[:, :, 0], ot[:, :, 1].float()  # [B, T-1, P] each
+    P = sigma.shape[-1]
+    i = torch.arange(P, device=sigma.device)  # [P]
+    destroyed = sigma < 0  # [B, T-1, P]
+    dst = sigma.clamp_min(0)
+    moved = ~destroyed & (dst != i)
+    dr = torch.where(moved, dst // Wp - i // Wp, 0).float() / 8
+    dc = torch.where(moved, dst % Wp - i % Wp, 0).float() / 8
+    src = torch.stack([moved.float(), destroyed.float(), dr, dc], dim=-1)  # [B, T-1, P, 4]
+    arrived = torch.zeros_like(created).scatter_add_(-1, dst, moved.float()) > 0  # [B, T-1, P] destinations of moves
+    changed = (moved | destroyed | arrived | (created > 0)).float()[..., None]  # [B, T-1, P, 1]
+    return src, created[..., None], changed
+
+
 class LatentActionsEncoder(nn.Module):
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8, 
-                 hidden_dim=256, num_blocks=4, action_dim=3, pooling='mean', out_dim=None, input_mode='frames'):
+                 hidden_dim=256, num_blocks=4, action_dim=3, pooling='mean', out_dim=None, input_mode='frames', use_ot=False):
         super().__init__()
+        # use_ot: add the OT plan to each frame's patch embeddings (ot_features): frame k gets the plan of transition k
+        #   (where its tokens go) and the created tokens of transition k-1 (what is new in it)
+        self.use_ot = bool(use_ot)
+        if self.use_ot:
+            assert input_mode == 'frames', 'the OT plan is given on the frames, not the diffs'
+            self.ot_embed = nn.Linear(5, embed_dim)
+        self.Wp = frame_size[1] // patch_size
         # input_mode: 'frames' = the raw frames (original); 'diff' = only the differences x_{t+1} - x_t, so the action of
         #   transition t is read from diff t alone (pooled over its own patches) and cannot carry frame appearance
         assert input_mode in ('frames', 'diff'), input_mode
@@ -39,8 +67,8 @@ class LatentActionsEncoder(nn.Module):
             nn.Linear(4 * out_dim, out_dim)
         )
 
-    def forward(self, frames):
-        # frames: [B, T, C, H, W]
+    def forward(self, frames, ot=None):
+        # frames: [B, T, C, H, W], ot: [B, T-1, 2, P] (see ot_features; required iff use_ot)
         batch_size, seq_len, C, H, W = frames.shape
 
         if self.input_mode == 'diff':
@@ -54,6 +82,11 @@ class LatentActionsEncoder(nn.Module):
             return self.action_head(combined)  # [B, T-1, A] (or [B, T-1, 2A])
 
         embeddings = self.patch_embed(frames)  # [B, T, P, E]
+        if self.use_ot:
+            src, created, _ = ot_features(ot, self.Wp)  # [B, T-1, P, 4], [B, T-1, P, 1]
+            pad = torch.zeros_like(src[:, :1])  # [B, 1, P, 4]
+            feats = torch.cat([torch.cat([src, pad], 1), torch.cat([pad[..., :1], created], 1)], -1)  # [B, T, P, 5]
+            embeddings = embeddings + self.ot_embed(feats.to(embeddings.dtype))
         transformed = self.transformer(embeddings)
 
         if self.pooling == 'attention':
@@ -72,7 +105,7 @@ class LatentActionsDecoder(nn.Module):
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8,
                  hidden_dim=256, num_blocks=4, conditioning_dim=3, keep_rate=0.0, residual=False, hint='none',
                  warp='none', warp_radius=12, warp_init_std=0.0, warp_local=0, warp_local_mask=False,
-                 warp_local_gate=0.0, warp_local_blur=1):
+                 warp_local_gate=0.0, warp_local_blur=1, ot='none'):
         super().__init__()
         # warp: an action-conditioned global warp of frame t is the base of the prediction (CDNA, Finn et al. 2016:
         #   the action predicts transformation kernels applied to the previous frame). The action alone (not the hint,
@@ -109,6 +142,14 @@ class LatentActionsDecoder(nn.Module):
         self.warp_local_gate = float(warp_local_gate)
         self.warp_local_blur = int(warp_local_blur)
         assert not self.warp_local or self.warp != 'none', 'warp_local needs a warp decoder'
+        # ot: give the decoder the OT plan of transition t -> t+1 on the tokens of frame t (never masked).
+        #   'none' = original; 'plan' = the whole plan (ot_features src + created: where each token goes, what is new),
+        #   which with frame t nearly determines frame t+1, so the action may carry nothing;
+        #   'where' = only the changed-token mask (which positions change, not how), so the action has to say how
+        assert ot in ('none', 'where', 'plan'), ot
+        self.ot = ot
+        if self.ot != 'none':
+            self.ot_embed = nn.Linear(5 if ot == 'plan' else 1, embed_dim)
         # hint: also tell the decoder where the player is in each transition t -> t+1 (one patch per transition):
         #   its (y, x) centre in [-1, 1] and a has-change flag are appended to the action for FiLM, and a learned marker is
         #   added to that patch's token, so the action only has to say how the player moves, not where it is.
@@ -286,10 +327,11 @@ class LatentActionsDecoder(nn.Module):
             x = F.conv2d(F.pad(x, (r, r, 0, 0), mode='replicate'), wx, groups=x.shape[1])
         return rearrange(x, '1 (b t c) h w -> b t c h w', b=B, t=T1)  # [B, T-1, C, H, W]
 
-    def forward(self, frames, actions, training=True, local=None):
+    def forward(self, frames, actions, training=True, local=None, ot=None):
         # frames: [B, T, C, H, W]
         # actions: [B, T - 1, A]
         # local: precomputed local_window(frames) (warp_local only; None = compute it)
+        # ot: [B, T - 1, 2, P] (see ot_features; required iff self.ot != 'none')
         B, T, C, H, W = frames.shape
         frames_full = frames  # [B, T, C, H, W]
         frames = frames[:, :-1] # [B, T-1, C, H, W]
@@ -313,6 +355,11 @@ class LatentActionsDecoder(nn.Module):
                 keep, video_embeddings,
                 self.mask_token.to(video_embeddings.dtype).expand_as(video_embeddings)
             )
+
+        if self.ot != 'none':
+            src, created, changed = ot_features(ot, W // self.patch_size)
+            feats = torch.cat([src, created], -1) if self.ot == 'plan' else changed  # [B, T-1, P, 5 or 1]
+            video_embeddings = video_embeddings + self.ot_embed(feats.to(video_embeddings.dtype))
 
         if self.hint != 'none':
             idx, hint = self.change_location(frames_full)  # [B, T-1], [B, T-1, 3]
@@ -350,7 +397,8 @@ class LatentActionModel(nn.Module):
                  encoder_input='frames', decoder_hint='none', decoder_warp='none', decoder_warp_radius=12,
                  decoder_warp_entropy_weight=0.0, decoder_warp_entropy_ramp=3000,
                  decoder_warp_wta=False, wta_sinkhorn_eps=0.05, wta_encoder_weight=1.0, decoder_warp_local=0, decoder_warp_local_mask=False, wta_balance=1.0,
-                 decoder_warp_local_gate=0.0, decoder_warp_local_blur=1, wta_kernel_repulsion=0.0):
+                 decoder_warp_local_gate=0.0, decoder_warp_local_blur=1, wta_kernel_repulsion=0.0,
+                 ot_encoder=False, ot_decoder='none'):
         super().__init__()
         assert math.log(n_actions, NUM_LATENT_ACTIONS_BINS).is_integer(), f"n_actions must be a power of {NUM_LATENT_ACTIONS_BINS}"
         self.action_dim=int(math.log(n_actions, NUM_LATENT_ACTIONS_BINS))
@@ -366,14 +414,14 @@ class LatentActionModel(nn.Module):
         # recon_change_weight: pixels that change between frame t and t+1 weigh 1 + this in the reconstruction loss
         self.recon_change_weight = float(recon_change_weight)
         self.encoder = LatentActionsEncoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, action_dim=self.action_dim,
-                                            pooling=encoder_pooling, input_mode=encoder_input,
+                                            pooling=encoder_pooling, input_mode=encoder_input, use_ot=ot_encoder,
                                             out_dim=2 * self.action_dim if self.continuous_actions and not self.action_fixed_noise else None)
         self.quantizer = FiniteScalarQuantizer(latent_dim=self.action_dim, num_bins=NUM_LATENT_ACTIONS_BINS)
         self.decoder = LatentActionsDecoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, conditioning_dim=self.action_dim,
                                             keep_rate=decoder_keep_rate, residual=decoder_residual, hint=decoder_hint,
                                             warp=decoder_warp, warp_radius=decoder_warp_radius,
                                             warp_init_std=0.3 if decoder_warp_wta else 0.0, warp_local=decoder_warp_local, warp_local_mask=decoder_warp_local_mask,
-                                            warp_local_gate=decoder_warp_local_gate, warp_local_blur=decoder_warp_local_blur)
+                                            warp_local_gate=decoder_warp_local_gate, warp_local_blur=decoder_warp_local_blur, ot=ot_decoder)
         # decoder_warp_wta: winner-takes-all (multiple-choice / best-of-K) training of the warp: frame t is warped under EVERY
         #   code, the per-transition losses are turned into a balanced soft assignment (Sinkhorn-Knopp, SwAV-style equal
         #   partition, so no code dies and none takes everything), each code's kernel is trained only on its assigned
@@ -398,6 +446,8 @@ class LatentActionModel(nn.Module):
         self.warp_entropy_weight = float(decoder_warp_entropy_weight)
         self.warp_entropy_ramp = max(int(decoder_warp_entropy_ramp), 1)
         self.register_buffer('train_steps', torch.zeros((), dtype=torch.long), persistent=False)
+        # OT-conditioned LAM (STA-35): the calibrated token transport plan of each transition as an input
+        self.uses_ot = bool(ot_encoder) or ot_decoder != 'none'
         self.var_target = 0.01
         self.var_lambda = 100.0
         # code-usage loss (0.0 = original: variance penalty only). Replaces the variance penalty when on.
@@ -433,16 +483,16 @@ class LatentActionModel(nn.Module):
         # mu: [B, T-1, A] -> 0.5 E||mu - batch mean||^2, nats per transition (unit-noise information bound)
         return 0.5 * (mu - mu.mean(dim=(0, 1), keepdim=True)).pow(2).sum(-1).mean()
 
-    def action_kl(self, frames):
+    def action_kl(self, frames, ot=None):
         # frames: [B, T, C, H, W] -> KL of the continuous action posterior (nats per transition), for logging
         if self.action_fixed_noise:
-            return self.spread_kl(self.encoder(frames).float())
-        mu, logvar = self.encoder(frames).float().chunk(2, dim=-1)
+            return self.spread_kl(self.encoder(frames, ot).float())
+        mu, logvar = self.encoder(frames, ot).float().chunk(2, dim=-1)
         return self.gaussian_kl(mu, logvar.clamp(-10, 10))
 
-    def pre_quant(self, frames):
+    def pre_quant(self, frames, ot=None):
         # frames: [B, T, C, H, W] -> pre-quantization action latents [B, T-1, A] (the mean for continuous actions)
-        return self.encoder(frames)[..., :self.action_dim]
+        return self.encoder(frames, ot)[..., :self.action_dim]
 
     @torch.compiler.disable
     @torch.no_grad()
@@ -520,13 +570,14 @@ class LatentActionModel(nn.Module):
             total_loss = total_loss - self.entropy_loss_weight * h_batch
         return total_loss, pred_frames.to(frames.dtype)
 
-    def forward(self, frames):
-        # frames: [B, T, C, H, W]
+    def forward(self, frames, ot=None):
+        # frames: [B, T, C, H, W], ot: [B, T - 1, 2, P] OT plans (only for an OT-conditioned LAM)
         if self.warp_wta:
+            assert ot is None, 'wta + OT not wired'
             return self.forward_wta(frames, self.encoder(frames))
 
         # get (quantized or sampled) action latents
-        action_latents = self.encoder(frames) # [B, T - 1, A] (continuous: [B, T - 1, 2A])
+        action_latents = self.encoder(frames, ot) # [B, T - 1, A] (continuous: [B, T - 1, 2A])
         if self.continuous_actions and self.action_fixed_noise:
             mu = action_latents.float()  # [B, T - 1, A]
             action_latents_quantized = mu + torch.randn_like(mu)  # [B, T - 1, A]
@@ -540,7 +591,7 @@ class LatentActionModel(nn.Module):
             action_latents_quantized = self.quantizer(action_latents) # [B, T - 1, A]
 
         # decode to get predicted frames
-        pred_frames = self.decoder(frames, action_latents_quantized, training=True)  # [B, T - 1, C, H, W]
+        pred_frames = self.decoder(frames, action_latents_quantized, training=True, ot=ot)  # [B, T - 1, C, H, W]
 
         # reconstruction loss
         target_frames = frames[:, 1:]  # All frames except first [B, T - 1, C, H, W]
@@ -573,8 +624,8 @@ class LatentActionModel(nn.Module):
 
         return total_loss, pred_frames
 
-    def encode(self, frames):
-        action_latents = self.pre_quant(frames)  # [B, T, A]
+    def encode(self, frames, ot=None):
+        action_latents = self.pre_quant(frames, ot)  # [B, T, A]
         if self.continuous_actions:
             return action_latents  # the mean, no noise
         action_latents_quantized = self.quantizer(action_latents) # [B, T, A]

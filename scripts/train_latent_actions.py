@@ -51,6 +51,18 @@ def main():
         **data_overrides,
     )
 
+    if args.ot_plans:
+        # OT-conditioned LAM: per-pair plans of the training .h5 (same frame indexing, same frame_skip)
+        import numpy as np
+        # the .npz rows are .h5 frames; the dataset may skip the first load_start_index of them (Zelda: 1000)
+        start = training_data.load_start_index
+        with np.load(args.ot_plans) as z:
+            plans = {'sigma': z['sigma'][start:], 'created': z['created'][start:]}
+            assert int(z['gap']) == training_data.frame_skip, (int(z['gap']), training_data.frame_skip)
+        assert len(plans['sigma']) == len(training_data.data), (len(plans['sigma']), len(training_data.data))
+        training_data.ot_plans = plans
+    assert bool(args.ot_plans) == (args.ot_encoder or args.ot_decoder != 'none'), 'ot_plans needs ot_encoder / ot_decoder and back'
+
     # init model and optional ckpt load
     model = LatentActionModel(
         frame_size=(args.frame_size, args.frame_size),
@@ -85,6 +97,8 @@ def main():
         decoder_warp_local_gate=args.decoder_warp_local_gate,
         decoder_warp_local_blur=args.decoder_warp_local_blur,
         wta_kernel_repulsion=args.wta_kernel_repulsion,
+        ot_encoder=args.ot_encoder,
+        ot_decoder=args.ot_decoder,
     ).to(args.device)
     if args.checkpoint:
         model, _ = load_latent_actions_from_checkpoint(
@@ -142,15 +156,16 @@ def main():
             torch.compiler.cudagraph_mark_step_begin()
         for micro_batch in range(args.gradient_accumulation_steps):
             try:
-                (x, _) = next(train_iter)
+                (x, ot) = next(train_iter)
             except StopIteration:
                 train_iter = iter(training_loader)
-                (x, _) = next(train_iter)
+                (x, ot) = next(train_iter)
 
             x = x.to(args.device, non_blocking=True)
+            ot = ot.to(args.device, non_blocking=True) if args.ot_plans else None  # [B, T-1, 2, P]
 
             with train_ctx:
-                loss, pred_frames = model(x)
+                loss, pred_frames = model(x, ot=ot)
                 loss /= args.gradient_accumulation_steps
                 if isinstance(model, FSDPModule):
                     if (micro_batch + 1) % args.gradient_accumulation_steps == 0:
@@ -177,7 +192,7 @@ def main():
         if i % args.log_interval == 0:
             if args.use_wandb:
                 with torch.no_grad():
-                    actions = unwrap_model(model).pre_quant(x)  # continuous actions: codes = sign pattern of the mean
+                    actions = unwrap_model(model).pre_quant(x, ot)  # continuous actions: codes = sign pattern of the mean
                     actions_quantized = unwrap_model(model).quantizer(actions)
                     idx = unwrap_model(model).quantizer.get_indices_from_latents(actions_quantized)
                     codebook_usage = idx.unique().numel() / unwrap_model(model).quantizer.codebook_size
@@ -195,7 +210,7 @@ def main():
                     "latent_actions/decoder_variance": pred_frames_var,
                     "latent_actions/code_entropy": code_entropy,
                     "latent_actions/saturated_fraction": saturated,
-                    **({"latent_actions/action_kl": unwrap_model(model).action_kl(x).item()} if args.continuous_actions else {}),
+                    **({"latent_actions/action_kl": unwrap_model(model).action_kl(x, ot).item()} if args.continuous_actions else {}),
                 }, step=i)
                 log_action_distribution(idx, i, args.n_actions)
 

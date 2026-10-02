@@ -205,6 +205,11 @@ class LatentActionsConfig:
 	decoder_warp_local_gate: float = 0.0   # strict blurred-translation gate for the local mode (0 = off)
 	decoder_warp_local_blur: int = 1   # blur (px) for the gate and the local WTA cost (1 = none)
 	wta_kernel_repulsion: float = 0.0   # weight of the summed pairwise warp-kernel overlap (0 = off)
+	# OT-conditioned LAM (STA-35): .npz of per-pair token transport plans aligned with the dataset .h5
+	# (scripts/eval/patch_similarity.py ot-plans), fed to the encoder and/or the decoder
+	ot_plans: Optional[str] = None
+	ot_encoder: bool = False
+	ot_decoder: str = "none"     # 'none' | 'where' | 'plan'
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)

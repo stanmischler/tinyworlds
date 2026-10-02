@@ -34,8 +34,10 @@ class VideoHDF5Dataset(Dataset):
         self.frame_skip = max(1, (sequence_stride if sequence_stride is not None else max(1, 60 // fps)))
         self.fraction_of_dataset = float(fraction_of_dataset)
         self.resize_to = resize_to
+        self.load_start_index = 0  # .h5 frame of self.data[0]
 
         if save_path and os.path.exists(save_path):
+            self.load_start_index = load_start_index
             with h5py.File(save_path, 'r') as h5_file:
                 frames_dset = h5_file['frames']
                 total = len(frames_dset)
@@ -118,6 +120,13 @@ class VideoHDF5Dataset(Dataset):
             raise IndexError(f"Index {index} out of bounds for dataset of length {len(self)}")
 
         frame_sequence = self.data[index:index + (self.num_frames * self.frame_skip):self.frame_skip]
+        # ot_plans (set by the OT-conditioned LAM): {'sigma', 'created'} [N, P] aligned with self.data (the .h5 rows from
+        # load_start_index on), plan of (t, t + frame_skip) at row t -> second item [T-1, 2, P] long instead of 0
+        ot_plans = getattr(self, 'ot_plans', None)
+        ot = None
+        if ot_plans is not None:
+            rows = slice(index, index + (self.num_frames - 1) * self.frame_skip, self.frame_skip)
+            ot = torch.from_numpy(np.stack([ot_plans['sigma'][rows], ot_plans['created'][rows]], 1).astype(np.int64))
         if len(frame_sequence) != self.num_frames:
             raise ValueError(f"Expected {self.num_frames} frames, got {len(frame_sequence)} frames")
 
@@ -132,7 +141,7 @@ class VideoHDF5Dataset(Dataset):
         else:
             frame_sequence = torch.from_numpy(frame_sequence).permute(0, 3, 1, 2)
 
-        return frame_sequence, 0
+        return frame_sequence, (0 if ot is None else ot)
 
     def __del__(self):
         if hasattr(self, 'h5_file'):
