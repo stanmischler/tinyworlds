@@ -259,7 +259,20 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, i
         'action_kl_weight': cfg.get('action_kl_weight', 1.0),
         'action_fixed_noise': cfg.get('action_fixed_noise', False),
         'encoder_input': cfg.get('encoder_input', 'frames'),
-        'decoder_change_hint': cfg.get('decoder_change_hint', False),
+        'decoder_hint': cfg.get('decoder_hint', 'none'),
+        'decoder_warp': cfg.get('decoder_warp', 'none'),
+        'decoder_warp_radius': cfg.get('decoder_warp_radius', 12),
+        'decoder_warp_entropy_weight': cfg.get('decoder_warp_entropy_weight', 0.0),
+        'decoder_warp_entropy_ramp': cfg.get('decoder_warp_entropy_ramp', 3000),
+        'decoder_warp_wta': cfg.get('decoder_warp_wta', False),
+        'wta_sinkhorn_eps': cfg.get('wta_sinkhorn_eps', 0.05),
+        'wta_encoder_weight': cfg.get('wta_encoder_weight', 1.0),
+        'decoder_warp_local': cfg.get('decoder_warp_local', 0),
+        'decoder_warp_local_mask': cfg.get('decoder_warp_local_mask', False),
+        'wta_balance': cfg.get('wta_balance', 1.0),
+        'decoder_warp_local_gate': cfg.get('decoder_warp_local_gate', 0.0),
+        'decoder_warp_local_blur': cfg.get('decoder_warp_local_blur', 1),
+        'wta_kernel_repulsion': cfg.get('wta_kernel_repulsion', 0.0),
     }
     if model is None:
         model = LatentActionModel(**kwargs)

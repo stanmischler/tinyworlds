@@ -29,7 +29,7 @@ def main():
         launcher = [sys.executable]
 
     # top-level run root and export child processes can use
-    run_root, run_name = prepare_pipeline_run_root(base_cwd=os.getcwd())
+    run_root, run_name = prepare_pipeline_run_root(run_name=os.environ.get('NG_RUN_NAME') or None, base_cwd=os.getcwd())  # NG_RUN_NAME: fixed results/<name> instead of a timestamp
     os.environ['NG_RUN_ROOT_DIR'] = run_root
 
     if train_config.run_video_tokenizer:

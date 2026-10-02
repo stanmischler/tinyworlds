@@ -111,7 +111,7 @@ def eval_pusht(run_dir: str, extra_args: str = ""):
     secrets=SECRETS,
     timeout=24 * 60 * 60,  # Modal's per-call maximum
 )
-def train(dataset: str = "ZELDA", overrides: list[str] | None = None, training_config: str = "configs/training.yaml"):
+def train(dataset: str = "ZELDA", overrides: list[str] | None = None, training_config: str = "configs/training.yaml", run_name: str = ""):
     """Run the three-stage pipeline (video tokenizer -> latent actions -> dynamics)."""
     import subprocess
 
@@ -157,10 +157,36 @@ def train(dataset: str = "ZELDA", overrides: list[str] | None = None, training_c
             ["python", "scripts/full_train.py", "--config", cfg_path],
             cwd=REPO_DIR,
             check=True,
+            env={**os.environ, "NG_RUN_NAME": run_name},  # empty -> timestamped results/<run dir>
         )
     finally:
         stop.set()
         results_volume.commit()  # keep whatever checkpoints exist, even if a stage fails
+
+
+@app.function(gpu="L4", cpu=4, memory=16384, volumes=VOLUMES, timeout=60 * 60)
+def eval_lam(arms: str):
+    """Score LAM checkpoints on the held-out Zelda judge set + eval_lam diagnostic, on a GPU (keeps the laptop free).
+
+    arms: "<name>=<checkpoint dir relative to the results volume>,<name>=...". Outputs go to the results volume under
+    evals/<name>/ (lam_judge score.json + code_<k>.png, eval_lam lam_diag_<name>.{json,png}); fetch them with
+    `modal volume get tinyworlds-results evals/<name> eval_results/lam_judge/`.
+        modal run scripts/modal_train.py::eval_lam --arms "i1_warp=lamloop_i1_warp/latent_actions/checkpoints/latent_actions_step_6000"
+    """
+    import shutil
+    import subprocess
+
+    for spec in [a for a in arms.split(",") if a]:
+        name, ckpt = spec.split("=", 1)
+        ckpt = f"{REPO_DIR}/results/{ckpt}"
+        out = f"{REPO_DIR}/results/evals/{name}"
+        os.makedirs(out, exist_ok=True)
+        subprocess.run(["python", "scripts/eval/lam_judge.py", "score", "--device", "cuda", "--lam", f"{name}={ckpt}"], cwd=REPO_DIR, check=True)
+        shutil.copytree(f"{REPO_DIR}/eval_results/lam_judge/{name}", out, dirs_exist_ok=True)
+        subprocess.run(["python", "scripts/eval/eval_lam.py", "--device", "cuda", "--lam", f"{name}={ckpt}",
+                        "--test-h5", "data/zelda_test_frames.h5", "--out-dir", out], cwd=REPO_DIR, check=True)
+        results_volume.commit()
+        print(f"EVAL DONE {name} -> evals/{name}")
 
 
 @app.local_entrypoint()
@@ -169,12 +195,13 @@ def main(
     no_wandb: bool = False,
     overrides: str = "",
     training_config: str = "configs/training.yaml",
+    run_name: str = "",
 ):
-    """modal run scripts/modal_train.py --dataset ZELDA --training-config configs/training.yaml --overrides "k=v,k=v" """
+    """modal run scripts/modal_train.py --dataset ZELDA --training-config configs/training.yaml --overrides "k=v,k=v" [--run-name <name>]"""
     extra = [o for o in overrides.split(",") if o]
     if no_wandb:
         extra.append("use_wandb=false")
     # spawn (not .remote) so this local process returns immediately: with `--detach` the app then
     # runs on its own, and a laptop going to sleep or losing wifi cannot take the training down.
-    call = train.spawn(dataset=dataset, overrides=extra, training_config=training_config)
+    call = train.spawn(dataset=dataset, overrides=extra, training_config=training_config, run_name=run_name)
     print(f"training started (function call {call.object_id}); follow it with:  modal app logs tinyworlds")

@@ -184,9 +184,25 @@ class LatentActionsConfig:
 	action_kl_capacity: float = 2.0794
 	action_kl_weight: float = 1.0
 	action_fixed_noise: bool = False
-	# encoder reads only frame differences ('frames' | 'diff'); decoder also gets the location of the largest change
+	# encoder reads only frame differences ('frames' | 'diff'); decoder also gets where the player is (models/latent_actions.py)
 	encoder_input: str = "frames"
-	decoder_change_hint: bool = False
+	decoder_hint: str = "none"   # 'none' | 'max_diff' | 'player'
+	# action-conditioned global warp of frame t as the decoder's base ('none' | 'global' | 'global_only', CDNA-style)
+	decoder_warp: str = "none"
+	decoder_warp_radius: int = 12
+	decoder_warp_entropy_weight: float = 0.0   # warp-kernel sharpness penalty (0 = off), ramped in over the next knob's steps
+	decoder_warp_entropy_ramp: int = 3000
+	# winner-takes-all warp training: decode under every code, Sinkhorn-balanced assignment, encoder predicts it (False = off)
+	decoder_warp_wta: bool = False
+	wta_sinkhorn_eps: float = 0.05
+	wta_encoder_weight: float = 1.0
+	# warp_local: window radius (px) moved by the flipped kernel where the camera is still (0 = off)
+	decoder_warp_local: int = 0
+	decoder_warp_local_mask: bool = False   # move only changed pixels inside the window
+	wta_balance: float = 1.0   # Sinkhorn column-normalisation exponent (1 = equal partition)
+	decoder_warp_local_gate: float = 0.0   # strict blurred-translation gate for the local mode (0 = off)
+	decoder_warp_local_blur: int = 1   # blur (px) for the gate and the local WTA cost (1 = none)
+	wta_kernel_repulsion: float = 0.0   # weight of the summed pairwise warp-kernel overlap (0 = off)
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)

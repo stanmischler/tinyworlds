@@ -71,7 +71,20 @@ def main():
         action_kl_weight=args.action_kl_weight,
         action_fixed_noise=args.action_fixed_noise,
         encoder_input=args.encoder_input,
-        decoder_change_hint=args.decoder_change_hint,
+        decoder_hint=args.decoder_hint,
+        decoder_warp=args.decoder_warp,
+        decoder_warp_radius=args.decoder_warp_radius,
+        decoder_warp_entropy_weight=args.decoder_warp_entropy_weight,
+        decoder_warp_entropy_ramp=args.decoder_warp_entropy_ramp,
+        decoder_warp_wta=args.decoder_warp_wta,
+        wta_sinkhorn_eps=args.wta_sinkhorn_eps,
+        wta_encoder_weight=args.wta_encoder_weight,
+        decoder_warp_local=args.decoder_warp_local,
+        decoder_warp_local_mask=args.decoder_warp_local_mask,
+        wta_balance=args.wta_balance,
+        decoder_warp_local_gate=args.decoder_warp_local_gate,
+        decoder_warp_local_blur=args.decoder_warp_local_blur,
+        wta_kernel_repulsion=args.wta_kernel_repulsion,
     ).to(args.device)
     if args.checkpoint:
         model, _ = load_latent_actions_from_checkpoint(
@@ -192,7 +205,8 @@ def main():
                 save_path = os.path.join(visualizations_dir, f'reconstructions_latent_actions_step_{i}.png')
                 visualize_reconstruction(x, pred_frames, save_path)
             
-                print('\n Step', i, 'Loss:', loss.item(), 'Codebook Usage:', codebook_usage, 'Encoder Variance:', z_e_var, 'Decoder Variance:', pred_frames_var, 'Code Entropy:', code_entropy, 'Saturated:', saturated)
+                print('\n Step', i, 'Loss:', loss.item(), 'Codebook Usage:', codebook_usage, 'Encoder Variance:', z_e_var, 'Decoder Variance:', pred_frames_var, 'Code Entropy:', code_entropy, 'Saturated:', saturated,
+                      *(('WTA encoder agreement:', unwrap_model(model).last_wta_agree.item(), 'Kernel overlap:', unwrap_model(model).last_kernel_overlap.item()) if unwrap_model(model).warp_wta else ()))
 
     # finish wandb
     if args.use_wandb and is_main:
