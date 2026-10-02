@@ -192,6 +192,10 @@ class LatentActionsConfig:
 	decoder_warp_radius: int = 12
 	decoder_warp_entropy_weight: float = 0.0   # warp-kernel sharpness penalty (0 = off), ramped in over the next knob's steps
 	decoder_warp_entropy_ramp: int = 3000
+	# winner-takes-all warp training: decode under every code, Sinkhorn-balanced assignment, encoder predicts it (False = off)
+	decoder_warp_wta: bool = False
+	wta_sinkhorn_eps: float = 0.05
+	wta_encoder_weight: float = 1.0
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)

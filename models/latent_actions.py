@@ -71,7 +71,7 @@ class LatentActionsEncoder(nn.Module):
 class LatentActionsDecoder(nn.Module):
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8,
                  hidden_dim=256, num_blocks=4, conditioning_dim=3, keep_rate=0.0, residual=False, hint='none',
-                 warp='none', warp_radius=12):
+                 warp='none', warp_radius=12, warp_init_std=0.0):
         super().__init__()
         # warp: an action-conditioned global warp of frame t is the base of the prediction (CDNA, Finn et al. 2016:
         #   the action predicts transformation kernels applied to the previous frame). The action alone (not the hint,
@@ -85,7 +85,9 @@ class LatentActionsDecoder(nn.Module):
         if self.warp != 'none':
             K = 2 * self.warp_radius + 1
             self.warp_head = nn.Sequential(nn.Linear(conditioning_dim, 64), nn.GELU(), nn.Linear(64, 2 * K))
-            nn.init.zeros_(self.warp_head[2].weight)
+            # warp_init_std > 0: random last layer so each code starts with a slightly different kernel (winner-takes-all
+            #   training needs the symmetry broken; with zeros every code is the same identity kernel)
+            nn.init.normal_(self.warp_head[2].weight, std=warp_init_std) if warp_init_std > 0 else nn.init.zeros_(self.warp_head[2].weight)
             with torch.no_grad():  # start near identity: the centre tap holds ~45% of each 1D kernel
                 self.warp_head[2].bias.zero_()
                 self.warp_head[2].bias[self.warp_radius] = 3.0
@@ -264,7 +266,8 @@ class LatentActionModel(nn.Module):
                  encoder_pooling='mean', recon_change_weight=0.0, continuous_actions=False,
                  action_kl_capacity=math.log(8), action_kl_weight=1.0, action_fixed_noise=False,
                  encoder_input='frames', decoder_hint='none', decoder_warp='none', decoder_warp_radius=12,
-                 decoder_warp_entropy_weight=0.0, decoder_warp_entropy_ramp=3000):
+                 decoder_warp_entropy_weight=0.0, decoder_warp_entropy_ramp=3000,
+                 decoder_warp_wta=False, wta_sinkhorn_eps=0.05, wta_encoder_weight=1.0):
         super().__init__()
         assert math.log(n_actions, NUM_LATENT_ACTIONS_BINS).is_integer(), f"n_actions must be a power of {NUM_LATENT_ACTIONS_BINS}"
         self.action_dim=int(math.log(n_actions, NUM_LATENT_ACTIONS_BINS))
@@ -285,7 +288,19 @@ class LatentActionModel(nn.Module):
         self.quantizer = FiniteScalarQuantizer(latent_dim=self.action_dim, num_bins=NUM_LATENT_ACTIONS_BINS)
         self.decoder = LatentActionsDecoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, conditioning_dim=self.action_dim,
                                             keep_rate=decoder_keep_rate, residual=decoder_residual, hint=decoder_hint,
-                                            warp=decoder_warp, warp_radius=decoder_warp_radius)
+                                            warp=decoder_warp, warp_radius=decoder_warp_radius,
+                                            warp_init_std=0.3 if decoder_warp_wta else 0.0)
+        # decoder_warp_wta: winner-takes-all (multiple-choice / best-of-K) training of the warp: frame t is warped under EVERY
+        #   code, the per-transition losses are turned into a balanced soft assignment (Sinkhorn-Knopp, SwAV-style equal
+        #   partition, so no code dies and none takes everything), each code's kernel is trained only on its assigned
+        #   transitions (a code cannot half-fit two opposite shifts: the other shift has its own code), the transformer
+        #   correction is conditioned on the winner code (teacher forcing), and the encoder learns to predict the assignment
+        #   (cross-entropy on its soft code distribution, weight wta_encoder_weight). At inference the encoder's code is used.
+        #   Needs decoder_warp != 'none'. False = original (the encoder's straight-through code drives the decoder)
+        self.warp_wta = bool(decoder_warp_wta)
+        assert not self.warp_wta or (decoder_warp != 'none' and not self.continuous_actions), 'wta needs a warp decoder and FSQ codes'
+        self.wta_sinkhorn_eps = float(wta_sinkhorn_eps)
+        self.wta_encoder_weight = float(wta_encoder_weight)
         # decoder_warp_entropy_weight: penalty on the entropy of the warp kernels so each code commits to ONE shift
         #   (a bimodal kernel = two shifted copies serves up- and down-scrolls with one code); ramped in linearly over
         #   decoder_warp_entropy_ramp training steps so the kernels first move away from the identity. 0 = off
@@ -300,13 +315,18 @@ class LatentActionModel(nn.Module):
         # all codes as {-1, 1} bit patterns, for the soft code distribution
         codes = self.quantizer.get_latents_from_indices(torch.arange(self.quantizer.codebook_size))  # [n_actions, A]
         self.register_buffer('code_bits', (codes > 0).float(), persistent=False)
+        self.register_buffer('code_latents', codes.float(), persistent=False)  # [n_actions, A] in {-1, 1}
 
-    def code_entropies(self, action_latents):
-        # action_latents: [B, T-1, A] pre-tanh -> (mean per-sample entropy, entropy of the batch-mean distribution), nats
+    def code_probs(self, action_latents):
+        # action_latents: [B, T-1, A] pre-tanh -> soft joint code distribution [N, n_actions], N = B * (T-1)
         # soft bit prob P(bit = 1) = (tanh z + 1) / 2, so the gradient flows through the same tanh as the quantizer
         p1 = ((torch.tanh(action_latents.float()) + 1) / 2).reshape(-1, 1, self.action_dim)  # [N, 1, A]
         bits = self.code_bits.to(p1.device)  # [n_actions, A]
-        probs = (bits * p1 + (1 - bits) * (1 - p1)).prod(-1)  # [N, n_actions] joint code distribution per sample
+        return (bits * p1 + (1 - bits) * (1 - p1)).prod(-1)  # [N, n_actions]
+
+    def code_entropies(self, action_latents):
+        # action_latents: [B, T-1, A] pre-tanh -> (mean per-sample entropy, entropy of the batch-mean distribution), nats
+        probs = self.code_probs(action_latents)  # [N, n_actions] joint code distribution per sample
         h_sample = -(probs * probs.clamp_min(1e-8).log()).sum(-1).mean()
         mean_probs = probs.mean(0)  # [n_actions]
         h_batch = -(mean_probs * mean_probs.clamp_min(1e-8).log()).sum()
@@ -333,8 +353,53 @@ class LatentActionModel(nn.Module):
         # frames: [B, T, C, H, W] -> pre-quantization action latents [B, T-1, A] (the mean for continuous actions)
         return self.encoder(frames)[..., :self.action_dim]
 
+    @torch.compiler.disable
+    @torch.no_grad()
+    def sinkhorn(self, costs, iters=3):
+        # costs: [N, K] per-transition loss under each code -> balanced soft assignment [N, K] (rows sum to 1, columns ~N/K)
+        c = costs.float() / costs.float().mean().clamp_min(1e-8)  # dimensionless: a wrong 9 px shift costs O(1)
+        q = torch.exp(-(c - c.min(dim=1, keepdim=True).values) / self.wta_sinkhorn_eps)  # [N, K], row-shifted for range
+        N, K = q.shape
+        q = q / q.sum()
+        for _ in range(iters):
+            q = q / q.sum(dim=0, keepdim=True).clamp_min(1e-30) / K  # each code gets 1/K of the mass
+            q = q / q.sum(dim=1, keepdim=True).clamp_min(1e-30) / N  # each transition is assigned once
+        return q * N
+
+    def forward_wta(self, frames, action_latents):
+        # frames: [B, T, C, H, W], action_latents: [B, T-1, A] pre-quant encoder outputs -> (total loss, pred frames [B, T-1, C, H, W])
+        B, T, C, H, W = frames.shape
+        K = self.code_latents.shape[0]
+        frames_t, target = frames[:, :-1], frames[:, 1:]  # [B, T-1, C, H, W] each
+        codes = self.code_latents.to(frames.device)  # [K, A]
+        warped = self.decoder.warp_frames(
+            repeat(frames_t, 'b t c h w -> (k b) t c h w', k=K),
+            repeat(codes, 'k a -> (k b) t a', b=B, t=T-1),
+        )  # [K*B, T-1, C, H, W] fp32
+        warped = rearrange(warped, '(k b) t c h w -> b t k c h w', k=K)  # [B, T-1, K, C, H, W]
+        losses = F.smooth_l1_loss(warped, target.float()[:, :, None].expand_as(warped), reduction='none').mean(dim=(3, 4, 5))  # [B, T-1, K]
+        q = self.sinkhorn(losses.detach().reshape(-1, K))  # [N, K]
+        warp_loss = (q * losses.reshape(-1, K)).sum(-1).mean()
+        winner = q.argmax(-1).reshape(B, T-1)  # [B, T-1]
+        enc_probs = self.code_probs(action_latents)  # [N, K]
+        ce = -(q * enc_probs.clamp_min(1e-8).log()).sum(-1).mean()
+        self.last_wta_agree = (enc_probs.argmax(-1) == q.argmax(-1)).float().mean().detach()
+        if self.decoder.warp == 'global_only':
+            pred_frames = warped.gather(2, winner[:, :, None, None, None, None].expand(B, T-1, 1, C, H, W))[:, :, 0]  # [B, T-1, C, H, W]
+            recon_loss = warp_loss.new_zeros(())
+        else:
+            pred_frames = self.decoder(frames, codes[winner], training=True)  # [B, T-1, C, H, W] winner warp + correction
+            recon_loss = F.smooth_l1_loss(pred_frames, target)
+        total_loss = warp_loss + recon_loss + self.wta_encoder_weight * ce
+        if self.entropy_loss_weight > 0:
+            _, h_batch = self.code_entropies(action_latents)
+            total_loss = total_loss - self.entropy_loss_weight * h_batch
+        return total_loss, pred_frames.to(frames.dtype)
+
     def forward(self, frames):
         # frames: [B, T, C, H, W]
+        if self.warp_wta:
+            return self.forward_wta(frames, self.encoder(frames))
 
         # get (quantized or sampled) action latents
         action_latents = self.encoder(frames) # [B, T - 1, A] (continuous: [B, T - 1, 2A])

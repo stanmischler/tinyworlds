@@ -76,6 +76,9 @@ def main():
         decoder_warp_radius=args.decoder_warp_radius,
         decoder_warp_entropy_weight=args.decoder_warp_entropy_weight,
         decoder_warp_entropy_ramp=args.decoder_warp_entropy_ramp,
+        decoder_warp_wta=args.decoder_warp_wta,
+        wta_sinkhorn_eps=args.wta_sinkhorn_eps,
+        wta_encoder_weight=args.wta_encoder_weight,
     ).to(args.device)
     if args.checkpoint:
         model, _ = load_latent_actions_from_checkpoint(
@@ -196,7 +199,8 @@ def main():
                 save_path = os.path.join(visualizations_dir, f'reconstructions_latent_actions_step_{i}.png')
                 visualize_reconstruction(x, pred_frames, save_path)
             
-                print('\n Step', i, 'Loss:', loss.item(), 'Codebook Usage:', codebook_usage, 'Encoder Variance:', z_e_var, 'Decoder Variance:', pred_frames_var, 'Code Entropy:', code_entropy, 'Saturated:', saturated)
+                print('\n Step', i, 'Loss:', loss.item(), 'Codebook Usage:', codebook_usage, 'Encoder Variance:', z_e_var, 'Decoder Variance:', pred_frames_var, 'Code Entropy:', code_entropy, 'Saturated:', saturated,
+                      *(('WTA encoder agreement:', unwrap_model(model).last_wta_agree.item()) if unwrap_model(model).warp_wta else ()))
 
     # finish wandb
     if args.use_wandb and is_main:
