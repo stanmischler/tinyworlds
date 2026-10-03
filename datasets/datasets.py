@@ -34,8 +34,10 @@ class VideoHDF5Dataset(Dataset):
         self.frame_skip = max(1, (sequence_stride if sequence_stride is not None else max(1, 60 // fps)))
         self.fraction_of_dataset = float(fraction_of_dataset)
         self.resize_to = resize_to
+        self.load_start_index = 0  # .h5 frame of self.data[0]
 
         if save_path and os.path.exists(save_path):
+            self.load_start_index = load_start_index
             with h5py.File(save_path, 'r') as h5_file:
                 frames_dset = h5_file['frames']
                 total = len(frames_dset)
@@ -118,6 +120,17 @@ class VideoHDF5Dataset(Dataset):
             raise IndexError(f"Index {index} out of bounds for dataset of length {len(self)}")
 
         frame_sequence = self.data[index:index + (self.num_frames * self.frame_skip):self.frame_skip]
+        # ot_plans (set by the OT-conditioned LAM): {'sigma', 'created'} [N, P] aligned with self.data (the .h5 rows from
+        # load_start_index on), plan of (t, t + frame_skip) at row t -> second item [T-1, 2, P] long instead of 0
+        ot_plans = getattr(self, 'ot_plans', None)
+        ot = None
+        rows = slice(index, index + (self.num_frames - 1) * self.frame_skip, self.frame_skip)
+        if ot_plans is not None:
+            ot = torch.from_numpy(np.stack([ot_plans['sigma'][rows], ot_plans['created'][rows]], 1).astype(np.int64))
+        # aux_labels (STA-35 i5 pseudo-label head): [N] long aligned like ot_plans -> second item [T-1] long
+        aux_labels = getattr(self, 'aux_labels', None)
+        if aux_labels is not None:
+            ot = torch.from_numpy(np.ascontiguousarray(aux_labels[rows]))
         if len(frame_sequence) != self.num_frames:
             raise ValueError(f"Expected {self.num_frames} frames, got {len(frame_sequence)} frames")
 
@@ -132,7 +145,7 @@ class VideoHDF5Dataset(Dataset):
         else:
             frame_sequence = torch.from_numpy(frame_sequence).permute(0, 3, 1, 2)
 
-        return frame_sequence, 0
+        return frame_sequence, (0 if ot is None else ot)
 
     def __del__(self):
         if hasattr(self, 'h5_file'):
@@ -209,6 +222,39 @@ class PicoDoomDataset(VideoHDF5Dataset):
             preprocess_read_step=1,
             preprocess_slice=None,
         )
+
+class PushTDataset(Dataset):
+    """Push-T clips with their ground-truth actions, from scripts/convert_pusht.py's pusht_frames.h5.
+
+    The .h5 already holds every 5th env frame (NanoWM's frame_interval) and the 10-D action leading from each kept
+    frame to the next, so a clip is `num_frames` consecutive rows; clips never cross an episode boundary.
+    Returns (frames [T, C, H, W] in [-1, 1], actions [T - 1, A]): actions[t] drives frames[t] -> frames[t + 1].
+    """
+    def __init__(self, h5_path: str, num_frames: int = 4, preload_ratio: Optional[float] = None, load_chunk_size: int = 4096):
+        self.num_frames = num_frames
+        with h5py.File(h5_path, 'r') as f:
+            total = len(f['frames'])
+            n = total if preload_ratio is None else max(num_frames, min(total, int(total * preload_ratio)))
+            # preallocate: building a list first would double the peak RAM (~23 GB at 128px)
+            self.data = np.empty((n,) + f['frames'].shape[1:], dtype=np.uint8)  # [N, H, W, C]
+            for i in tqdm(range(0, n, load_chunk_size), desc=f"Loading {n} Push-T frames"):
+                self.data[i:i + load_chunk_size] = f['frames'][i:min(i + load_chunk_size, n)]
+            self.actions = f['actions'][:n].astype(np.float32)  # [N, A]
+            episode = f['episode_index'][:n]  # [N]
+        self.action_dim = self.actions.shape[1]
+        # a clip may start at i when its last frame is in the same episode
+        last = np.arange(n - num_frames + 1) + num_frames - 1
+        self.starts = np.nonzero(episode[:n - num_frames + 1] == episode[last])[0]
+
+    def __len__(self) -> int:
+        return len(self.starts)
+
+    def __getitem__(self, index: int):
+        s = self.starts[index]
+        frames = torch.from_numpy(self.data[s:s + self.num_frames]).permute(0, 3, 1, 2).float() / 127.5 - 1.0  # [T, C, H, W]
+        actions = torch.from_numpy(self.actions[s:s + self.num_frames - 1])  # [T - 1, A]
+        return frames, actions
+
 
 class ZeldaDataset(VideoHDF5Dataset):
     def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4, resolution=(128, 128), fps=15, preload_ratio=0.2):

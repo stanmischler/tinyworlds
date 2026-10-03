@@ -64,15 +64,25 @@ def main():
             p.requires_grad = False
     else:
         raise FileNotFoundError(f"Video tokenizer checkpoint not found at {args.video_tokenizer_path}")
-    if os.path.isdir(args.latent_actions_path):
+    assert args.action_source in ('lam', 'gt'), f"action_source must be 'lam' or 'gt', got {args.action_source}"
+    use_gt_actions = args.action_source == 'gt'
+    if use_gt_actions:
+        # ground-truth actions from the dataset (Push-T): no latent action model
+        from datasets.data_utils import dataset_action_dim
+        conditioning_dim = dataset_action_dim(args.dataset)
+        assert conditioning_dim is not None, f"action_source=gt needs a dataset with actions, {args.dataset} has none"
+        latent_action_model = None
+        args.latent_actions_path = None  # keep the saved config honest
+    elif args.latent_actions_path and os.path.isdir(args.latent_actions_path):
         latent_action_model, latent_action_ckpt = load_latent_actions_from_checkpoint(
-            checkpoint_path=args.latent_actions_path, 
+            checkpoint_path=args.latent_actions_path,
             device=args.device,
             is_distributed=dist_setup['is_distributed'],
         )
         unwrap_model(latent_action_model).eval()
         for p in unwrap_model(latent_action_model).parameters():
             p.requires_grad = False
+        conditioning_dim = unwrap_model(latent_action_model).action_dim
     else:
         raise FileNotFoundError(f"Latent Action Model checkpoint not found at {args.latent_actions_path}")
 
@@ -84,7 +94,7 @@ def main():
         num_heads=args.num_heads,
         hidden_dim=args.hidden_dim,
         num_blocks=args.num_blocks,
-        conditioning_dim=unwrap_model(latent_action_model).action_dim,
+        conditioning_dim=conditioning_dim,
         latent_dim=args.latent_dim,
         num_bins=args.num_bins,
         use_moe=getattr(args, 'use_moe', False),
@@ -93,6 +103,7 @@ def main():
         moe_aux_loss_coeff=getattr(args, 'moe_aux_loss_coeff', 0.01),
         full_last_frame_mask_prob=getattr(args, 'full_last_frame_mask_prob', 0.0),
         action_dropout_prob=getattr(args, 'action_dropout_prob', 0.0),
+        mask_mode=args.mask_mode,
         copy_prior=getattr(args, 'copy_prior', False),
     ).to(args.device)
     if args.checkpoint:
@@ -109,7 +120,8 @@ def main():
         # mode="default" rather than "reduce-overhead": CUDA-graph mode crashed the latent-actions stage on H100
         # (inductor: "storage data ptrs are not allocated in pool", torch 2.8); same model is compiled here
         video_tokenizer = torch.compile(video_tokenizer, mode="default", fullgraph=False, dynamic=True)
-        latent_action_model = torch.compile(latent_action_model, mode="default", fullgraph=False, dynamic=True)
+        if latent_action_model is not None:
+            latent_action_model = torch.compile(latent_action_model, mode="default", fullgraph=False, dynamic=True)
         dynamics_model = torch.compile(dynamics_model, mode="default", fullgraph=False, dynamic=True)
         print("Compiled all models for training.")
     dynamics_model = prepare_model_for_distributed(
@@ -194,17 +206,19 @@ def main():
             torch.compiler.cudagraph_mark_step_begin()
         for micro_batch in range(args.gradient_accumulation_steps):
             try:
-                x, _ = next(train_iter)
+                x, gt_actions = next(train_iter)
             except StopIteration:
                 train_iter = iter(training_loader)  # reset iterator when epoch ends
-                x, _ = next(train_iter)
+                x, gt_actions = next(train_iter)
 
             x = x.to(args.device, non_blocking=True)  # [batch_size, seq_len, channels, height, width]
 
             # get video tokens for batch
             video_tokens = video_tokenizer.tokenize(x) # [B, T, P]
             video_latents = video_tokenizer.quantizer.get_latents_from_indices(video_tokens, dim=-1) # [B, T, P, L]
-            if args.use_actions:
+            if args.use_actions and use_gt_actions:
+                quantized_actions = gt_actions.to(args.device, non_blocking=True).float()  # [B, T - 1, A]
+            elif args.use_actions:
                 quantized_actions = latent_action_model.encode(x)  # [B, T - 1, A]
             else:
                 quantized_actions = None
@@ -252,7 +266,7 @@ def main():
             wandb.log(log_dict, step=i)
             log_system_metrics(i)
             log_learning_rate(optimizers[0], i)
-            if args.use_actions:
+            if args.use_actions and not use_gt_actions:
                 action_indices = latent_action_model.quantizer.get_indices_from_latents(quantized_actions)
                 log_action_distribution(action_indices, i, args.n_actions)
 

@@ -138,13 +138,21 @@ def kmeans(z, k, iters=50, seed=0):
     return c.to(z.device)
 
 
-def decode(lam, x, actions, masked):
-    # x: [B, T, C, H, W], actions: [B, T-1, A] -> predicted frames 1..T-1 [B, T-1, C, H, W]
+def window_ot(plans, windows, n_trans, frame_skip, device):
+    # OT plans of the first n_trans transitions of each window -> [B, n_trans, 2, P] long, or None without plans
+    if plans is None:
+        return None
+    idx = np.array([[s + k * frame_skip for k in range(n_trans)] for _, s in windows])  # [B, n_trans]
+    return torch.from_numpy(np.stack([plans['sigma'][idx], plans['created'][idx]], 2).astype(np.int64)).to(device)
+
+
+def decode(lam, x, actions, masked, ot=None):
+    # x: [B, T, C, H, W], actions: [B, T-1, A], ot: [B, T-1, 2, P] or None -> predicted frames 1..T-1 [B, T-1, C, H, W]
     # the decoder masks frames 1.. only when in train mode (no other layer of the LAM depends on the mode);
     # reseeded so the true and shuffled decodes see the same mask
     torch.manual_seed(0)
     lam.decoder.train(masked)
-    out = lam.decoder(x, actions, training=True)
+    out = lam.decoder(x, actions, training=True, ot=ot)
     lam.decoder.eval()
     return out
 
@@ -163,6 +171,9 @@ def evaluate(label, ckpt, args, windows, frames_dset, device):
     q = lam.quantizer
     n_actions, A = q.codebook_size, lam.action_dim
     continuous = getattr(lam, 'continuous_actions', False)
+    plans = args.plans if getattr(lam, 'uses_ot', False) else None
+    assert plans is not None or not getattr(lam, 'uses_ot', False), f'{label} is OT-conditioned: pass --ot-plans'
+    wot = lambda ws, n=args.seq_len - 1: window_ot(plans, ws, n, args.frame_skip, device)
 
     codes, bits, absz, sat, motion, player, pre = [], [], [], [], [], [], []
     acc = {f'{r}_{k}': [] for r in ('masked', 'full') for k in ('l1_true', 'l1_shuf', 'psnr_true', 'psnr_shuf')}
@@ -176,7 +187,7 @@ def evaluate(label, ckpt, args, windows, frames_dset, device):
         # pass 1: quantized actions of every window, so the shuffled actions come from anywhere in the split
         # (neighbouring windows of a block have near-identical actions)
         zq_all = torch.cat([lam.encode(to_model_range(load_window_batch(
-            frames_dset, windows[i:i + args.batch_size], args.seq_len - 1, args.frame_skip), device))
+            frames_dset, windows[i:i + args.batch_size], args.seq_len - 1, args.frame_skip), device), wot(windows[i:i + args.batch_size]))
             for i in range(0, len(windows), args.batch_size)])  # [N, T-1, A]
         if continuous:
             all_codes = kmeans(zq_all.reshape(-1, A), n_actions)  # [n_actions, A] cluster centres act as the codes
@@ -190,7 +201,9 @@ def evaluate(label, ckpt, args, windows, frames_dset, device):
             batch = windows[i:i + args.batch_size]
             x = to_model_range(load_window_batch(frames_dset, batch, args.seq_len - 1, args.frame_skip), device)  # [B, T, C, H, W]
             B, T = x.shape[:2]
-            z = lam.pre_quant(x)  # [B, T-1, A]
+            ot = wot(batch)  # [B, T-1, 2, P] or None
+            ot1 = None if ot is None else ot[:, :1]
+            z = lam.pre_quant(x, ot)  # [B, T-1, A]
             zq = z if continuous else q(z)  # [B, T-1, A]
             idx = to_idx(zq)  # [B, T-1]
             codes.append(idx.flatten().cpu())
@@ -210,17 +223,17 @@ def evaluate(label, ckpt, args, windows, frames_dset, device):
 
             # two-frame: frame 1 from frame 0 + a_0 (causal model, so identical to the first transition of the window)
             f1 = to_unit(x[:, 1])  # [B, C, H, W]
-            rec = to_unit(decode(lam, x[:, :2], zq[:, :1], False)[:, 0])  # [B, C, H, W]
+            rec = to_unit(decode(lam, x[:, :2], zq[:, :1], False, ot1)[:, 0])  # [B, C, H, W]
             two['true'].append(psnr(rec, f1).cpu())
-            two['shuf'].append(psnr(to_unit(decode(lam, x[:, :2], zq_shuf[:, :1], False)[:, 0]), f1).cpu())
+            two['shuf'].append(psnr(to_unit(decode(lam, x[:, :2], zq_shuf[:, :1], False, ot1)[:, 0]), f1).cpu())
             two['copy'].append(psnr(to_unit(x[:, 0]), f1).cpu())
             for j in [w - i for w in sorted(two_ids) if i <= w < i + B]:
                 two_rows.append((to_unit(x[j, 0]).cpu(), f1[j].cpu(), rec[j].cpu(), idx[j, 0].item(),
                                  two['true'][-1][j].item(), two['copy'][-1][j].item()))
             for regime in ('masked', 'full'):
                 masked = regime == 'masked'
-                l1_t, p_t = per_sample_loss(decode(lam, x, zq, masked), target)
-                l1_s, p_s = per_sample_loss(decode(lam, x, zq_shuf, masked), target)
+                l1_t, p_t = per_sample_loss(decode(lam, x, zq, masked, ot), target)
+                l1_s, p_s = per_sample_loss(decode(lam, x, zq_shuf, masked, ot), target)
                 acc[f'{regime}_l1_true'].append(l1_t.cpu()); acc[f'{regime}_l1_shuf'].append(l1_s.cpu())
                 acc[f'{regime}_psnr_true'].append(p_t.cpu()); acc[f'{regime}_psnr_shuf'].append(p_s.cpu())
 
@@ -229,7 +242,7 @@ def evaluate(label, ckpt, args, windows, frames_dset, device):
                 for k in range(n_actions):
                     a = zq.clone()
                     a[:, -1] = all_codes[k]
-                    outs.append(to_unit(decode(lam, x, a, masked)[:, -1]))  # [B, C, H, W]
+                    outs.append(to_unit(decode(lam, x, a, masked, ot)[:, -1]))  # [B, C, H, W]
                 outs = torch.stack(outs, 1)  # [B, n_actions, C, H, W]
                 spread[regime].append(outs.std(1).flatten(1).mean(1).cpu())
                 if masked:
@@ -329,7 +342,14 @@ def main():
     p.add_argument('--limit', type=int, help='evaluate only the first N windows (smoke test)')
     p.add_argument('--out-dir', default='eval_results')
     p.add_argument('--prefix', default='lam_diag_', help='output file stem prefix; the stem is <prefix><label>')
+    p.add_argument('--ot-plans', help='.npz of OT plans aligned with --test-h5 (patch_similarity.py ot-plans), for OT-conditioned LAMs; '
+                                      'the shuffle tests swap the actions only, the plans stay those of the window')
     args = p.parse_args()
+    args.plans = None
+    if args.ot_plans:
+        with np.load(args.ot_plans) as z:
+            args.plans = {'sigma': z['sigma'], 'created': z['created']}
+            assert int(z['gap']) == args.frame_skip, (int(z['gap']), args.frame_skip)
 
     os.makedirs(args.out_dir, exist_ok=True)
     device = torch.device(args.device)

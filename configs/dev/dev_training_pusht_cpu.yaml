@@ -1,0 +1,49 @@
+# CPU smoke profile for the pusht_v1 recipe: tokenizer + gt-action dynamics (configs/pusht_v1/dynamics.yaml: action_source gt,
+# mask_mode random_target), tiny models, 2 steps per stage, no LAM. Needs data/pusht_frames.h5 (scripts/convert_pusht.py,
+# --limit-episodes 50 is enough). Use with:
+#   WANDB_MODE=offline MPLBACKEND=Agg python scripts/full_train.py --config configs/dev/dev_training_pusht_cpu.yaml
+# Delete the resulting results/<timestamp>/ afterwards so it doesn't shadow real checkpoints.
+use_wandb: true  # must stay true: LAM/dynamics logging crashes when false; WANDB_MODE=offline avoids needing a key
+wandb_project: tinyworlds-dev
+
+dataset: PUSHT
+frame_size: 128
+preload_ratio: 1.0
+device: CPU
+
+patch_size: 4
+context_length: 4
+latent_dim: 5
+num_bins: 4
+n_actions: 4
+embed_dim: 32
+num_heads: 4
+hidden_dim: 64
+num_blocks: 1
+
+compile: false
+tf32: false
+amp: false
+log_interval: 1
+n_updates: 2
+learning_rate: 0.0001
+batch_size_per_gpu: 2
+gradient_accumulation_steps: 1
+
+video_tokenizer_config: configs/video_tokenizer.yaml
+latent_actions_config: configs/latent_actions.yaml
+dynamics_config: configs/pusht_v1/dynamics.yaml
+
+run_video_tokenizer: true
+run_latent_actions: false
+run_dynamics: true
+
+# required by TrainingConfig (the older dev_training.yaml lacks these and fails to load)
+distributed:
+  use_ddp: false
+  use_fsdp: false
+  reshard_after_forward: false
+nproc_per_node: 1
+standalone: true
+optimizer: adamw
+use_moe: false
