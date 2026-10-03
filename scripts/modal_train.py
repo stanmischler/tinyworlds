@@ -189,6 +189,31 @@ def eval_lam(arms: str):
         print(f"EVAL DONE {name} -> evals/{name}")
 
 
+@app.function(gpu="L4", cpu=4, memory=16384, volumes=VOLUMES, timeout=60 * 60)
+def eval_lam_set(game: str, arms: str = "", baselines: str = "random,camera"):
+    """Score LAM checkpoints on a game's judge-labelled action set (scripts/eval/lam_eval.py; the set ships with the image
+    from eval_results/lam_eval/<game>/set). arms: "<name>=<checkpoint dir relative to the results volume>,...".
+    Outputs go to the results volume under lam_eval/<game>/<name>/score.json; fetch them with
+    `modal volume get tinyworlds-results lam_eval/<game> eval_results/lam_eval/`.
+        modal run scripts/modal_train.py::eval_lam_set --game zelda --arms "i4=lam_eval_ckpts/zelda_i4_bal16_seed2"
+    """
+    import shutil
+    import subprocess
+
+    cmd = ["python", "scripts/eval/lam_eval.py", "score", "--game", game, "--device", "cuda"]
+    for spec in [a for a in arms.split(",") if a]:
+        name, ckpt = spec.split("=", 1)
+        cmd += ["--lam", f"{name}={REPO_DIR}/results/{ckpt}"]
+    for b in [b for b in baselines.split(",") if b]:
+        cmd += ["--baseline", b]
+    subprocess.run(cmd, cwd=REPO_DIR, check=True)
+    for d in os.listdir(f"{REPO_DIR}/eval_results/lam_eval/{game}"):
+        if d not in ("set", "groups"):
+            shutil.copytree(f"{REPO_DIR}/eval_results/lam_eval/{game}/{d}", f"{REPO_DIR}/results/lam_eval/{game}/{d}", dirs_exist_ok=True)
+    results_volume.commit()
+    print(f"EVAL DONE {game} -> lam_eval/{game}")
+
+
 @app.local_entrypoint()
 def main(
     dataset: str = "ZELDA",
