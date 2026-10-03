@@ -199,10 +199,11 @@ class MoESwiGLUFFN(nn.Module):
 
 class STTransformerBlock(nn.Module):
     def __init__(self, embed_dim, num_heads, hidden_dim, causal=True, conditioning_dim=None,
-                 use_moe=False, num_experts=4, top_k_experts=2, moe_aux_loss_coeff=0.01):
+                 use_moe=False, num_experts=4, top_k_experts=2, moe_aux_loss_coeff=0.01, temporal=True):
         super().__init__()
         self.spatial_attn = SpatialAttention(embed_dim, num_heads, conditioning_dim)
-        self.temporal_attn = TemporalAttention(embed_dim, num_heads, causal, conditioning_dim)
+        # temporal=False: spatial-only block, each frame is processed independently of the others
+        self.temporal_attn = TemporalAttention(embed_dim, num_heads, causal, conditioning_dim) if temporal else None
         if use_moe:
             self.ffn = MoESwiGLUFFN(
                 embed_dim, hidden_dim,
@@ -217,14 +218,16 @@ class STTransformerBlock(nn.Module):
         # x: [B, T, P, E]
         # out: [B, T, P, E]
         x = self.spatial_attn(x, conditioning)
-        x = self.temporal_attn(x, conditioning)
+        if self.temporal_attn is not None:
+            x = self.temporal_attn(x, conditioning)
         x = self.ffn(x, conditioning)
         return x
 
 class STTransformer(nn.Module):
     def __init__(self, embed_dim, num_heads, hidden_dim, num_blocks, causal=True, conditioning_dim=None,
-                 use_moe=False, num_experts=4, top_k_experts=2, moe_aux_loss_coeff=0.01):
+                 use_moe=False, num_experts=4, top_k_experts=2, moe_aux_loss_coeff=0.01, temporal=True):
         super().__init__()
+        self.temporal = temporal
         # calculate temporal PE dim
         self.temporal_dim = (embed_dim // 3) & ~1  # round down to even number
         self.spatial_dims = embed_dim - self.temporal_dim  # rest goes to spatial
@@ -234,6 +237,7 @@ class STTransformer(nn.Module):
                 embed_dim, num_heads, hidden_dim, causal, conditioning_dim,
                 use_moe=use_moe, num_experts=num_experts,
                 top_k_experts=top_k_experts, moe_aux_loss_coeff=moe_aux_loss_coeff,
+                temporal=temporal,
             )
             for _ in range(num_blocks)
         ])
@@ -242,14 +246,15 @@ class STTransformer(nn.Module):
         # x: [B, T, P, E]
         # conditioning: [B, T, E]
         B, T, P, E = x.shape
-        tpe = sincos_time(T, self.temporal_dim, x.device, x.dtype)  # [T, E/3]
+        if self.temporal:  # spatial-only stacks get no temporal PE, so a frame's output does not depend on its index
+            tpe = sincos_time(T, self.temporal_dim, x.device, x.dtype)  # [T, E/3]
 
-        # temporal PE (pad with 0s for first 2/3s spatial PE, last 1/3 temporal PE)
-        tpe_padded = torch.cat([
-            torch.zeros(T, self.spatial_dims, device=x.device, dtype=x.dtype),
-            tpe
-        ], dim=-1)  # [T, E]
-        x = x + tpe_padded[None, :, None, :]  # [B,T,P,E]
+            # temporal PE (pad with 0s for first 2/3s spatial PE, last 1/3 temporal PE)
+            tpe_padded = torch.cat([
+                torch.zeros(T, self.spatial_dims, device=x.device, dtype=x.dtype),
+                tpe
+            ], dim=-1)  # [T, E]
+            x = x + tpe_padded[None, :, None, :]  # [B,T,P,E]
 
         # apply transformer blocks
         for block in self.blocks:

@@ -120,6 +120,8 @@ class VideoTokenizerConfig:
 	# dataloader throughput (None = defaults in datasets/data_utils.py: 2 workers, no pin_memory)
 	num_workers: Optional[int] = None
 	pin_memory: Optional[bool] = None
+	# True: no temporal attention in encoder/decoder (per-frame tokenizer)
+	per_frame: bool = False
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)
@@ -203,6 +205,22 @@ class LatentActionsConfig:
 	decoder_warp_local_gate: float = 0.0   # strict blurred-translation gate for the local mode (0 = off)
 	decoder_warp_local_blur: int = 1   # blur (px) for the gate and the local WTA cost (1 = none)
 	wta_kernel_repulsion: float = 0.0   # weight of the summed pairwise warp-kernel overlap (0 = off)
+	# OT-conditioned LAM (STA-35): .npz of per-pair token transport plans aligned with the dataset .h5
+	# (scripts/eval/patch_similarity.py ot-plans), fed to the encoder and/or the decoder
+	ot_plans: Optional[str] = None
+	ot_encoder: bool = False
+	ot_decoder: str = "none"     # 'none' | 'where' | 'plan'
+	# STA-35 itc_loop i5: auxiliary pseudo-label head on the encoder's action latent. aux_labels = .npz of
+	# scripts/eval/itc_pseudo.py (rows = .h5 frames, label of the pair (t, t + frame_skip), -1 = none), column aux_label_key;
+	# CE weight aux_label_weight (0 = off, original)
+	aux_labels: Optional[str] = None
+	aux_label_key: str = "code_itc"
+	aux_label_weight: float = 0.0
+	aux_label_classes: int = 9
+	# STA-35 itc_loop i6 (B2): where the aux CE acts. 'latent' = linear head on tanh(action latent) (i5, default);
+	# 'codes' = soft code distribution code_probs [N, n_actions] @ softmax(learned [n_actions, classes] map), so the quantised
+	# sign pattern itself must carry the class
+	aux_label_target: str = "latent"
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)
@@ -262,6 +280,8 @@ class DynamicsConfig:
 	action_source: str = "lam"
 	# Dynamics training mask: "maskgit" (default, see full_last_frame_mask_prob) or "random_target" (models/dynamics.py)
 	mask_mode: str = "maskgit"
+	# Copy prior: learned logit bonus for keeping the previous frame's token at each patch (False = original model)
+	copy_prior: bool = False
 	# Seed for init, masking and batch order (None = unseeded, as before)
 	seed: Optional[int] = None
 	# Optimizer

@@ -217,6 +217,7 @@ def load_videotokenizer_from_checkpoint(checkpoint_path, device, model = None, i
         'num_blocks': cfg.get('num_blocks', 4),
         'latent_dim': cfg.get('latent_dim', 6),
         'num_bins': cfg.get('num_bins', 4),
+        'per_frame': cfg.get('per_frame', False),
     }
     if model is None:
         model = VideoTokenizer(**kwargs)
@@ -239,6 +240,13 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, i
     model_sd = torch.load(Path(checkpoint_path) / MODEL_CHECKPOINT, map_location='cpu', weights_only=True)
     state_cfg = torch.load(Path(checkpoint_path) / STATE, map_location='cpu', weights_only=False)
     cfg = state_cfg.get('config', {}) or {}
+    if state_cfg.get('model_type') == 'laof':  # LAOF (models/laof.py, scripts/train_laof.py): kwargs saved verbatim
+        from models.laof import LAOF
+        model = LAOF(**state_cfg['model_kwargs']) if model is None else model
+        model.load_state_dict(model_sd)
+        return model.to(device), state_cfg
+    if cfg.get('model_type') == 'como':  # CoMo motion IDM (scripts/train_como.py): eval adapter with the same encode()
+        return load_como_from_checkpoint(checkpoint_path, device)
     frame_size = cfg.get('frame_size', 128)
     kwargs = {
         'frame_size': (frame_size, frame_size),
@@ -273,6 +281,11 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, i
         'decoder_warp_local_gate': cfg.get('decoder_warp_local_gate', 0.0),
         'decoder_warp_local_blur': cfg.get('decoder_warp_local_blur', 1),
         'wta_kernel_repulsion': cfg.get('wta_kernel_repulsion', 0.0),
+        'ot_encoder': cfg.get('ot_encoder', False),
+        'ot_decoder': cfg.get('ot_decoder', 'none'),
+        'aux_label_weight': cfg.get('aux_label_weight', 0.0),
+        'aux_label_classes': cfg.get('aux_label_classes', 9),
+        'aux_label_target': cfg.get('aux_label_target', 'latent'),
     }
     if model is None:
         model = LatentActionModel(**kwargs)
@@ -286,6 +299,22 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, i
     )
     model = model.to(device)
     return model, state_cfg
+
+
+COMO_ARCH_KEYS = ('frame_size', 'patch_size', 'idm_dim', 'idm_depth', 'idm_heads', 'idm_mlp', 'n_queries', 'latent_dim',
+                  'dec_dim', 'dec_depth', 'dec_heads', 'dec_mlp', 'contrastive_weight', 'temperature')
+
+
+def load_como_from_checkpoint(checkpoint_path, device):
+    """CoMo checkpoint (scripts/train_como.py) -> CoMoLAM eval adapter (frozen MAE + trained IDM; continuous actions,
+    k-means into config n_actions clusters by the evals), and the saved state."""
+    import torch
+    from models.como import CoMo, CoMoLAM
+    state_cfg = torch.load(Path(checkpoint_path) / STATE, map_location='cpu', weights_only=False)
+    cfg = state_cfg['config']
+    como = CoMo(**{k: cfg[k] for k in COMO_ARCH_KEYS if k in cfg})
+    como.load_state_dict(torch.load(Path(checkpoint_path) / MODEL_CHECKPOINT, map_location='cpu', weights_only=True))
+    return CoMoLAM(como, n_clusters=cfg.get('n_actions', 16)).to(device), state_cfg
 
 
 def load_dynamics_from_checkpoint(checkpoint_path, device, model = None, is_distributed = False):
@@ -323,6 +352,7 @@ def load_dynamics_from_checkpoint(checkpoint_path, device, model = None, is_dist
         'full_last_frame_mask_prob': cfg.get('full_last_frame_mask_prob', 0.0),
         'action_dropout_prob': cfg.get('action_dropout_prob', 0.0),
         'mask_mode': cfg.get('mask_mode', 'maskgit'),
+        'copy_prior': cfg.get('copy_prior', False),
     }
     if model is None:
         model = DynamicsModel(**kwargs)
