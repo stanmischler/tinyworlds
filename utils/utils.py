@@ -239,6 +239,8 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, i
     model_sd = torch.load(Path(checkpoint_path) / MODEL_CHECKPOINT, map_location='cpu', weights_only=True)
     state_cfg = torch.load(Path(checkpoint_path) / STATE, map_location='cpu', weights_only=False)
     cfg = state_cfg.get('config', {}) or {}
+    if cfg.get('model_type') == 'como':  # CoMo motion IDM (scripts/train_como.py): eval adapter with the same encode()
+        return load_como_from_checkpoint(checkpoint_path, device)
     frame_size = cfg.get('frame_size', 128)
     kwargs = {
         'frame_size': (frame_size, frame_size),
@@ -286,6 +288,22 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, i
     )
     model = model.to(device)
     return model, state_cfg
+
+
+COMO_ARCH_KEYS = ('frame_size', 'patch_size', 'idm_dim', 'idm_depth', 'idm_heads', 'idm_mlp', 'n_queries', 'latent_dim',
+                  'dec_dim', 'dec_depth', 'dec_heads', 'dec_mlp', 'contrastive_weight', 'temperature')
+
+
+def load_como_from_checkpoint(checkpoint_path, device):
+    """CoMo checkpoint (scripts/train_como.py) -> CoMoLAM eval adapter (frozen MAE + trained IDM; continuous actions,
+    k-means into config n_actions clusters by the evals), and the saved state."""
+    import torch
+    from models.como import CoMo, CoMoLAM
+    state_cfg = torch.load(Path(checkpoint_path) / STATE, map_location='cpu', weights_only=False)
+    cfg = state_cfg['config']
+    como = CoMo(**{k: cfg[k] for k in COMO_ARCH_KEYS if k in cfg})
+    como.load_state_dict(torch.load(Path(checkpoint_path) / MODEL_CHECKPOINT, map_location='cpu', weights_only=True))
+    return CoMoLAM(como, n_clusters=cfg.get('n_actions', 16)).to(device), state_cfg
 
 
 def load_dynamics_from_checkpoint(checkpoint_path, device, model = None, is_distributed = False):
