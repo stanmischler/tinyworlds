@@ -237,6 +237,21 @@ def train_como(config: str = "configs/como/zelda.yaml", overrides: str = ""):
         results_volume.commit()
 
 
+@app.function(gpu="L4", cpu=4, memory=32768, volumes=VOLUMES, timeout=60 * 60)
+def eval_como_pred(arms: str):
+    """Next-frame PSNR/SSIM of CoMo's decoder (scripts/eval/eval_como_pred.py) on the held-out Zelda windows.
+    arms: "<name>=<como ckpt dir relative to the results volume>,..." -> results volume evals/como_pred/<name>.json
+        modal run scripts/modal_train.py::eval_como_pred --arms "v1_50k=como_zelda_v1/como/checkpoints/como_step_50000"
+    """
+    import subprocess
+
+    for spec in [a for a in arms.split(",") if a]:
+        name, ckpt = spec.split("=", 1)
+        subprocess.run(["python", "scripts/eval/eval_como_pred.py", "--ckpt", f"results/{ckpt}", "--name", name,
+                        "--out-dir", "results/evals/como_pred"], cwd=REPO_DIR, check=True)
+        results_volume.commit()
+
+
 @app.function(gpu=GPU, cpu=4, memory=32768, volumes=VOLUMES, timeout=6 * 60 * 60)
 def laof_flow(split: str = "test", limit: int = 0, batch: int = 32):
     """LAOF flow targets (scripts/laof_flow.py) for data/zelda_<split>_frames.h5 -> data/zelda_<split>_flow_gap4.h5 in the
