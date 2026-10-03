@@ -213,6 +213,24 @@ def como_features(splits: str = "zelda_train,zelda_test", limit: int = 0, suffix
         data_volume.commit()
 
 
+@app.function(gpu="L4", cpu=4, memory=32768, volumes=VOLUMES, timeout=3 * 60 * 60)
+def tok_features(arms: str = "pf_q,pf_h,tp_q,tp_h", splits: str = "zelda_train,zelda_test", limit: int = 0, suffix: str = ""):
+    """Frozen video-tokenizer features for CoMo (STA-43, scripts/tok_features.py), one set per arm yaml
+    configs/como/tok/<arm>.yaml: data/<split>_tok_<arm><suffix>.npy in the data volume. --limit N --suffix _smoke to check.
+        modal run scripts/modal_train.py::tok_features --arms pf_q,tp_q"""
+    import subprocess
+
+    from omegaconf import OmegaConf
+
+    for arm in [x for x in arms.split(",") if x]:
+        c = OmegaConf.load(f"{REPO_DIR}/configs/como/tok/{arm}.yaml")
+        for sp in [x for x in splits.split(",") if x]:
+            subprocess.run(["python", "scripts/tok_features.py", "--h5", f"data/{sp}_frames.h5", "--tokenizer", c.tokenizer_path,
+                            "--mode", c.tokenizer_feature, "--history", str(c.history), "--out", f"data/{sp}_tok_{arm}{suffix}.npy",
+                            *(["--limit", str(limit)] if limit else [])], cwd=REPO_DIR, check=True)
+            data_volume.commit()
+
+
 @app.function(gpu=GPU, cpu=8, memory=int(os.environ.get("TINYWORLDS_MEMORY_MB", 32768)), volumes=VOLUMES, secrets=SECRETS,
               timeout=24 * 60 * 60)
 def train_como(config: str = "configs/como/zelda.yaml", overrides: str = ""):

@@ -1,0 +1,8 @@
+# STA-43: CoMo motion IDM on frozen video-tokenizer features instead of the MAE ViT. Merged on top of
+# configs/como/zelda.yaml (unchanged STA-38 recipe), then one arm yaml:
+#   --config configs/como/zelda.yaml,configs/como/tok/base.yaml,configs/como/tok/pf_q.yaml
+# Features precomputed by scripts/tok_features.py (modal_train.py::tok_features) into data/zelda_{train,test}_tok_<arm>.npy.
+features: tokenizer
+merge: 2               # 2x2 space-to-depth: 1024 patch tokens -> 256 tokens of 8x8 px (MAE: 196 of ~9x9 px)
+n_updates: 20000       # STA-38 plateaued from ~20k
+ckpt_interval: 5000

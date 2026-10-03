@@ -1,0 +1,7 @@
+# per-frame tokenizer (zelda_v5_frametok, STA-34); FSQ-quantized latents, 4 x 6 = 24-d per token
+run_name: como_tok_pf_q
+tokenizer_path: results/zelda_v5_frametok/video_tokenizer/checkpoints/video_tokenizer_step_29000
+tokenizer_feature: quant
+history: 0
+train_features: data/zelda_train_tok_pf_q.npy
+test_features: data/zelda_test_tok_pf_q.npy
