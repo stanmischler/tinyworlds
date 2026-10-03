@@ -18,6 +18,7 @@ Usage (repo root, PYTHONPATH=$PWD):
     python scripts/eval/lam_judge.py consensus labels_A.json labels_B.json
     python scripts/eval/lam_judge.py score --lam Z4=<ckpt dir>  # -> eval_results/lam_judge/<label>/{score.json,code_*.png}
     python scripts/eval/lam_judge.py score --codes my=codes.json  # a LAM evaluated elsewhere: {"<transition id>": code}
+    python scripts/eval/lam_judge.py score --lam como=<como ckpt> --k 8  # continuous LAM: k-means clusters + linear probe
 """
 
 import argparse
@@ -108,23 +109,64 @@ def consensus(args):
     print(f'agreement {agree}/{len(ids)} = {agree / max(len(ids), 1):.2f}; {len(out)} consensus labels; {counts}')
 
 
-def lam_codes(ckpt, wins, device, batch=32):
+def lam_codes(ckpt, wins, device, batch=32, k=0):
+    # -> codes [N, T-1], number of codes, continuous actions [N, T-1, A] (None for a discrete LAM)
     from utils.utils import load_latent_actions_from_checkpoint
     lam, _ = load_latent_actions_from_checkpoint(ckpt, device)
     lam.eval()
-    return codes_from_lam(lam, wins, device, batch)
+    if getattr(lam, 'continuous_actions', False):
+        zq = encode_windows(lam, wins, device, batch).float()
+        k = k or lam.quantizer.codebook_size  # --k overrides the number of k-means clusters
+        c = kmeans(zq.reshape(-1, lam.action_dim), k)
+        return torch.cdist(zq.reshape(-1, lam.action_dim), c).argmin(1).reshape(zq.shape[:-1]).cpu().numpy(), k, zq.cpu()
+    return (*codes_from_lam(lam, wins, device, batch), None)
+
+
+def encode_windows(lam, wins, device, batch=32):
+    # lam in eval mode -> actions [N, T-1, A] for every held-out window
+    with h5py.File(H5, 'r') as h5, torch.no_grad():
+        return torch.cat([lam.encode(to_model_range(load_window_batch(h5['frames'], wins[i:i + batch], SEQ - 1, SKIP), device))
+                          for i in range(0, len(wins), batch)])
 
 
 def codes_from_lam(lam, wins, device, batch=32):
     # lam in eval mode -> codes [N, T-1] for every held-out window, n_codes
     q, A = lam.quantizer, lam.action_dim
-    with h5py.File(H5, 'r') as h5, torch.no_grad():
-        zq = torch.cat([lam.encode(to_model_range(load_window_batch(h5['frames'], wins[i:i + batch], SEQ - 1, SKIP), device))
-                        for i in range(0, len(wins), batch)])  # [N, T-1, A]
+    zq = encode_windows(lam, wins, device, batch)  # [N, T-1, A]
     if getattr(lam, 'continuous_actions', False):
         c = kmeans(zq.reshape(-1, A).float(), q.codebook_size)
         return torch.cdist(zq.reshape(-1, A).float(), c).argmin(1).reshape(zq.shape[:-1]).cpu().numpy(), q.codebook_size  # [N, T-1]
     return q.get_indices_from_latents(zq).cpu().numpy(), q.codebook_size
+
+
+def probe(z, labels, folds=5, l2=1e-2, seed=0):
+    """Cross-validated linear probe: does the continuous action predict the judge label, clusters aside? (score()
+    feeds the top --probe-pcs principal components of all held-out actions: 144 labels cannot fit 128 raw dims)
+    z [n, A] float, labels list[str] -> held-out accuracy of a standardised multinomial logistic regression (L-BFGS,
+    L2 `l2`), stratified-free `folds`-fold split (seeded), and the majority-class accuracy on the same folds."""
+    classes = sorted(set(labels))
+    y = torch.tensor([classes.index(l) for l in labels])
+    perm = torch.randperm(len(y), generator=torch.Generator().manual_seed(seed))
+    correct = majority = 0
+    for f in range(folds):
+        te = perm[f::folds]
+        tr = perm[torch.isin(perm, te, invert=True)]
+        mu, sd = z[tr].mean(0), z[tr].std(0) + 1e-6
+        xtr, xte = (z[tr] - mu) / sd, (z[te] - mu) / sd
+        W = torch.zeros(z.shape[1], len(classes), requires_grad=True)
+        b = torch.zeros(len(classes), requires_grad=True)
+        opt = torch.optim.LBFGS([W, b], max_iter=200, line_search_fn='strong_wolfe')
+
+        def closure():
+            opt.zero_grad()
+            loss = torch.nn.functional.cross_entropy(xtr @ W + b, y[tr]) + l2 * W.pow(2).sum()
+            loss.backward()
+            return loss
+        opt.step(closure)
+        with torch.no_grad():
+            correct += int(((xte @ W + b).argmax(1) == y[te]).sum())
+        majority += int((y[te] == torch.bincount(y[tr], minlength=len(classes)).argmax()).sum())
+    return {'acc': round(correct / len(y), 4), 'majority': round(majority / len(y), 4), 'n': len(y)}
 
 
 def metrics(codes, labels, n_codes, classes):
@@ -195,13 +237,38 @@ def score(args):
         name, path = spec.split('=', 1)
         out_dir = f'{OUT}/{name}'
         os.makedirs(out_dir, exist_ok=True)
+        z_all = None
         if kind == 'lam':
-            codes_all, n_codes = lam_codes(path, wins, args.device)
+            codes_all, n_codes, z_all = lam_codes(path, wins, args.device, k=args.k)
         else:  # {"<transition id>": code}: only the judged set, no grids
             cj = json.load(open(path))
             codes_all, n_codes = None, int(max(cj.values())) + 1
         res = {'name': name, 'source': path, 'labels_file': args.labels,
                **judged_metrics(meta, labels, n_codes, codes_all=codes_all, code_of_id=None if codes_all is not None else cj)}
+        ids = list(res['per_transition'])
+        labs = [labels[i] for i in ids]
+        if z_all is not None:  # continuous actions: linear probe on the raw action, independent of the clustering
+            trs = {str(tr['id']): tr for tr in meta['transitions']}
+            zf = z_all.reshape(-1, z_all.shape[-1])
+            pcs = torch.linalg.svd(zf - zf.mean(0), full_matrices=False).Vh[:args.probe_pcs].T  # [A, k], unsupervised, all held-out actions
+            zs = (torch.stack([z_all[trs[i]['window'], trs[i]['t']] for i in ids]) - zf.mean(0)) @ pcs
+            mv = [j for j, l in enumerate(labs) if l in MOVES]
+            pa, pm = probe(zs, labs), probe(zs[mv], [labs[j] for j in mv])
+            if args.kmeans_seeds > 1:  # clustering noise: moves / all NMI_adj over k-means seeds 0..n-1 (seed 0 = headline)
+                sc = {'moves': [], 'all': []}
+                for sd in range(args.kmeans_seeds):
+                    cs = torch.cdist(zf, kmeans(zf, n_codes, seed=sd)).argmin(1).reshape(z_all.shape[:-1]).numpy()
+                    cc = [int(cs[trs[i]['window'], trs[i]['t']]) for i in ids]
+                    sc['all'].append(metrics(cc, labs, n_codes, LABELS)['nmi_adj'])
+                    sc['moves'].append(metrics([c for c, l in zip(cc, labs) if l in MOVES], [l for l in labs if l in MOVES], n_codes, MOVES)['nmi_adj'])
+                res['kmeans_seeds'] = {f'{k}_nmi_adj_{f}': round(float(fn(v)), 4) for k, v in sc.items() for f, fn in (('mean', np.mean), ('sd', np.std))}
+                res['kmeans_seeds']['n'] = args.kmeans_seeds
+            res['probe'] = {'pcs': args.probe_pcs, 'all_acc': pa['acc'], 'all_majority': pa['majority'], 'moves_acc': pm['acc'], 'moves_majority': pm['majority']}
+        if codes_all is not None:  # appearance leakage: how much the code tells which held-out block (scene) it is from
+            blk = np.repeat([b for b, _ in wins], codes_all.shape[1])
+            ct = np.zeros((n_codes, int(blk.max()) + 1))
+            np.add.at(ct, (codes_all.reshape(-1), blk), 1)
+            res['nmi_code_block'] = round(nmi(ct), 4)
         if codes_all is not None:
             usage, paths = code_grids(name, codes_all, wins, n_codes, out_dir)
             p = usage[usage > 0]
@@ -212,7 +279,7 @@ def score(args):
         a, m = res['all'], res['moves_only']
         print(f"{name}: all n={a['n']} NMI {a['nmi']} (adj {a['nmi_adj']}) purity {a['purity']} (majority {a['majority_baseline']}) | "
               f"moves n={m['n']} NMI {m['nmi']} (adj {m['nmi_adj']}) purity {m['purity']} (majority {m['majority_baseline']}) "
-              f"| entropy {res.get('entropy_nats')} -> {out_dir}/score.json")
+              f"| entropy {res.get('entropy_nats')} | probe {res.get('probe')} | seeds {res.get('kmeans_seeds')} -> {out_dir}/score.json")
 
 
 def main():
@@ -226,6 +293,9 @@ def main():
     s.add_argument('--lam', action='append', default=[], help='name=<latent_actions checkpoint dir>; repeatable')
     s.add_argument('--codes', action='append', default=[], help='name=<codes.json {transition id: code}>; repeatable')
     s.add_argument('--labels', default=f'{SET}/labels.json')
+    s.add_argument('--kmeans-seeds', type=int, default=1, help='continuous LAMs: also report NMI_adj mean/sd over this many k-means seeds')
+    s.add_argument('--probe-pcs', type=int, default=16, help='continuous LAMs: principal components the linear probe sees')
+    s.add_argument('--k', type=int, default=0, help='continuous LAMs: number of k-means clusters (default: its n_actions)')
     s.add_argument('--device', default='cpu', help='cpu: ~40 s per LAM; mps hung in Metal once (2026-10-02)')
     a = p.parse_args()
     {'build': build, 'consensus': consensus, 'score': score}[a.cmd](a)

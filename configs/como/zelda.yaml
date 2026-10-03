@@ -1,0 +1,55 @@
+# CoMo motion IDM on Zelda (STA-38): scripts/train_como.py. Paper recipe (CoMo Tab.6 + released code) at the
+# Zelda LAM eval gap; decisions in the STA-38 ledger.
+run_name: como_zelda
+device: cuda
+seed: 0
+
+# data: frames + precomputed MAE ViT-L features (scripts/como_features.py), row-aligned with the .h5
+train_h5: data/zelda_train_frames.h5
+train_features: data/zelda_train_mae_large.npy
+test_h5: data/zelda_test_frames.h5
+test_features: data/zelda_test_mae_large.npy
+start_index: 1000      # ZeldaDataset load_start_index: earlier LAMs never trained on the first 1000 frames
+gap: 4                 # n: stored frames between frame t and frame t+n (= lam_judge SKIP)
+jitter: 1              # InfoNCE positive end frame t+n+delta, delta in {-1, +1} (CoMo: n/5)
+max_frames: 0          # >0: only the first N frames of each .h5 (smoke, with --limit features)
+fake_features: 0       # >0: random features for the first N frames, CPU code check only
+
+# model (CoMo Tab.6; decoder on native 128 px, patch 8)
+frame_size: 128
+patch_size: 8
+n_queries: 8
+latent_dim: 16
+idm_dim: 768
+idm_depth: 4
+idm_heads: 12
+idm_mlp: 3072
+dec_dim: 768
+dec_depth: 12
+dec_heads: 12
+dec_mlp: 3072
+contrastive_weight: 0.004
+temperature: 0.1
+n_actions: 16          # k-means clusters the evals turn z into (lam_judge also scores k = 8)
+
+# optimisation (CoMo: Adam (0.9, 0.99), lr 1e-4 linear decay floored at 0.1x, clip 0.5, batch 256, 50k steps)
+batch_size: 256
+n_updates: 50000
+learning_rate: 1.0e-4
+lr_floor: 0.1
+betas: [0.9, 0.99]
+weight_decay: 0.0
+grad_clip: 0.5
+amp: true              # bf16 autocast on CUDA
+compile: false
+
+# logging / eval
+log_interval: 100
+val_interval: 1000
+val_batch: 256
+ckpt_interval: 10000
+checkpoint: null       # resume from a como_step_N dir
+judge: true            # lam_judge on every checkpoint (k = n_actions and 8)
+judge_device: cuda
+use_wandb: true
+wandb_project: tinyworlds

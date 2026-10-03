@@ -41,7 +41,7 @@ image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("git", "libgl1", "libglib2.0-0")  # opencv needs the GL/glib shared libs
     .pip_install_from_requirements("requirements.txt")
-    .env({"PYTHONPATH": REPO_DIR})
+    .env({"PYTHONPATH": REPO_DIR, "HF_HOME": f"{REPO_DIR}/data/hf_cache"})  # HF weights (CoMo's MAE) cached in the data volume
     .add_local_dir(
         ".",
         remote_path=REPO_DIR,
@@ -165,7 +165,7 @@ def train(dataset: str = "ZELDA", overrides: list[str] | None = None, training_c
 
 
 @app.function(gpu="L4", cpu=4, memory=16384, volumes=VOLUMES, timeout=60 * 60)
-def eval_lam(arms: str):
+def eval_lam(arms: str, extra: str = ""):
     """Score LAM checkpoints on the held-out Zelda judge set + eval_lam diagnostic, on a GPU (keeps the laptop free).
 
     arms: "<name>=<checkpoint dir relative to the results volume>,<name>=...". Outputs go to the results volume under
@@ -181,12 +181,60 @@ def eval_lam(arms: str):
         ckpt = f"{REPO_DIR}/results/{ckpt}"
         out = f"{REPO_DIR}/results/evals/{name}"
         os.makedirs(out, exist_ok=True)
-        subprocess.run(["python", "scripts/eval/lam_judge.py", "score", "--device", "cuda", "--lam", f"{name}={ckpt}"], cwd=REPO_DIR, check=True)
+        x = extra.split()  # extra lam_judge score args, e.g. "--kmeans-seeds 10"
+        subprocess.run(["python", "scripts/eval/lam_judge.py", "score", "--device", "cuda", "--lam", f"{name}={ckpt}", *x], cwd=REPO_DIR, check=True)
         shutil.copytree(f"{REPO_DIR}/eval_results/lam_judge/{name}", out, dirs_exist_ok=True)
+        import torch
+        if (torch.load(f"{ckpt}/state.pt", weights_only=False).get("config") or {}).get("model_type") == "como":
+            # CoMo: continuous actions, no LAM decoder for eval_lam.py; also score 8 clusters
+            subprocess.run(["python", "scripts/eval/lam_judge.py", "score", "--device", "cuda", "--k", "8", "--lam", f"{name}_k8={ckpt}", *x], cwd=REPO_DIR, check=True)
+            shutil.copytree(f"{REPO_DIR}/eval_results/lam_judge/{name}_k8", f"{out}_k8", dirs_exist_ok=True)
+            results_volume.commit()
+            print(f"EVAL DONE {name} -> evals/{name}")
+            continue
         subprocess.run(["python", "scripts/eval/eval_lam.py", "--device", "cuda", "--lam", f"{name}={ckpt}",
                         "--test-h5", "data/zelda_test_frames.h5", "--out-dir", out], cwd=REPO_DIR, check=True)
         results_volume.commit()
         print(f"EVAL DONE {name} -> evals/{name}")
+
+
+@app.function(gpu=GPU, cpu=4, memory=32768, volumes=VOLUMES, timeout=2 * 60 * 60)
+def como_features(splits: str = "zelda_train,zelda_test", limit: int = 0, suffix: str = ""):
+    """Frozen MAE ViT-L features for CoMo (scripts/como_features.py): data/<split>_frames.h5 -> data/<split>_mae_large<suffix>.npy
+    in the data volume (zelda_train ~26 GB). --limit N --suffix _smoke for a quick check.
+        modal run scripts/modal_train.py::como_features"""
+    import subprocess
+
+    for sp in [s for s in splits.split(",") if s]:
+        cmd = ["python", "scripts/como_features.py", "--h5", f"data/{sp}_frames.h5", "--out", f"data/{sp}_mae_large{suffix}.npy"]
+        if limit:  # smoke: verify the fixed MAE patch order first
+            subprocess.run(cmd + ["--check"], cwd=REPO_DIR, check=True)
+        subprocess.run(cmd + (["--limit", str(limit)] if limit else []), cwd=REPO_DIR, check=True)
+        data_volume.commit()
+
+
+@app.function(gpu=GPU, cpu=8, memory=int(os.environ.get("TINYWORLDS_MEMORY_MB", 32768)), volumes=VOLUMES, secrets=SECRETS,
+              timeout=24 * 60 * 60)
+def train_como(config: str = "configs/como/zelda.yaml", overrides: str = ""):
+    """CoMo motion IDM training (scripts/train_como.py; features from como_features), outputs in results/<run_name>/ on the
+    results volume (committed every COMMIT_EVERY_S). Launch detached so the laptop can sleep:
+        TINYWORLDS_GPU=H100 modal run --detach scripts/modal_train.py::train_como --overrides "run_name=como_zelda"
+    """
+    import subprocess
+
+    stop = threading.Event()
+
+    def commit_periodically():
+        while not stop.wait(COMMIT_EVERY_S):
+            results_volume.commit()
+
+    threading.Thread(target=commit_periodically, daemon=True).start()
+    try:
+        subprocess.run(["python", "scripts/train_como.py", "--config", config, "--", *[o for o in overrides.split(",") if o]],
+                       cwd=REPO_DIR, check=True)
+    finally:
+        stop.set()
+        results_volume.commit()
 
 
 @app.function(gpu=GPU, cpu=4, memory=32768, volumes=VOLUMES, timeout=6 * 60 * 60)
