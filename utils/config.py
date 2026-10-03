@@ -120,6 +120,8 @@ class VideoTokenizerConfig:
 	# dataloader throughput (None = defaults in datasets/data_utils.py: 2 workers, no pin_memory)
 	num_workers: Optional[int] = None
 	pin_memory: Optional[bool] = None
+	# True: no temporal attention in encoder/decoder (per-frame tokenizer)
+	per_frame: bool = False
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)

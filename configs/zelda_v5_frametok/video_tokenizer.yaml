@@ -1,0 +1,17 @@
+# zelda_v5_frametok tokenizer: identical to configs/zelda_v3/video_tokenizer.yaml except per_frame (pure ablation).
+# Removing the temporal attention drops the model from 12.7M to 8.5M parameters.
+batch_size_per_gpu: 64
+gradient_accumulation_steps: 1
+n_updates: 30000
+learning_rate: 0.0002   # 4e-4 collapsed the FSQ codebook to a single code at step ~2.3k (right after the 1.5k warmup):
+                        # 27 dB / 2091 codes at 2k -> 14 dB / 1 code from 3k on, no NaNs. Halved for the rerun.
+log_interval: 1000   # checkpoint + reconstruction PNG every 1000 steps
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 8
+
+per_frame: true     # no temporal attention in encoder or decoder
+
+checkpoint:
