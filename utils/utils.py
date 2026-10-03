@@ -283,6 +283,7 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, i
         'ot_decoder': cfg.get('ot_decoder', 'none'),
         'aux_label_weight': cfg.get('aux_label_weight', 0.0),
         'aux_label_classes': cfg.get('aux_label_classes', 9),
+        'aux_label_target': cfg.get('aux_label_target', 'latent'),
     }
     if model is None:
         model = LatentActionModel(**kwargs)

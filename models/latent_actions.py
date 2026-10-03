@@ -398,7 +398,7 @@ class LatentActionModel(nn.Module):
                  decoder_warp_entropy_weight=0.0, decoder_warp_entropy_ramp=3000,
                  decoder_warp_wta=False, wta_sinkhorn_eps=0.05, wta_encoder_weight=1.0, decoder_warp_local=0, decoder_warp_local_mask=False, wta_balance=1.0,
                  decoder_warp_local_gate=0.0, decoder_warp_local_blur=1, wta_kernel_repulsion=0.0,
-                 ot_encoder=False, ot_decoder='none', aux_label_weight=0.0, aux_label_classes=9):
+                 ot_encoder=False, ot_decoder='none', aux_label_weight=0.0, aux_label_classes=9, aux_label_target='latent'):
         super().__init__()
         assert math.log(n_actions, NUM_LATENT_ACTIONS_BINS).is_integer(), f"n_actions must be a power of {NUM_LATENT_ACTIONS_BINS}"
         self.action_dim=int(math.log(n_actions, NUM_LATENT_ACTIONS_BINS))
@@ -452,8 +452,14 @@ class LatentActionModel(nn.Module):
         #   pseudo-labels (e.g. the ITC teacher's 8 directions + STILL), CE weight aux_label_weight, so the codes align with
         #   the teacher's classes while the decoder objective is kept. 0 = off (original, no extra parameters)
         self.aux_label_weight = float(aux_label_weight)
-        if self.aux_label_weight > 0:
+        # aux_label_target (i6 B2): 'latent' = the head above (i5); 'codes' = class probs code_probs @ softmax(aux_map), a learned
+        #   [n_actions, classes] code -> class map (zero init = uniform), so the CE moves the quantised sign pattern itself
+        assert aux_label_target in ('latent', 'codes'), aux_label_target
+        self.aux_label_target = aux_label_target
+        if self.aux_label_weight > 0 and aux_label_target == 'latent':
             self.aux_head = nn.Linear(self.action_dim, int(aux_label_classes))
+        if self.aux_label_weight > 0 and aux_label_target == 'codes':
+            self.aux_map = nn.Parameter(torch.zeros(n_actions, int(aux_label_classes)))  # [n_actions, classes] logits
         self.last_aux_acc = torch.zeros(())
         self.var_target = 0.01
         self.var_lambda = 100.0
@@ -581,8 +587,15 @@ class LatentActionModel(nn.Module):
         # action_latents: [B, T-1, A] pre-tanh, aux: [B, T-1] long pseudo-labels (-1 = none) -> weighted CE (scalar)
         if self.aux_label_weight <= 0 or aux is None:
             return action_latents.new_zeros(()).float()
-        logits = self.aux_head(torch.tanh(action_latents.float()))  # [B, T-1, K]
         valid = aux >= 0  # [B, T-1]
+        if self.aux_label_target == 'codes':
+            probs = self.code_probs(action_latents) @ self.aux_map.float().softmax(-1)  # [N, n_actions] @ [n_actions, K] -> [N, K]
+            logp = probs.clamp_min(1e-8).log().reshape(*aux.shape, -1)  # [B, T-1, K]
+            if not valid.any():
+                return logp.sum() * 0.0
+            self.last_aux_acc = (logp.argmax(-1)[valid] == aux[valid]).float().mean().detach()
+            return self.aux_label_weight * F.nll_loss(logp[valid], aux[valid])
+        logits = self.aux_head(torch.tanh(action_latents.float()))  # [B, T-1, K]
         if not valid.any():
             return logits.sum() * 0.0
         self.last_aux_acc = (logits.argmax(-1)[valid] == aux[valid]).float().mean().detach()

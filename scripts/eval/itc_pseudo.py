@@ -10,6 +10,11 @@ teacher gate_stat_pix (crop at the densest pixel-change cluster, its own Otsu th
   label:  python scripts/eval/itc_pseudo.py label --lo 0 --hi 200 --out x.npz   (train pairs (t, t+gap), t in [lo, hi))
   merge:  python scripts/eval/itc_pseudo.py merge --parts a.npz b.npz --out data/zelda_train_itc_pseudo_gap4.npz
 
+i6 adds a third teacher, gate_stat_itcpix (code_itcpix): the ITC teacher's constants and facing bank, but the crop is
+placed at the densest cluster of (ITC-kept cells AND pixel-change cells); empty intersection -> STILL.
+  relabel: python scripts/eval/itc_pseudo.py relabel --base pseudo.npz --lo 0 --hi 200 --out x.npz   (itcpix only, on rows
+           where the base ran ITC; elsewhere code_itcpix = code_itc, which is exact: same gate, ITC skipped -> STILL)
+
 Output rows are .h5 frame indices t (the pair (t, t + gap)); -1 = no label (non-contiguous pair or not computed).
 Codes: 0..7 = R, DR, D, DL, L, UL, U, UR, 8 = STILL.
 """
@@ -30,7 +35,8 @@ from itc_actions import STILL, dir8, global_shift, is_scroll, itc_plan  # noqa: 
 from itc_correspondence import DATASETS  # noqa: E402
 from itc_facing import PATCH, bank, crop, densest, feat, knn, pix_cells  # noqa: E402
 
-TEACHERS = ['itc', 'pix']  # code_itc = gate_stat_itc, code_pix = gate_stat_pix
+TEACHERS = ['itc', 'pix']  # code_itc = gate_stat_itc, code_pix = gate_stat_pix (frozen constants in teacher.npz)
+OUT_TEACHERS = TEACHERS + ['itcpix']  # code_itcpix = gate_stat_itcpix (i6): uses the 'itc' constants
 
 
 def prep(args):
@@ -77,20 +83,22 @@ def label_pair(fa, fb, tok, T, device, args):
     r = dict(scroll=False, shift=tuple(int(v) for v in sh), fchg=fchg, itc_run=False)
     if is_scroll(sh, eb, e0, args.scroll_ratio):
         c = dir8(-sh[0], -sh[1])  # camera follows Link: content moves opposite to him
-        r.update(scroll=True, **{f'code_{w}': c for w in TEACHERS}, **{f'chg_{w}': -1 for w in TEACHERS},
-                 **{f'ctr_{w}': (np.nan, np.nan) for w in TEACHERS})
+        r.update(scroll=True, **{f'code_{w}': c for w in OUT_TEACHERS}, **{f'chg_{w}': -1 for w in OUT_TEACHERS},
+                 **{f'ctr_{w}': (np.nan, np.nan) for w in OUT_TEACHERS})
         return r
     # pixel-crop ablation teacher (no ITC)
     r['code_pix'], r['chg_pix'], r['ctr_pix'] = gated_code(T['pix'], fa, fb, densest(pix_cells(pm, Hp, Wp), Hp, Wp), fchg, args.k)
     # ITC teacher: the crop change is <= the frame change, so the gate cannot pass outside [t_chg, t_frame]: skip ITC there
     Ti = T['itc']
     if fchg < max(Ti['t_chg'], 20) or fchg > Ti['t_frame']:
-        r.update(code_itc=STILL, chg_itc=-1, ctr_itc=(np.nan, np.nan))
+        r.update(code_itc=STILL, chg_itc=-1, ctr_itc=(np.nan, np.nan), code_itcpix=STILL, chg_itcpix=-1, ctr_itcpix=(np.nan, np.nan))
         return r
     with torch.no_grad():
-        _, kept, _, _ = itc_plan(tok, np.stack([fa, fb]), device, args.temp, args.c_d, args.c_w, Wp)
+        _, kept, _, _ = itc_plan(tok, np.stack([fa, fb]), device, args.temp, args.c_d, args.c_w, Wp)  # kept [L] bool
     r['itc_run'] = True
     r['code_itc'], r['chg_itc'], r['ctr_itc'] = gated_code(Ti, fa, fb, densest(kept, Hp, Wp), fchg, args.k)
+    # i6 itcpix: ITC-kept cells that also changed in pixels (drops code flips in pixel-static cells)
+    r['code_itcpix'], r['chg_itcpix'], r['ctr_itcpix'] = gated_code(Ti, fa, fb, densest(kept & pix_cells(pm, Hp, Wp), Hp, Wp), fchg, args.k)
     return r
 
 
@@ -109,23 +117,27 @@ def judge(args):
     T = load_teacher(args.teacher)
     X = h5py.File(args.frames, 'r')['frames']
     tr = json.load(open(args.transitions))['transitions']
-    out = {w: {} for w in TEACHERS}
+    out = {w: {} for w in OUT_TEACHERS}
     t0 = time.time()
     for t in tr:
         r = label_pair(X[t['frame_a']], X[t['frame_b']], tok, T, device, args)
-        for w in TEACHERS:
+        for w in OUT_TEACHERS:
             out[w][str(t['id'])] = int(r[f'code_{w}'])
     print(f'{len(tr)} judge transitions in {time.time() - t0:.0f}s')
     os.makedirs(args.out_dir, exist_ok=True)
-    for w in TEACHERS:
+    for w in OUT_TEACHERS:
         json.dump(out[w], open(os.path.join(args.out_dir, f'codes_teacher_{w}.json'), 'w'))
+        if w not in TEACHERS:
+            print(f'teacher {w}: agreement with teacher itc', sum(out[w][i] == out['itc'][i] for i in out[w]), '/', len(out[w]))
+            continue
         ref = json.load(open(os.path.join(args.i4_dir, f'codes_gate_stat_{w}.json')))
         same = sum(out[w][i] == ref[i] for i in ref)
         print(f'teacher {w}: agreement with i4 gate_stat_{w} {same}/{len(ref)}',
               [(i, ref[i], out[w][i]) for i in ref if out[w][i] != ref[i]][:10])
 
 
-FIELDS = {'code_itc': -1, 'code_pix': -1, 'scroll': -1, 'fchg': -1, 'chg_itc': -1, 'chg_pix': -1, 'itc_run': -1}
+FIELDS = {'code_itc': -1, 'code_pix': -1, 'scroll': -1, 'fchg': -1, 'chg_itc': -1, 'chg_pix': -1, 'itc_run': -1,
+          'code_itcpix': -1, 'chg_itcpix': -1}
 
 
 def label(args):
@@ -140,6 +152,7 @@ def label(args):
     out = {k: np.full(hi - args.lo, v, np.int64) for k, v in FIELDS.items()}
     out['shift'] = np.zeros((hi - args.lo, 2), np.int64)
     out['ctr_itc'] = np.full((hi - args.lo, 2), np.nan, np.float32); out['ctr_pix'] = out['ctr_itc'].copy()
+    out['ctr_itcpix'] = out['ctr_itc'].copy()
     t0 = time.time()
     for n, t in enumerate(range(args.lo, hi)):
         if src[t + gap] != src[t] + gap:
@@ -147,12 +160,40 @@ def label(args):
         r = label_pair(X[n], X[n + gap], tok, T, device, args)
         for k in FIELDS:
             out[k][n] = int(r[k])
-        out['shift'][n] = r['shift']; out['ctr_itc'][n] = r['ctr_itc']; out['ctr_pix'][n] = r['ctr_pix']
+        out['shift'][n] = r['shift']
+        for w in OUT_TEACHERS:
+            out[f'ctr_{w}'][n] = r[f'ctr_{w}']
         if (n + 1) % 200 == 0:
             print(f'[{args.lo}, {hi}) {n + 1}/{hi - args.lo} ({time.time() - t0:.0f}s, ITC on {int((out["itc_run"] == 1).sum())})',
                   flush=True)
     np.savez_compressed(args.out, lo=args.lo, hi=hi, gap=gap, **out)
     print(f'saved {args.out}: [{args.lo}, {hi}) in {time.time() - t0:.0f}s')
+
+
+def relabel(args):
+    # i6: add code_itcpix to an existing label file, running ITC only where the base did (base itc_run == 1, t in [lo, hi))
+    tok, device = load_tok(args)
+    T = load_teacher(args.teacher)
+    z = np.load(args.base)
+    gap = int(z['gap'])
+    h = h5py.File(args.train_frames, 'r')
+    hi = min(args.hi, len(z['code_itc']))
+    rows = np.nonzero(z['itc_run'][args.lo:hi] == 1)[0] + args.lo
+    out = dict(code_itcpix=z['code_itc'][args.lo:hi].copy(), chg_itcpix=np.where(z['itc_run'][args.lo:hi] == 1, -1, z['chg_itc'][args.lo:hi]),
+               ctr_itcpix=np.where(z['itc_run'][args.lo:hi, None] == 1, np.nan, z['ctr_itc'][args.lo:hi]).astype(np.float32))
+    out['code_itc_rerun'] = out['code_itcpix'].copy()
+    t0 = time.time()
+    for n, t in enumerate(rows):
+        r = label_pair(h['frames'][t], h['frames'][t + gap], tok, T, device, args)
+        i = t - args.lo
+        # the ITC teacher rerun can differ from the base on a few pairs (CPU float noise flips FSQ codes near bin edges): count it
+        out['code_itc_rerun'][i] = r['code_itc']
+        out['code_itcpix'][i], out['chg_itcpix'][i], out['ctr_itcpix'][i] = r['code_itcpix'], r['chg_itcpix'], r['ctr_itcpix']
+        if (n + 1) % 100 == 0:
+            print(f'[{args.lo}, {hi}) {n + 1}/{len(rows)} ({time.time() - t0:.0f}s)', flush=True)
+    np.savez_compressed(args.out, lo=args.lo, hi=hi, gap=gap, **out)
+    print(f'saved {args.out}: [{args.lo}, {hi}) ITC on {len(rows)} in {time.time() - t0:.0f}s; ITC rerun differs from base on',
+          int((out['code_itc_rerun'] != z['code_itc'][args.lo:hi]).sum()))
 
 
 def merge(args):
@@ -166,17 +207,27 @@ def merge(args):
         lo, hi = int(z['lo']), int(z['hi'])
         for k in full:
             full[k][lo:hi] = z[k]
+    if args.base:  # relabel parts: add their fields to the base label file
+        z = np.load(args.base)
+        full = {**{k: z[k] for k in z.files if k != 'gap'}, **full}
     np.savez_compressed(args.out, gap=args.gap, **full)
     lab = full['code_itc'] >= 0
     print(f'saved {args.out}: {lab.sum()} labelled pairs of {N}; scroll {(full["scroll"] == 1).sum()}, ITC run {(full["itc_run"] == 1).sum()}')
-    for w in TEACHERS:
-        print(f'code_{w} counts (R DR D DL L UL U UR STILL):', np.bincount(full[f'code_{w}'][lab], minlength=9).tolist())
+    for w in [w for w in OUT_TEACHERS if f'code_{w}' in full]:
+        print(f'code_{w} counts (R DR D DL L UL U UR STILL):', np.bincount(full[f'code_{w}'][lab & (full[f'code_{w}'] >= 0)], minlength=9).tolist())
     print('itc/pix agreement', float((full['code_itc'][lab] == full['code_pix'][lab]).mean()))
+    if 'code_itcpix' in full:
+        for w in TEACHERS:
+            m = lab & (full['code_itcpix'] >= 0)  # a partial (smoke) relabel leaves -1 outside its rows
+            print(f'itcpix/{w} agreement on {m.sum()} pairs', float((full['code_itcpix'][m] == full[f'code_{w}'][m]).mean()))
+        if 'code_itc_rerun' in full:
+            print('ITC rerun == base code_itc on', float((full['code_itc_rerun'][m] == full['code_itc'][m]).mean()))
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('cmd', choices=['prep', 'judge', 'label', 'merge'])
+    p.add_argument('cmd', choices=['prep', 'judge', 'label', 'relabel', 'merge'])
+    p.add_argument('--base', default='', help='relabel: existing label file; merge: base file the relabel parts extend')
     p.add_argument('--lo', type=int, default=0)
     p.add_argument('--hi', type=int, default=200)
     p.add_argument('--out', default='eval_results/itc_loop/i5/pseudo_part.npz')
@@ -199,7 +250,7 @@ def main():
     p.add_argument('--pix-thresh', type=int, default=40)
     p.add_argument('--scroll-ratio', type=float, default=0.5)
     args = p.parse_args()
-    {'prep': prep, 'judge': judge, 'label': label, 'merge': merge}[args.cmd](args)
+    {'prep': prep, 'judge': judge, 'label': label, 'relabel': relabel, 'merge': merge}[args.cmd](args)
 
 
 if __name__ == '__main__':

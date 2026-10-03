@@ -217,6 +217,10 @@ class LatentActionsConfig:
 	aux_label_key: str = "code_itc"
 	aux_label_weight: float = 0.0
 	aux_label_classes: int = 9
+	# STA-35 itc_loop i6 (B2): where the aux CE acts. 'latent' = linear head on tanh(action latent) (i5, default);
+	# 'codes' = soft code distribution code_probs [N, n_actions] @ softmax(learned [n_actions, classes] map), so the quantised
+	# sign pattern itself must carry the class
+	aux_label_target: str = "latent"
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)

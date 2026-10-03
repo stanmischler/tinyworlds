@@ -272,6 +272,44 @@ def itc_pseudo(lo: int = 0, hi: int = -1, n_chunks: int = 64, out: str = "data/z
     print(f"PSEUDO DONE -> {out}")
 
 
+@app.function(cpu=2, memory=4096, volumes=VOLUMES, timeout=3 * 60 * 60)
+def itc_relabel_chunk(lo: int, hi: int, base: str) -> bytes:
+    """i6: add the itcpix teacher (scripts/eval/itc_pseudo.py relabel) on rows [lo, hi) where `base` ran ITC."""
+    import subprocess
+    import tempfile
+
+    out = tempfile.mktemp(suffix=".npz")
+    subprocess.run(["python", "scripts/eval/itc_pseudo.py", "relabel", "--base", base, "--lo", str(lo), "--hi", str(hi), "--out", out,
+                    "--tokenizer", ITC_TOKENIZER, "--threads", "2"], cwd=REPO_DIR, check=True)
+    return open(out, "rb").read()
+
+
+@app.function(cpu=2, memory=8192, volumes=VOLUMES, timeout=6 * 60 * 60)
+def itc_relabel(base: str = "data/zelda_train_itc_pseudo_gap4.npz", lo: int = 0, hi: int = -1, n_chunks: int = 64,
+                out: str = "data/zelda_train_itc_pseudo_gap4_i6.npz"):
+    """STA-35 itc_loop i6: relabel only the ITC pairs of the i5 label file with the itcpix teacher (ITC-kept AND pixel-change
+    localiser); chunks are balanced by ITC-pair count. Output = base fields + code_itcpix/chg_itcpix/ctr_itcpix (data volume).
+        modal run --detach scripts/modal_train.py::itc_relabel --hi 2000 --n-chunks 2 --out data/itc_i6/relabel_smoke.npz
+    """
+    import subprocess
+
+    import numpy as np
+
+    run = np.load(f"{REPO_DIR}/{base}")["itc_run"]
+    hi = len(run) if hi < 0 else hi
+    cum = np.cumsum(run[lo:hi] == 1)
+    bounds = [lo] + [lo + int(np.searchsorted(cum, cum[-1] * k / n_chunks)) for k in range(1, n_chunks)] + [hi]
+    os.makedirs(f"{REPO_DIR}/data/itc_i6/parts", exist_ok=True)
+    parts = []
+    args = [(a, b, base) for a, b in zip(bounds[:-1], bounds[1:]) if b > a]
+    for (a, _, _), blob in zip(args, itc_relabel_chunk.starmap(args)):
+        parts.append(f"{REPO_DIR}/data/itc_i6/parts/{a}.npz")
+        open(parts[-1], "wb").write(blob)
+    subprocess.run(["python", "scripts/eval/itc_pseudo.py", "merge", "--base", base, "--parts", *parts, "--out", out], cwd=REPO_DIR, check=True)
+    data_volume.commit()
+    print(f"RELABEL DONE -> {out}")
+
+
 @app.function(gpu=GPU, cpu=4, memory=16384, volumes=VOLUMES, timeout=2 * 60 * 60)
 def train_encoder(run_name: str, extra_args: str = ""):
     """STA-35 itc_loop i5 arm A: frame-pair action encoder on teacher pseudo-labels (scripts/train_action_encoder.py).

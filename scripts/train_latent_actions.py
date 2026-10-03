@@ -114,6 +114,7 @@ def main():
         ot_decoder=args.ot_decoder,
         aux_label_weight=args.aux_label_weight,
         aux_label_classes=args.aux_label_classes,
+        aux_label_target=args.aux_label_target,
     ).to(args.device)
     if args.checkpoint:
         model, _ = load_latent_actions_from_checkpoint(
