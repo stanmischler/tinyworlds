@@ -1,4 +1,4 @@
-# STA-42 arm: full actions (full 128-d continuous z, standardized), v5 tokenizer. zelda_v4 copy_long recipe with mask prob 1.0; lr from the STA-42 sweep.
+# STA-42 arm: full actions (full 128-d continuous z, standardized), v5 tokenizer. zelda_v4 copy_long recipe; lr from the STA-42 sweep.
 batch_size_per_gpu: 64
 gradient_accumulation_steps: 1
 n_updates: 30000
@@ -12,7 +12,7 @@ num_heads: 8
 hidden_dim: 512
 num_blocks: 12
 
-full_last_frame_mask_prob: 1.0   # always clean context + fully masked 4th frame: 1-pass prediction (PR #14: 1 pass beat 10 by ~1.2 dB)
+full_last_frame_mask_prob: 0.8
 copy_prior: true
 seed: 0
 
