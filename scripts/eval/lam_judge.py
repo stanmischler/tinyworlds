@@ -112,6 +112,11 @@ def lam_codes(ckpt, wins, device, batch=32):
     from utils.utils import load_latent_actions_from_checkpoint
     lam, _ = load_latent_actions_from_checkpoint(ckpt, device)
     lam.eval()
+    return codes_from_lam(lam, wins, device, batch)
+
+
+def codes_from_lam(lam, wins, device, batch=32):
+    # lam in eval mode -> codes [N, T-1] for every held-out window, n_codes
     q, A = lam.quantizer, lam.action_dim
     with h5py.File(H5, 'r') as h5, torch.no_grad():
         zq = torch.cat([lam.encode(to_model_range(load_window_batch(h5['frames'], wins[i:i + batch], SEQ - 1, SKIP), device))
@@ -141,6 +146,21 @@ def _table(codes, labels, n_codes, classes):
     for c, l in zip(codes, labels):
         tab[c, classes.index(l)] += 1
     return tab
+
+
+def judged_metrics(meta, labels, n_codes, codes_all=None, code_of_id=None):
+    # codes_all [N windows, T-1] (or code_of_id {"<transition id>": code}) -> metrics on the judged set
+    ids, codes, labs = [], [], []
+    for tr in meta['transitions']:
+        i = str(tr['id'])
+        if i not in labels:
+            continue
+        ids.append(i)
+        codes.append(int(codes_all[tr['window'], tr['t']]) if codes_all is not None else int(code_of_id[i]))
+        labs.append(labels[i])
+    return {'n_codes': n_codes, 'all': metrics(codes, labs, n_codes, LABELS),
+            'moves_only': metrics([c for c, l in zip(codes, labs) if l in MOVES], [l for l in labs if l in MOVES], n_codes, MOVES),
+            'per_transition': dict(zip(ids, codes))}
 
 
 def code_grids(name, codes_all, wins, n_codes, out_dir, per_code=6):
@@ -180,18 +200,8 @@ def score(args):
         else:  # {"<transition id>": code}: only the judged set, no grids
             cj = json.load(open(path))
             codes_all, n_codes = None, int(max(cj.values())) + 1
-        ids, codes, labs = [], [], []
-        for tr in meta['transitions']:
-            i = str(tr['id'])
-            if i not in labels:
-                continue
-            ids.append(i)
-            codes.append(int(codes_all[tr['window'], tr['t']]) if codes_all is not None else int(cj[i]))
-            labs.append(labels[i])
-        res = {'name': name, 'source': path, 'n_codes': n_codes, 'labels_file': args.labels,
-               'all': metrics(codes, labs, n_codes, LABELS),
-               'moves_only': metrics([c for c, l in zip(codes, labs) if l in MOVES], [l for l in labs if l in MOVES], n_codes, MOVES),
-               'per_transition': dict(zip(ids, codes))}
+        res = {'name': name, 'source': path, 'labels_file': args.labels,
+               **judged_metrics(meta, labels, n_codes, codes_all=codes_all, code_of_id=None if codes_all is not None else cj)}
         if codes_all is not None:
             usage, paths = code_grids(name, codes_all, wins, n_codes, out_dir)
             p = usage[usage > 0]

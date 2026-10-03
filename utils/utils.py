@@ -239,6 +239,11 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, i
     model_sd = torch.load(Path(checkpoint_path) / MODEL_CHECKPOINT, map_location='cpu', weights_only=True)
     state_cfg = torch.load(Path(checkpoint_path) / STATE, map_location='cpu', weights_only=False)
     cfg = state_cfg.get('config', {}) or {}
+    if state_cfg.get('model_type') == 'laof':  # LAOF (models/laof.py, scripts/train_laof.py): kwargs saved verbatim
+        from models.laof import LAOF
+        model = LAOF(**state_cfg['model_kwargs']) if model is None else model
+        model.load_state_dict(model_sd)
+        return model.to(device), state_cfg
     frame_size = cfg.get('frame_size', 128)
     kwargs = {
         'frame_size': (frame_size, frame_size),

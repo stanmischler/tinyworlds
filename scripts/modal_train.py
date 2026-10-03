@@ -189,6 +189,51 @@ def eval_lam(arms: str):
         print(f"EVAL DONE {name} -> evals/{name}")
 
 
+@app.function(gpu=GPU, cpu=4, memory=32768, volumes=VOLUMES, timeout=6 * 60 * 60)
+def laof_flow(split: str = "test", limit: int = 0, batch: int = 32):
+    """LAOF flow targets (scripts/laof_flow.py) for data/zelda_<split>_frames.h5 -> data/zelda_<split>_flow_gap4.h5 in the
+    data volume (+ a viz PNG in the results volume under laof/). limit > 0 writes a *_smoke file instead.
+        modal run scripts/modal_train.py::laof_flow --split test --limit 512
+    """
+    import subprocess
+
+    tag = "_smoke" if limit else ""
+    os.makedirs(f"{REPO_DIR}/results/laof", exist_ok=True)
+    subprocess.run(
+        ["python", "scripts/laof_flow.py", "--h5", f"data/zelda_{split}_frames.h5", "--out", f"data/zelda_{split}_flow_gap4{tag}.h5",
+         "--batch", str(batch), "--limit", str(limit), "--viz", f"results/laof/flow_{split}{tag}.png"],
+        cwd=REPO_DIR,
+        check=True,
+    )
+    data_volume.commit()
+    results_volume.commit()
+
+
+@app.function(gpu=GPU, cpu=4, memory=32768, volumes=VOLUMES, secrets=SECRETS, timeout=24 * 60 * 60)
+def train_laof(config: str, overrides: str = "", run_name: str = ""):
+    """LAOF latent action model (scripts/train_laof.py); checkpoints, viz and judge.jsonl in results/<run_name>/latent_actions/.
+        TINYWORLDS_GPU=H100 modal run --detach scripts/modal_train.py::train_laof --config configs/laof/discrete.yaml --run-name laof_discrete
+    """
+    import subprocess
+
+    stop = threading.Event()
+
+    def commit_periodically():
+        while not stop.wait(COMMIT_EVERY_S):
+            results_volume.commit()
+
+    threading.Thread(target=commit_periodically, daemon=True).start()
+    try:
+        subprocess.run(
+            ["python", "scripts/train_laof.py", "--config", config, f"run_name={run_name}", *[o for o in overrides.split(",") if o]],
+            cwd=REPO_DIR,
+            check=True,
+        )
+    finally:
+        stop.set()
+        results_volume.commit()
+
+
 @app.local_entrypoint()
 def main(
     dataset: str = "ZELDA",
