@@ -120,7 +120,7 @@ def main():
         # mode="default" rather than "reduce-overhead": CUDA-graph mode crashed the latent-actions stage on H100
         # (inductor: "storage data ptrs are not allocated in pool", torch 2.8); same model is compiled here
         video_tokenizer = torch.compile(video_tokenizer, mode="default", fullgraph=False, dynamic=True)
-        if latent_action_model is not None:
+        if latent_action_model is not None and not args.action_file:
             latent_action_model = torch.compile(latent_action_model, mode="default", fullgraph=False, dynamic=True)
         dynamics_model = torch.compile(dynamics_model, mode="default", fullgraph=False, dynamic=True)
         print("Compiled all models for training.")
@@ -193,6 +193,19 @@ def main():
         world_size=dist_setup['world_size'],
         **data_overrides,
     )
+    if args.action_file:
+        # precomputed per-row actions (scripts/como_actions.py); the .npy rows are .h5 frames, the dataset may skip the
+        # first load_start_index of them (Zelda: 1000)
+        assert not use_gt_actions and hasattr(unwrap_model(latent_action_model), 'standardize'), \
+            'action_file needs a CoMo action dir as latent_actions_path'
+        import numpy as np
+        train_data = training_loader.dataset
+        start = train_data.load_start_index
+        acts = np.load(args.action_file)[start:start + len(train_data.data)]  # [N, A]
+        assert len(acts) == len(train_data.data) and acts.shape[1] == conditioning_dim, (acts.shape, len(train_data.data), conditioning_dim)
+        train_data.actions = acts
+        if is_main:
+            print(f"actions from {args.action_file}: {acts.shape}")
     train_iter = iter(training_loader)
 
     use_moe = getattr(args, 'use_moe', False)
@@ -216,7 +229,9 @@ def main():
             # get video tokens for batch
             video_tokens = video_tokenizer.tokenize(x) # [B, T, P]
             video_latents = video_tokenizer.quantizer.get_latents_from_indices(video_tokens, dim=-1) # [B, T, P, L]
-            if args.use_actions and use_gt_actions:
+            if args.use_actions and args.action_file:
+                quantized_actions = latent_action_model.standardize(gt_actions.to(args.device, non_blocking=True))  # [B, T - 1, A]
+            elif args.use_actions and use_gt_actions:
                 quantized_actions = gt_actions.to(args.device, non_blocking=True).float()  # [B, T - 1, A]
             elif args.use_actions:
                 quantized_actions = latent_action_model.encode(x)  # [B, T - 1, A]
