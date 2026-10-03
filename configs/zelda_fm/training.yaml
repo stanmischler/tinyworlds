@@ -1,8 +1,9 @@
 # STA-28: flow-matching dynamics on Zelda (dynamics_type flow, models/flow_dynamics.py). Same frozen v3 tokenizer, CoMo
 # actions and backbone as the STA-42 MaskGIT arms (configs/zelda_como/), so each FM arm has a MaskGIT twin.
-# Sweep (k16 actions, 8k steps), 4 arms {fm_pred v, x} x {fm_shift 1, 3}:
+# Sweep (k16 actions, 8k steps), 4 arms {fm_pred v, x} x {fm_shift 1, 3}, one dynamics yaml each (fm_* keys are not
+# TrainingConfig keys, so they cannot be --overrides):
 #   TINYWORLDS_GPU=H100 modal run --detach scripts/modal_train.py --dataset ZELDA_TRAIN --training-config configs/zelda_fm/training.yaml \
-#     --overrides "fm_pred=v,fm_shift=1.0" --run-name zelda_fm_sweep_v_s1
+#     --overrides "dynamics_config=configs/zelda_fm/dynamics_k16_v_s1.yaml" --run-name zelda_fm_sweep_v_s1
 # Long runs: --overrides "dynamics_config=configs/zelda_fm/dynamics_{k16,full}_long.yaml" --run-name zelda_fm_{k16,full}
 use_wandb: true
 wandb_project: tinyworlds
