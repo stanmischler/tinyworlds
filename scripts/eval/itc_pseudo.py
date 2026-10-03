@@ -15,6 +15,12 @@ placed at the densest cluster of (ITC-kept cells AND pixel-change cells); empty 
   relabel: python scripts/eval/itc_pseudo.py relabel --base pseudo.npz --lo 0 --hi 200 --out x.npz   (itcpix only, on rows
            where the base ran ITC; elsewhere code_itcpix = code_itc, which is exact: same gate, ITC skipped -> STILL)
 
+i7 adds gate_stat_itc_pixbank (code_itc_pixbank): the pixel teacher exactly (its 116 px threshold, frame cap and facing bank)
+except that the crop sits at the densest ITC-kept cluster (the single-variable localiser ablation of gate_stat_pix).
+  judge:   also writes codes_teacher_itc_pixbank.json
+  rebank:  python scripts/eval/itc_pseudo.py rebank --base pseudo.npz --out x.npz   (offline, no ITC rerun: re-gates the cached
+           chg_itc with the pix constants and re-classifies the crop of frame t+gap at the cached ctr_itc with the pix bank)
+
 Output rows are .h5 frame indices t (the pair (t, t + gap)); -1 = no label (non-contiguous pair or not computed).
 Codes: 0..7 = R, DR, D, DL, L, UL, U, UR, 8 = STILL.
 """
@@ -37,6 +43,7 @@ from itc_facing import PATCH, bank, crop, densest, feat, knn, pix_cells  # noqa:
 
 TEACHERS = ['itc', 'pix']  # code_itc = gate_stat_itc, code_pix = gate_stat_pix (frozen constants in teacher.npz)
 OUT_TEACHERS = TEACHERS + ['itcpix']  # code_itcpix = gate_stat_itcpix (i6): uses the 'itc' constants
+JUDGE_EXTRA = ['itc_pixbank']  # i7 gate_stat_itc_pixbank: ITC-kept crop, 'pix' constants + bank (judge only; train labels via rebank)
 
 
 def prep(args):
@@ -84,19 +91,22 @@ def label_pair(fa, fb, tok, T, device, args):
     if is_scroll(sh, eb, e0, args.scroll_ratio):
         c = dir8(-sh[0], -sh[1])  # camera follows Link: content moves opposite to him
         r.update(scroll=True, **{f'code_{w}': c for w in OUT_TEACHERS}, **{f'chg_{w}': -1 for w in OUT_TEACHERS},
-                 **{f'ctr_{w}': (np.nan, np.nan) for w in OUT_TEACHERS})
+                 **{f'ctr_{w}': (np.nan, np.nan) for w in OUT_TEACHERS}, code_itc_pixbank=c)
         return r
     # pixel-crop ablation teacher (no ITC)
     r['code_pix'], r['chg_pix'], r['ctr_pix'] = gated_code(T['pix'], fa, fb, densest(pix_cells(pm, Hp, Wp), Hp, Wp), fchg, args.k)
     # ITC teacher: the crop change is <= the frame change, so the gate cannot pass outside [t_chg, t_frame]: skip ITC there
     Ti = T['itc']
     if fchg < max(Ti['t_chg'], 20) or fchg > Ti['t_frame']:
-        r.update(code_itc=STILL, chg_itc=-1, ctr_itc=(np.nan, np.nan), code_itcpix=STILL, chg_itcpix=-1, ctr_itcpix=(np.nan, np.nan))
+        r.update(code_itc=STILL, chg_itc=-1, ctr_itc=(np.nan, np.nan), code_itcpix=STILL, chg_itcpix=-1, ctr_itcpix=(np.nan, np.nan),
+                 code_itc_pixbank=STILL)  # exact: the pix gate (116 px, same cap) is stricter than the ITC skip range
         return r
     with torch.no_grad():
         _, kept, _, _ = itc_plan(tok, np.stack([fa, fb]), device, args.temp, args.c_d, args.c_w, Wp)  # kept [L] bool
     r['itc_run'] = True
-    r['code_itc'], r['chg_itc'], r['ctr_itc'] = gated_code(Ti, fa, fb, densest(kept, Hp, Wp), fchg, args.k)
+    c_itc = densest(kept, Hp, Wp)
+    r['code_itc'], r['chg_itc'], r['ctr_itc'] = gated_code(Ti, fa, fb, c_itc, fchg, args.k)
+    r['code_itc_pixbank'] = gated_code(T['pix'], fa, fb, c_itc, fchg, args.k)[0]  # i7: same crop, pix threshold + bank
     # i6 itcpix: ITC-kept cells that also changed in pixels (drops code flips in pixel-static cells)
     r['code_itcpix'], r['chg_itcpix'], r['ctr_itcpix'] = gated_code(Ti, fa, fb, densest(kept & pix_cells(pm, Hp, Wp), Hp, Wp), fchg, args.k)
     return r
@@ -117,15 +127,15 @@ def judge(args):
     T = load_teacher(args.teacher)
     X = h5py.File(args.frames, 'r')['frames']
     tr = json.load(open(args.transitions))['transitions']
-    out = {w: {} for w in OUT_TEACHERS}
+    out = {w: {} for w in OUT_TEACHERS + JUDGE_EXTRA}
     t0 = time.time()
     for t in tr:
         r = label_pair(X[t['frame_a']], X[t['frame_b']], tok, T, device, args)
-        for w in OUT_TEACHERS:
+        for w in OUT_TEACHERS + JUDGE_EXTRA:
             out[w][str(t['id'])] = int(r[f'code_{w}'])
     print(f'{len(tr)} judge transitions in {time.time() - t0:.0f}s')
     os.makedirs(args.out_dir, exist_ok=True)
-    for w in OUT_TEACHERS:
+    for w in OUT_TEACHERS + JUDGE_EXTRA:
         json.dump(out[w], open(os.path.join(args.out_dir, f'codes_teacher_{w}.json'), 'w'))
         if w not in TEACHERS:
             print(f'teacher {w}: agreement with teacher itc', sum(out[w][i] == out['itc'][i] for i in out[w]), '/', len(out[w]))
@@ -196,6 +206,39 @@ def relabel(args):
           int((out['code_itc_rerun'] != z['code_itc'][args.lo:hi]).sum()))
 
 
+def rebank(args):
+    # i7: code_itc_pixbank for every train pair from the cached ITC crop (ctr_itc, chg_itc), no ITC rerun. Exact w.r.t. label_pair:
+    # gated_code only needs the crop centre, the crop change and the frame change; scroll rows keep the scroll code, rows where the
+    # base skipped ITC are STILL (fchg outside [86, 1615] px, and the pix gate needs chg >= 116 px <= fchg, same cap).
+    T = load_teacher(args.teacher)
+    z = np.load(args.base)
+    gap = int(z['gap'])
+    code_itc, chg, fchg, run, ctr = z['code_itc'], z['chg_itc'], z['fchg'], z['itc_run'] == 1, z['ctr_itc']
+    new = code_itc.copy()
+    new[run] = STILL
+    check = {}  # recomputed code_itc (ITC constants + bank) on the same cached crops: must equal the base
+    h = h5py.File(args.train_frames, 'r')['frames']
+    t0 = time.time()
+    for w, rows in [(w, np.nonzero(run & (chg >= max(T[w]['t_chg'], 20)) & (fchg <= T[w]['t_frame']))[0]) for w in ['pix', 'itc']]:
+        for n, t in enumerate(rows):
+            fb = h[t + gap]
+            code = knn(T[w]['Fb'], T[w]['yb'], feat(crop(fb, *ctr[t]), 'pix'), args.k)
+            if w == 'pix':
+                new[t] = code
+            else:
+                check[t] = code
+            if (n + 1) % 2000 == 0:
+                print(f'{w}: {n + 1}/{len(rows)} ({time.time() - t0:.0f}s)', flush=True)
+    rows_itc = np.array(sorted(check), dtype=np.int64)
+    ok = float((np.array([check[t] for t in rows_itc]) == code_itc[rows_itc]).mean()) if len(rows_itc) else 1.0
+    lab = code_itc >= 0
+    np.savez_compressed(args.out, **{k: z[k] for k in z.files}, code_itc_pixbank=new)
+    print(f'saved {args.out} in {time.time() - t0:.0f}s; code_itc recomputed from the cache == base on {ok:.4f} of {len(rows_itc)} walks')
+    print('code_itc_pixbank counts (R DR D DL L UL U UR STILL):', np.bincount(new[lab], minlength=9).tolist())
+    for w in TEACHERS:
+        print(f'itc_pixbank/{w} agreement', float((new[lab] == z[f'code_{w}'][lab]).mean()))
+
+
 def merge(args):
     N = len(h5py.File(args.train_frames, 'r')['source_index'])
     full = None
@@ -226,7 +269,7 @@ def merge(args):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('cmd', choices=['prep', 'judge', 'label', 'relabel', 'merge'])
+    p.add_argument('cmd', choices=['prep', 'judge', 'label', 'relabel', 'rebank', 'merge'])
     p.add_argument('--base', default='', help='relabel: existing label file; merge: base file the relabel parts extend')
     p.add_argument('--lo', type=int, default=0)
     p.add_argument('--hi', type=int, default=200)
@@ -250,7 +293,7 @@ def main():
     p.add_argument('--pix-thresh', type=int, default=40)
     p.add_argument('--scroll-ratio', type=float, default=0.5)
     args = p.parse_args()
-    {'prep': prep, 'judge': judge, 'label': label, 'relabel': relabel, 'merge': merge}[args.cmd](args)
+    {'prep': prep, 'judge': judge, 'label': label, 'relabel': relabel, 'rebank': rebank, 'merge': merge}[args.cmd](args)
 
 
 if __name__ == '__main__':
