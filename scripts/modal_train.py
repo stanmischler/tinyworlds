@@ -165,7 +165,7 @@ def train(dataset: str = "ZELDA", overrides: list[str] | None = None, training_c
 
 
 @app.function(gpu="L4", cpu=4, memory=16384, volumes=VOLUMES, timeout=60 * 60)
-def eval_lam(arms: str):
+def eval_lam(arms: str, extra: str = ""):
     """Score LAM checkpoints on the held-out Zelda judge set + eval_lam diagnostic, on a GPU (keeps the laptop free).
 
     arms: "<name>=<checkpoint dir relative to the results volume>,<name>=...". Outputs go to the results volume under
@@ -181,12 +181,13 @@ def eval_lam(arms: str):
         ckpt = f"{REPO_DIR}/results/{ckpt}"
         out = f"{REPO_DIR}/results/evals/{name}"
         os.makedirs(out, exist_ok=True)
-        subprocess.run(["python", "scripts/eval/lam_judge.py", "score", "--device", "cuda", "--lam", f"{name}={ckpt}"], cwd=REPO_DIR, check=True)
+        x = extra.split()  # extra lam_judge score args, e.g. "--kmeans-seeds 10"
+        subprocess.run(["python", "scripts/eval/lam_judge.py", "score", "--device", "cuda", "--lam", f"{name}={ckpt}", *x], cwd=REPO_DIR, check=True)
         shutil.copytree(f"{REPO_DIR}/eval_results/lam_judge/{name}", out, dirs_exist_ok=True)
         import torch
         if (torch.load(f"{ckpt}/state.pt", weights_only=False).get("config") or {}).get("model_type") == "como":
             # CoMo: continuous actions, no LAM decoder for eval_lam.py; also score 8 clusters
-            subprocess.run(["python", "scripts/eval/lam_judge.py", "score", "--device", "cuda", "--k", "8", "--lam", f"{name}_k8={ckpt}"], cwd=REPO_DIR, check=True)
+            subprocess.run(["python", "scripts/eval/lam_judge.py", "score", "--device", "cuda", "--k", "8", "--lam", f"{name}_k8={ckpt}", *x], cwd=REPO_DIR, check=True)
             shutil.copytree(f"{REPO_DIR}/eval_results/lam_judge/{name}_k8", f"{out}_k8", dirs_exist_ok=True)
             results_volume.commit()
             print(f"EVAL DONE {name} -> evals/{name}")

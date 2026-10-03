@@ -233,7 +233,22 @@ def score(args):
             zs = (torch.stack([z_all[trs[i]['window'], trs[i]['t']] for i in ids]) - zf.mean(0)) @ pcs
             mv = [j for j, l in enumerate(labs) if l in MOVES]
             pa, pm = probe(zs, labs), probe(zs[mv], [labs[j] for j in mv])
+            if args.kmeans_seeds > 1:  # clustering noise: moves / all NMI_adj over k-means seeds 0..n-1 (seed 0 = headline)
+                A = z_all.shape[-1]
+                sc = {'moves': [], 'all': []}
+                for sd in range(args.kmeans_seeds):
+                    cs = torch.cdist(zf, kmeans(zf, n_codes, seed=sd)).argmin(1).reshape(z_all.shape[:-1]).numpy()
+                    cc = [int(cs[trs[i]['window'], trs[i]['t']]) for i in ids]
+                    sc['all'].append(metrics(cc, labs, n_codes, LABELS)['nmi_adj'])
+                    sc['moves'].append(metrics([c for c, l in zip(cc, labs) if l in MOVES], [l for l in labs if l in MOVES], n_codes, MOVES)['nmi_adj'])
+                res['kmeans_seeds'] = {f'{k}_nmi_adj_{f}': round(float(fn(v)), 4) for k, v in sc.items() for f, fn in (('mean', np.mean), ('sd', np.std))}
+                res['kmeans_seeds']['n'] = args.kmeans_seeds
             res['probe'] = {'pcs': args.probe_pcs, 'all_acc': pa['acc'], 'all_majority': pa['majority'], 'moves_acc': pm['acc'], 'moves_majority': pm['majority']}
+        if codes_all is not None:  # appearance leakage: how much the code tells which held-out block (scene) it is from
+            blk = np.repeat([b for b, _ in wins], codes_all.shape[1])
+            ct = np.zeros((n_codes, int(blk.max()) + 1))
+            np.add.at(ct, (codes_all.reshape(-1), blk), 1)
+            res['nmi_code_block'] = round(nmi(ct), 4)
         if codes_all is not None:
             usage, paths = code_grids(name, codes_all, wins, n_codes, out_dir)
             p = usage[usage > 0]
@@ -244,7 +259,7 @@ def score(args):
         a, m = res['all'], res['moves_only']
         print(f"{name}: all n={a['n']} NMI {a['nmi']} (adj {a['nmi_adj']}) purity {a['purity']} (majority {a['majority_baseline']}) | "
               f"moves n={m['n']} NMI {m['nmi']} (adj {m['nmi_adj']}) purity {m['purity']} (majority {m['majority_baseline']}) "
-              f"| entropy {res.get('entropy_nats')} | probe {res.get('probe')} -> {out_dir}/score.json")
+              f"| entropy {res.get('entropy_nats')} | probe {res.get('probe')} | seeds {res.get('kmeans_seeds')} -> {out_dir}/score.json")
 
 
 def main():
@@ -258,6 +273,7 @@ def main():
     s.add_argument('--lam', action='append', default=[], help='name=<latent_actions checkpoint dir>; repeatable')
     s.add_argument('--codes', action='append', default=[], help='name=<codes.json {transition id: code}>; repeatable')
     s.add_argument('--labels', default=f'{SET}/labels.json')
+    s.add_argument('--kmeans-seeds', type=int, default=1, help='continuous LAMs: also report NMI_adj mean/sd over this many k-means seeds')
     s.add_argument('--probe-pcs', type=int, default=16, help='continuous LAMs: principal components the linear probe sees')
     s.add_argument('--k', type=int, default=0, help='continuous LAMs: number of k-means clusters (default: its n_actions)')
     s.add_argument('--device', default='cpu', help='cpu: ~40 s per LAM; mps hung in Metal once (2026-10-02)')
