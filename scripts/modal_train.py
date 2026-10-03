@@ -255,6 +255,28 @@ def train_como(config: str = "configs/como/zelda.yaml", overrides: str = ""):
         results_volume.commit()
 
 
+@app.function(gpu=GPU, cpu=8, memory=int(os.environ.get("TINYWORLDS_MEMORY_MB", 32768)), volumes=VOLUMES, secrets=SECRETS,
+              timeout=24 * 60 * 60)
+def train_como_tok(arm: str, overrides: str = ""):
+    """STA-43 arm end to end on one GPU: tokenizer features for configs/como/tok/<arm>.yaml (scripts/tok_features.py,
+    skipped if the .npy already exist on the data volume), then CoMo training on them (results/como_tok_<arm>/).
+        TINYWORLDS_GPU=H100 modal run --detach scripts/modal_train.py::train_como_tok --arm pf_q
+    """
+    import subprocess
+
+    from omegaconf import OmegaConf
+
+    c = OmegaConf.load(f"{REPO_DIR}/configs/como/tok/{arm}.yaml")
+    for sp, out in (("zelda_train", c.train_features), ("zelda_test", c.test_features)):
+        if not os.path.exists(f"{REPO_DIR}/{out}"):
+            subprocess.run(["python", "scripts/tok_features.py", "--h5", f"data/{sp}_frames.h5", "--tokenizer", c.tokenizer_path,
+                            "--mode", c.tokenizer_feature, "--history", str(c.history), "--out", f"{out}.part.npy", "--batch", "256"],
+                           cwd=REPO_DIR, check=True)
+            os.rename(f"{REPO_DIR}/{out}.part.npy", f"{REPO_DIR}/{out}")  # a killed precompute never looks finished
+            data_volume.commit()
+    train_como.local("configs/como/zelda.yaml,configs/como/tok/base.yaml," + f"configs/como/tok/{arm}.yaml", overrides)
+
+
 @app.function(gpu="L4", cpu=4, memory=32768, volumes=VOLUMES, timeout=60 * 60)
 def eval_como_pred(arms: str):
     """Next-frame PSNR/SSIM of CoMo's decoder (scripts/eval/eval_como_pred.py) on the held-out Zelda windows.
