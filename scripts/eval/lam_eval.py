@@ -24,6 +24,8 @@ Usage (repo root, PYTHONPATH=$PWD):
     python scripts/eval/lam_eval.py consensus --game zelda labels_A.json labels_B.json
     python scripts/eval/lam_eval.py score --game zelda --lam i4=<ckpt dir> --baseline random --baseline camera
     python scripts/eval/lam_eval.py score --game zelda --codes my=codes.json     # {"<id>": code}, a LAM run elsewhere
+    python scripts/eval/lam_eval.py score --game zelda --lam como=<como ckpt> --kmeans-seeds 10   # continuous: k-means (k = n_actions)
+    python scripts/eval/lam_eval.py score --game zelda --pair-encoder enc_pix=<encoder.pt>         # frame-pair classifier
     python scripts/eval/lam_eval.py table --game zelda                          # markdown table of every <name>/score.json
 """
 
@@ -144,8 +146,8 @@ def consensus(args):
           f'uncertain {len(unsure)} -> {root}/set/labels.json, {root}/groups/')
 
 
-def lam_codes(ckpt, pool, device, ot_plans=None, batch=32):
-    # -> code of the last transition of every pool window [N], codebook size
+def lam_codes(ckpt, pool, device, ot_plans=None, kmeans_seeds=1, batch=32):
+    # -> codes of the last transition of every pool window, one [N] array per k-means seed (1 for a discrete LAM), codebook size
     from utils.utils import load_latent_actions_from_checkpoint
     lam, _ = load_latent_actions_from_checkpoint(ckpt, device)
     lam.eval()
@@ -157,13 +159,30 @@ def lam_codes(ckpt, pool, device, ot_plans=None, batch=32):
         with np.load(ot_plans) as z:
             plans = {'sigma': z['sigma'], 'created': z['created']}
     with h5py.File(pool['h5'], 'r') as f, torch.no_grad():
-        zq = torch.cat([lam.encode(to_model_range(load_window_batch(f['frames'], wins[i:i + batch], SEQ - 1, skip), device),
-                                   window_ot(plans, wins[i:i + batch], SEQ - 1, skip, device))[:, -1]
-                        for i in range(0, len(wins), batch)])  # [N, A]
-    if getattr(lam, 'continuous_actions', False):
-        c = kmeans(zq.float(), q.codebook_size)
-        return torch.cdist(zq.float(), c).argmin(1).cpu().numpy(), q.codebook_size
-    return q.get_indices_from_latents(zq).cpu().numpy(), q.codebook_size
+        x = lambda ws: to_model_range(load_window_batch(f['frames'], ws, SEQ - 1, skip), device)
+        enc = (lambda ws: lam.encode(x(ws), window_ot(plans, ws, SEQ - 1, skip, device))) if plans is not None else (lambda ws: lam.encode(x(ws)))
+        zq = torch.cat([enc(wins[i:i + batch]) for i in range(0, len(wins), batch)])  # [N, T-1, A]
+    if getattr(lam, 'continuous_actions', False):  # k-means over all 3 transitions of each pool window, codes of the last
+        z = zq.reshape(-1, A).float()
+        return [torch.cdist(z, kmeans(z, q.codebook_size, seed=sd)).argmin(1).reshape(zq.shape[:2])[:, -1].cpu().numpy()
+                for sd in range(kmeans_seeds)], q.codebook_size
+    return [q.get_indices_from_latents(zq[:, -1]).cpu().numpy()], q.codebook_size
+
+
+def pair_encoder_codes(ckpt, pool, device, batch=256):
+    # frame-pair classifier (scripts/train_action_encoder.py PairEncoder, e.g. STA-35 enc_pix) -> argmax class of each pair
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+    from train_action_encoder import PairEncoder, N_CLASSES, to_float
+    ck = torch.load(ckpt, map_location='cpu', weights_only=False)
+    model = PairEncoder(ck['args']['width']).to(device).eval()
+    model.load_state_dict(ck['model'])
+    out = []
+    with h5py.File(pool['h5'], 'r') as f, torch.no_grad():
+        for i in range(0, len(pool['windows']), batch):
+            ab = [pair_of(f['frames'], w, pool['frame_skip']) for w in pool['windows'][i:i + batch]]
+            fa, fb = (torch.from_numpy(np.stack([p[k] for p in ab])).to(device) for k in (0, 1))
+            out.append(model(to_float(fa), to_float(fb)).argmax(-1).cpu())
+    return [torch.cat(out).numpy()], N_CLASSES
 
 
 def baseline_codes(kind, pool):
@@ -203,19 +222,27 @@ def score(args):
     labs = json.load(open(f'{root}/set/labels.json'))
     classes = list(json.load(open(f'{root}/set/vocab.json'))['groups'])
     specs = [(s.split('=', 1), 'lam') for s in args.lam] + [(s.split('=', 1), 'codes') for s in args.codes] + \
+            [(s.split('=', 1), 'pair') for s in args.pair_encoder] + \
             [((f'baseline_{b}', b), 'baseline') for b in args.baseline]
     for (name, src), kind in specs:
         if kind == 'lam':
-            codes, n_codes = lam_codes(src, pool, args.device, args.ot_plans)
+            runs, n_codes = lam_codes(src, pool, args.device, args.ot_plans, args.kmeans_seeds)
+        elif kind == 'pair':
+            runs, n_codes = pair_encoder_codes(src, pool, args.device)
         elif kind == 'baseline':
             codes, n_codes = baseline_codes(src, pool)
+            runs = [codes]
         else:
             cj = json.load(open(src))
-            codes, n_codes = np.array([int(cj.get(str(w['id']), 0)) for w in pool['windows']]), int(max(cj.values())) + 1
+            runs, n_codes = [np.array([int(cj.get(str(w['id']), 0)) for w in pool['windows']])], int(max(cj.values())) + 1
+        codes = runs[0]  # headline = k-means seed 0 for a continuous LAM
         res = {'name': name, 'source': src, 'game': args.game, 'n_codes': n_codes}
         for split in ['main', 'uncertain']:
             ids = sorted(labs[split], key=int)
             res[split] = metrics([int(codes[int(i)]) for i in ids], [labs[split][i] for i in ids], n_codes, classes)
+            if len(runs) > 1:  # continuous LAM: clustering noise over k-means seeds
+                v = [metrics([int(c[int(i)]) for i in ids], [labs[split][i] for i in ids], n_codes, classes).get('nmi_adj', 0) for c in runs]
+                res[split]['nmi_adj_kmeans'] = {'mean': round(float(np.mean(v)), 4), 'sd': round(float(np.std(v)), 4), 'n_seeds': len(runs)}
         u = np.bincount(codes, minlength=n_codes) / len(codes)
         p = u[u > 0]
         res['pool_usage'] = [round(float(x), 4) for x in u]
@@ -225,7 +252,8 @@ def score(args):
         json.dump(res, open(f'{root}/{name}/score.json', 'w'), indent=1)
         m, un = res['main'], res['uncertain']
         print(f"{args.game}/{name}: main n={m['n']} NMI_adj {m.get('nmi_adj')} purity {m.get('purity')} completeness {m.get('completeness')} "
-              f"(majority {m.get('majority_baseline')}) | uncertain n={un['n']} NMI_adj {un.get('nmi_adj')} | pool entropy {res['pool_entropy_nats']}")
+              f"(majority {m.get('majority_baseline')}) | uncertain n={un['n']} NMI_adj {un.get('nmi_adj')} | pool entropy {res['pool_entropy_nats']}"
+              + (f" | k-means seeds main {m['nmi_adj_kmeans']}" if 'nmi_adj_kmeans' in m else ''))
 
 
 def table(args):
@@ -256,6 +284,8 @@ def main():
     cmds['score'].add_argument('--lam', action='append', default=[], help='name=<latent_actions checkpoint dir>; repeatable')
     cmds['score'].add_argument('--codes', action='append', default=[], help='name=<codes.json {pair id: code}>; repeatable')
     cmds['score'].add_argument('--baseline', action='append', default=[], choices=['random', 'camera'])
+    cmds['score'].add_argument('--pair-encoder', action='append', default=[], help='name=<train_action_encoder.py encoder.pt>; repeatable')
+    cmds['score'].add_argument('--kmeans-seeds', type=int, default=1, help='continuous LAMs (CoMo): also report main NMI_adj mean/sd over seeds')
     cmds['score'].add_argument('--device', default='cpu')
     cmds['score'].add_argument('--ot-plans', default=None, help='.npz of OT plans aligned with the test h5 (OT-conditioned LAMs only)')
     a = p.parse_args()
