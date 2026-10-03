@@ -272,17 +272,37 @@ def train_como(config: str = "configs/como/zelda.yaml", overrides: str = ""):
 
 
 @app.function(gpu="L4", cpu=4, memory=32768, volumes=VOLUMES, timeout=60 * 60)
-def eval_como_pred(arms: str):
+def eval_como_pred(arms: str, extra_args: str = ""):
     """Next-frame PSNR/SSIM of CoMo's decoder (scripts/eval/eval_como_pred.py) on the held-out Zelda windows.
     arms: "<name>=<como ckpt dir relative to the results volume>,..." -> results volume evals/como_pred/<name>.json
         modal run scripts/modal_train.py::eval_como_pred --arms "v1_50k=como_zelda_v1/como/checkpoints/como_step_50000"
+    STA-42 (train-fit k16 centroids): --extra-args "--action-dir results/como_actions_v1_full"
     """
+    import shlex
     import subprocess
 
     for spec in [a for a in arms.split(",") if a]:
         name, ckpt = spec.split("=", 1)
         subprocess.run(["python", "scripts/eval/eval_como_pred.py", "--ckpt", f"results/{ckpt}", "--name", name,
-                        "--out-dir", "results/evals/como_pred"], cwd=REPO_DIR, check=True)
+                        "--out-dir", "results/evals/como_pred", *shlex.split(extra_args)], cwd=REPO_DIR, check=True)
+        results_volume.commit()
+
+
+@app.function(gpu=GPU, cpu=8, memory=65536, volumes=VOLUMES, timeout=2 * 60 * 60)
+def como_actions(como_ckpt: str = "como_zelda_v1/como/checkpoints/como_step_50000", out_dir: str = "como_actions_v1",
+                 extra_args: str = ""):
+    """STA-42: CoMo IDM over every gap-4 pair of the MAE features (scripts/como_actions.py) -> data/zelda_{train,test}_como_z.npy
+    in the data volume and the action dirs results/<out_dir>_{full,k16}/ in the results volume.
+        TINYWORLDS_GPU=H100 modal run scripts/modal_train.py::como_actions --extra-args "--check 512"
+    """
+    import shlex
+    import subprocess
+
+    try:
+        subprocess.run(["python", "scripts/como_actions.py", "--como-ckpt", f"results/{como_ckpt}", "--out-dir", f"results/{out_dir}",
+                        *shlex.split(extra_args)], cwd=REPO_DIR, check=True)
+    finally:
+        data_volume.commit()
         results_volume.commit()
 
 

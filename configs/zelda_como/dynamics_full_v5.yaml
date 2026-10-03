@@ -1,0 +1,24 @@
+# STA-42 arm: full actions (full 128-d continuous z, standardized), v5 tokenizer. zelda_v4 copy_long recipe; lr from the STA-42 sweep.
+batch_size_per_gpu: 64
+gradient_accumulation_steps: 1
+n_updates: 30000
+learning_rate: 0.0003
+log_interval: 1000   # checkpoint + prediction PNG every 1000 steps
+
+use_actions: true
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 12
+
+full_last_frame_mask_prob: 0.8
+copy_prior: true
+seed: 0
+
+video_tokenizer_path: results/zelda_v5_frametok/video_tokenizer/checkpoints/video_tokenizer_step_29000      # zelda_v5 per-frame tokenizer
+latent_actions_path: results/como_actions_v1_full   # CoMo IDM + train z stats (+ centroids), models/como.py CoMoActions
+action_file: data/zelda_train_como_z.npy             # raw z per train .h5 row, so training never runs the MAE ViT-L
+
+# resume: set to a checkpoint dir (…/dynamics/checkpoints/dynamics_step_N) to restore weights, optimizer, scheduler and step
+checkpoint:

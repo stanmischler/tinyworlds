@@ -278,6 +278,10 @@ class DynamicsConfig:
 	# Where the dynamics model's actions come from: "lam" = latent action model (Genie, action-less video),
 	# "gt" = the dataset's ground-truth actions (Push-T); gt needs no LAM checkpoint and sets conditioning_dim from the data
 	action_source: str = "lam"
+	# Precomputed actions (STA-42, scripts/como_actions.py): .npy [N, A] of raw actions per .h5 row (row i = transition
+	# (i, i + frame_skip)), served by the dataset and passed through the LAM's standardize() (CoMoActions) instead of
+	# running its encoder on every batch. None = encode on the fly (original behaviour). Needs action_source lam.
+	action_file: Optional[str] = None
 	# Dynamics training mask: "maskgit" (default, see full_last_frame_mask_prob) or "random_target" (models/dynamics.py)
 	mask_mode: str = "maskgit"
 	# Copy prior: learned logit bonus for keeping the previous frame's token at each patch (False = original model)

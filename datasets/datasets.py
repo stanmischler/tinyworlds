@@ -131,6 +131,10 @@ class VideoHDF5Dataset(Dataset):
         aux_labels = getattr(self, 'aux_labels', None)
         if aux_labels is not None:
             ot = torch.from_numpy(np.ascontiguousarray(aux_labels[rows]))
+        # actions (STA-42 dynamics action_file): [N, A] float aligned like ot_plans -> second item [T-1, A] float
+        actions = getattr(self, 'actions', None)
+        if actions is not None:
+            ot = torch.from_numpy(np.ascontiguousarray(actions[rows], dtype=np.float32))
         if len(frame_sequence) != self.num_frames:
             raise ValueError(f"Expected {self.num_frames} frames, got {len(frame_sequence)} frames")
 
