@@ -199,12 +199,13 @@ def eval_lam(arms: str, extra: str = ""):
 
 
 @app.function(gpu="L4", cpu=4, memory=16384, volumes=VOLUMES, timeout=60 * 60)
-def eval_lam_set(game: str, arms: str = "", baselines: str = "random,camera"):
+def eval_lam_set(game: str, arms: str = "", baselines: str = "random,camera", ot_plans: str = ""):
     """Score LAM checkpoints on a game's judge-labelled action set (scripts/eval/lam_eval.py; the set ships with the image
     from eval_results/lam_eval/<game>/set). arms: "<name>=<checkpoint dir relative to the results volume>,...".
     Outputs go to the results volume under lam_eval/<game>/<name>/score.json; fetch them with
     `modal volume get tinyworlds-results lam_eval/<game> eval_results/lam_eval/`.
         modal run scripts/modal_train.py::eval_lam_set --game zelda --arms "i4=lam_eval_ckpts/zelda_i4_bal16_seed2"
+    OT-conditioned LAMs (STA-35) also need --ot-plans data/zelda_test_uot_gap4.npz (data volume).
     """
     import shutil
     import subprocess
@@ -215,6 +216,8 @@ def eval_lam_set(game: str, arms: str = "", baselines: str = "random,camera"):
         cmd += ["--lam", f"{name}={REPO_DIR}/results/{ckpt}"]
     for b in [b for b in baselines.split(",") if b]:
         cmd += ["--baseline", b]
+    if ot_plans:
+        cmd += ["--ot-plans", ot_plans]
     subprocess.run(cmd, cwd=REPO_DIR, check=True)
     for d in os.listdir(f"{REPO_DIR}/eval_results/lam_eval/{game}"):
         if d not in ("set", "groups"):

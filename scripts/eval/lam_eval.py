@@ -40,7 +40,7 @@ from PIL import Image, ImageDraw
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from eval_next_frame import test_windows, load_window_batch, to_model_range  # noqa: E402
-from eval_lam import nmi, kmeans, global_shift, motion_class  # noqa: E402
+from eval_lam import nmi, kmeans, global_shift, motion_class, window_ot  # noqa: E402
 from lam_judge import transition_panel, stack_rows  # noqa: E402
 
 # frame_skip = 60 // fps of the dataset class (datasets/datasets.py); every LAM so far uses context_length 4
@@ -144,15 +144,21 @@ def consensus(args):
           f'uncertain {len(unsure)} -> {root}/set/labels.json, {root}/groups/')
 
 
-def lam_codes(ckpt, pool, device, batch=32):
+def lam_codes(ckpt, pool, device, ot_plans=None, batch=32):
     # -> code of the last transition of every pool window [N], codebook size
     from utils.utils import load_latent_actions_from_checkpoint
     lam, _ = load_latent_actions_from_checkpoint(ckpt, device)
     lam.eval()
     q, A = lam.quantizer, lam.action_dim
-    wins = windows_of(pool)
+    wins, skip = windows_of(pool), pool['frame_skip']
+    plans = None
+    if getattr(lam, 'uses_ot', False):  # OT-conditioned LAM (STA-35): needs the OT plans of the test h5
+        assert ot_plans, f'{ckpt} is OT-conditioned: pass --ot-plans'
+        with np.load(ot_plans) as z:
+            plans = {'sigma': z['sigma'], 'created': z['created']}
     with h5py.File(pool['h5'], 'r') as f, torch.no_grad():
-        zq = torch.cat([lam.encode(to_model_range(load_window_batch(f['frames'], wins[i:i + batch], SEQ - 1, pool['frame_skip']), device))[:, -1]
+        zq = torch.cat([lam.encode(to_model_range(load_window_batch(f['frames'], wins[i:i + batch], SEQ - 1, skip), device),
+                                   window_ot(plans, wins[i:i + batch], SEQ - 1, skip, device))[:, -1]
                         for i in range(0, len(wins), batch)])  # [N, A]
     if getattr(lam, 'continuous_actions', False):
         c = kmeans(zq.float(), q.codebook_size)
@@ -200,7 +206,7 @@ def score(args):
             [((f'baseline_{b}', b), 'baseline') for b in args.baseline]
     for (name, src), kind in specs:
         if kind == 'lam':
-            codes, n_codes = lam_codes(src, pool, args.device)
+            codes, n_codes = lam_codes(src, pool, args.device, args.ot_plans)
         elif kind == 'baseline':
             codes, n_codes = baseline_codes(src, pool)
         else:
@@ -251,6 +257,7 @@ def main():
     cmds['score'].add_argument('--codes', action='append', default=[], help='name=<codes.json {pair id: code}>; repeatable')
     cmds['score'].add_argument('--baseline', action='append', default=[], choices=['random', 'camera'])
     cmds['score'].add_argument('--device', default='cpu')
+    cmds['score'].add_argument('--ot-plans', default=None, help='.npz of OT plans aligned with the test h5 (OT-conditioned LAMs only)')
     a = p.parse_args()
     {'sample': sample, 'consensus': consensus, 'score': score, 'table': table}[a.cmd](a)
 
