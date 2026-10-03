@@ -279,6 +279,11 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, i
         'decoder_warp_local_gate': cfg.get('decoder_warp_local_gate', 0.0),
         'decoder_warp_local_blur': cfg.get('decoder_warp_local_blur', 1),
         'wta_kernel_repulsion': cfg.get('wta_kernel_repulsion', 0.0),
+        'ot_encoder': cfg.get('ot_encoder', False),
+        'ot_decoder': cfg.get('ot_decoder', 'none'),
+        'aux_label_weight': cfg.get('aux_label_weight', 0.0),
+        'aux_label_classes': cfg.get('aux_label_classes', 9),
+        'aux_label_target': cfg.get('aux_label_target', 'latent'),
     }
     if model is None:
         model = LatentActionModel(**kwargs)
