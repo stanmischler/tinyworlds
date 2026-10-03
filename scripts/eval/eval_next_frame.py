@@ -119,6 +119,9 @@ def main():
     p.add_argument('--sample-stride', type=int, default=8, help='stored frames between window starts inside a block')
     p.add_argument('--num-steps', type=int, default=10, help='MaskGIT unmasking iterations')
     p.add_argument('--temperature', type=float, default=0.0)
+    p.add_argument('--decode', choices=['context', 'alone'], default='context',
+                   help='context: tokenize/detokenize the target with its context frames, as in training (the tokenizer is '
+                        'temporal); alone: the target frame on its own (protocol before 2026-10-02)')
     p.add_argument('--batch-size', type=int, default=32)
     p.add_argument('--device', default='mps' if torch.backends.mps.is_available() else ('cuda' if torch.cuda.is_available() else 'cpu'))
     p.add_argument('--seed', type=int, default=0, help='seed for the random actions')
@@ -128,10 +131,10 @@ def main():
     p.add_argument('--name', help='output file stem; default <run-dir basename>_<action-mode>')
     args = p.parse_args()
 
-    if args.run_dir:
-        args.video_tokenizer_path = find_latest_checkpoint('.', 'video_tokenizer', run_root_dir=args.run_dir)
-        args.latent_actions_path = find_latest_checkpoint('.', 'latent_actions', run_root_dir=args.run_dir)
-        args.dynamics_path = find_latest_checkpoint('.', 'dynamics', run_root_dir=args.run_dir)
+    if args.run_dir:  # explicit paths win (a dynamics-only run dir holds no tokenizer / LAM)
+        for stage in ('video_tokenizer', 'latent_actions', 'dynamics'):
+            if not getattr(args, f'{stage}_path'):
+                setattr(args, f'{stage}_path', find_latest_checkpoint('.', stage, run_root_dir=args.run_dir))
     for k in ('video_tokenizer_path', 'latent_actions_path', 'dynamics_path'):
         assert getattr(args, k) and os.path.exists(getattr(args, k)), f'{k} missing: {getattr(args, k)}'
     name = args.name or f"{os.path.basename(os.path.normpath(args.run_dir or os.path.dirname(args.dynamics_path)))}_{args.action_mode}"
@@ -174,9 +177,13 @@ def main():
             context, target = x[:, :args.context], x[:, args.context:]  # [B, Tc, C, H, W], [B, 1, C, H, W]
             B = x.shape[0]
 
-            ctx_idx = tok.tokenize(context)  # [B, Tc, P]
+            if args.decode == 'context':
+                full_idx = tok.tokenize(x)  # [B, T, P] causal encoder: context codes are the same as tokenizing them alone
+                ctx_idx, target_idx = full_idx[:, :args.context], full_idx[:, args.context:]  # [B, Tc, P], [B, 1, P]
+            else:
+                ctx_idx = tok.tokenize(context)  # [B, Tc, P]
+                target_idx = tok.tokenize(target)  # [B, 1, P]
             ctx_lat = idx_to_latents(ctx_idx)  # [B, Tc, P, L]
-            target_idx = tok.tokenize(target)  # [B, 1, P]
 
             lam_cond = lam.encode(x)  # [B, T-1, A]: every transition incl. the one into the target
             lam_code = lam.quantizer.get_indices_from_latents(lam_cond[:, -1])  # [B] true code of the target transition
@@ -197,8 +204,12 @@ def main():
                                              index_to_latents_fn=idx_to_latents, conditioning=cond,
                                              temperature=args.temperature)  # [B, T, P, L]
             pred_idx = tok.quantizer.get_indices_from_latents(pred_lat[:, -1:], dim=-1)  # [B, 1, P]
-            pred = to_unit(tok.detokenize(pred_lat[:, -1:])[:, 0])  # [B, C, H, W]
-            recon = to_unit(tok.detokenize(idx_to_latents(target_idx))[:, 0])  # tokenizer ceiling
+            if args.decode == 'context':  # decode context + target together, keep the target
+                pred = to_unit(tok.detokenize(pred_lat)[:, -1])  # [B, C, H, W]
+                recon = to_unit(tok.detokenize(idx_to_latents(full_idx))[:, -1])  # tokenizer ceiling
+            else:
+                pred = to_unit(tok.detokenize(pred_lat[:, -1:])[:, 0])  # [B, C, H, W]
+                recon = to_unit(tok.detokenize(idx_to_latents(target_idx))[:, 0])  # tokenizer ceiling
             tgt = to_unit(target[:, 0])
             copy = to_unit(context[:, -1])
 

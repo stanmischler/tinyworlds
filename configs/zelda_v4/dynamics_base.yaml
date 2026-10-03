@@ -1,0 +1,27 @@
+# zelda_v4 base trial: the zelda_v3 dynamics recipe (12 blocks, batch 64, lr 3e-4, mask prob 0.8) with the STA-36 LAM, 8k steps.
+batch_size_per_gpu: 64
+gradient_accumulation_steps: 1
+n_updates: 8000
+learning_rate: 0.0003
+log_interval: 1000   # checkpoint + prediction PNG every 1000 steps
+
+use_actions: true
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 12
+
+# Masking fix: with this probability a batch is trained exactly like inference (clean context frames, last frame
+# 100% masked) instead of MaskGIT's random 50-100% masking over all frames. 0.0 = original behaviour.
+# 0.5 was confirmed on Sonic (+3.9 dB); 0.8 spends most batches on the objective the eval measures and keeps a
+# fifth on infilling for MaskGIT steps 2-10.
+full_last_frame_mask_prob: 0.8
+
+seed: 0   # same masks and batch order in every trial
+
+video_tokenizer_path: results/2026_09_26_12_12_49/video_tokenizer/checkpoints/video_tokenizer_step_29000   # zelda_v3 tokenizer
+latent_actions_path: results/lamloop_i4_bal16_seed2/latent_actions/checkpoints/latent_actions_step_6000      # STA-36 best LAM
+
+# resume: set to a checkpoint dir (…/dynamics/checkpoints/dynamics_step_N) to restore weights, optimizer, scheduler and step
+checkpoint:

@@ -280,6 +280,8 @@ class DynamicsConfig:
 	action_source: str = "lam"
 	# Dynamics training mask: "maskgit" (default, see full_last_frame_mask_prob) or "random_target" (models/dynamics.py)
 	mask_mode: str = "maskgit"
+	# Copy prior: learned logit bonus for keeping the previous frame's token at each patch (False = original model)
+	copy_prior: bool = False
 	# Seed for init, masking and batch order (None = unseeded, as before)
 	seed: Optional[int] = None
 	# Optimizer

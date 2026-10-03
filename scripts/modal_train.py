@@ -374,6 +374,26 @@ def train_encoder(run_name: str, extra_args: str = ""):
         results_volume.commit()
 
 
+@app.function(gpu="L4", cpu=4, memory=16384, volumes=VOLUMES, timeout=3 * 60 * 60)
+def eval_dynamics(run_dir: str, name: str, extra_args: str = "", num_steps: str = "1,10"):
+    """Held-out next-frame eval (scripts/eval/eval_next_frame.py) of a pipeline run dir on the results volume, on a GPU,
+    once per MaskGIT step count in num_steps (both reported: 1 pass matches the full-last-frame training mode).
+    Outputs <name>_s<steps>.{json,png} go to evals/next_frame/ on the results volume; fetch with
+    `modal volume get tinyworlds-results evals/next_frame/<name>_s1.json eval_results/`.
+        modal run scripts/modal_train.py::eval_dynamics --run-dir 2026_09_26_12_12_49 --name zelda_v3_ctx --extra-args "--test-h5 data/zelda_test_frames.h5"
+    """
+    import shlex
+    import subprocess
+
+    out = f"{REPO_DIR}/results/evals/next_frame"
+    for steps in num_steps.split(","):
+        subprocess.run(["python", "scripts/eval/eval_next_frame.py", "--device", "cuda", "--run-dir", f"{REPO_DIR}/results/{run_dir}",
+                        "--name", f"{name}_s{steps}", "--num-steps", steps, "--out-dir", out, *shlex.split(extra_args)],
+                       cwd=REPO_DIR, check=True)
+        results_volume.commit()
+        print(f"EVAL DONE {name}_s{steps} -> evals/next_frame/{name}_s{steps}.json")
+
+
 @app.local_entrypoint()
 def main(
     dataset: str = "ZELDA",

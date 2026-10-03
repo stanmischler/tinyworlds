@@ -104,6 +104,7 @@ def main():
         full_last_frame_mask_prob=getattr(args, 'full_last_frame_mask_prob', 0.0),
         action_dropout_prob=getattr(args, 'action_dropout_prob', 0.0),
         mask_mode=args.mask_mode,
+        copy_prior=getattr(args, 'copy_prior', False),
     ).to(args.device)
     if args.checkpoint:
         dynamics_model, _ = load_dynamics_from_checkpoint(

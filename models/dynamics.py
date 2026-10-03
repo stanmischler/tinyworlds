@@ -10,7 +10,7 @@ class DynamicsModel(nn.Module):
     def __init__(self, frame_size=(128, 128), patch_size=4, embed_dim=128, num_heads=8,
                  hidden_dim=128, num_blocks=4, num_bins=4, n_actions=8, conditioning_dim=3, latent_dim=5,
                  use_moe=False, num_experts=4, top_k_experts=2, moe_aux_loss_coeff=0.01,
-                 full_last_frame_mask_prob=0.0, action_dropout_prob=0.0, mask_mode="maskgit"):
+                 full_last_frame_mask_prob=0.0, action_dropout_prob=0.0, mask_mode="maskgit", copy_prior=False):
         super().__init__()
         # "maskgit": the masking below (MaskGIT over all frames, or the inference-style last-frame mask).
         # "random_target": per sample a target frame k in [1, T-1]; frames < k clean, frame k masked at a ratio in
@@ -38,6 +38,16 @@ class DynamicsModel(nn.Module):
         )
         self.output_mlp = nn.Linear(embed_dim, codebook_size)
 
+        # copy prior: a learned per-position scalar added to the logit of the token at the same patch in frame t-1
+        # (where that token is visible), so static regions can keep their code. Zero-init = starts as the plain model.
+        # Off (False) = original model and checkpoints.
+        self.copy_head = None
+        if copy_prior:
+            self.copy_head = nn.Linear(embed_dim, 1)
+            nn.init.zeros_(self.copy_head.weight); nn.init.zeros_(self.copy_head.bias)
+            self.num_bins = num_bins
+            self.register_buffer("fsq_basis", num_bins ** torch.arange(latent_dim, dtype=torch.long), persistent=False)  # [L]
+
         # shared spatial-only PE (zeros in temporal tail)
         pe_spatial = build_spatial_only_pe((H, W), patch_size, embed_dim, device='cpu', dtype=torch.float32)  # [1,P,E]
         self.register_buffer("pos_spatial_dec", pe_spatial, persistent=False)
@@ -46,14 +56,16 @@ class DynamicsModel(nn.Module):
         # TODO; try leanable mask embedding in embed space instead of latent space
         self.mask_token = nn.Parameter(torch.randn(1, 1, 1, latent_dim) * 0.02)  # [1, 1, 1, L]
 
-    def forward(self, discrete_latents, training=True, conditioning=None, targets=None):
+    def forward(self, discrete_latents, training=True, conditioning=None, targets=None, input_mask=None):
         # discrete_latents: [B, T, P, L]
         # targets: [B, T, P] indices
         # conditioning: [B, T, A]
+        # input_mask: [B, T, P] bool, True where the input holds the mask token (inference; only used by the copy prior)
         B, T, P, L = discrete_latents.shape
 
         # convert latents to float for embedding
         discrete_latents = discrete_latents.to(dtype=torch.float32)
+        clean_latents = discrete_latents  # [B, T, P, L] before masking (copy prior reads the previous frame's tokens)
 
         # apply MaskGIT random masking during training
         if training and self.training:
@@ -99,6 +111,16 @@ class DynamicsModel(nn.Module):
         # transform to logits for each token in codebook
         predicted_logits = self.output_mlp(transformed)  # [B, T, P, L^D]
 
+        if self.copy_head is not None:
+            hidden = mask_positions if mask_positions is not None else input_mask  # [B, T, P] or None
+            digits = torch.round((clean_latents + 1) * 0.5 * (self.num_bins - 1)).clamp(0, self.num_bins - 1).long()  # [B, T, P, L]
+            idx = (digits * self.fsq_basis).sum(-1)  # [B, T, P] FSQ indices, same math as FiniteScalarQuantizer
+            prev_idx = torch.cat([idx[:, :1], idx[:, :-1]], dim=1)  # [B, T, P] token at the same patch in frame t-1
+            prev_visible = torch.ones(B, T, P, dtype=torch.bool, device=idx.device) if hidden is None else ~hidden
+            prev_visible = torch.cat([torch.zeros_like(prev_visible[:, :1]), prev_visible[:, :-1]], dim=1)  # [B, T, P], frame 0 has no t-1
+            bonus = self.copy_head(transformed).squeeze(-1) * prev_visible  # [B, T, P]
+            predicted_logits = predicted_logits.scatter_add(-1, prev_idx.unsqueeze(-1), bonus.unsqueeze(-1).to(predicted_logits.dtype))  # [B, T, P, L^D]
+
         # compute masked cross-entropy loss
         loss = None
         if training and self.training:
@@ -143,7 +165,9 @@ class DynamicsModel(nn.Module):
             n_tokens_raw = self.exp_schedule_torch(m, num_steps, P_total, schedule_k, device)
 
             # predict logits for current input
-            logits, _, _ = self.forward(input_latents, training=False, conditioning=conditioning, targets=None)  # [B, T_ctx+H, P, L^D]
+            input_mask = torch.cat([torch.zeros(B, T_ctx, P, dtype=torch.bool, device=device), mask[..., 0]], dim=1)  # [B, T_ctx+H, P]
+            logits, _, _ = self.forward(input_latents, training=False, conditioning=conditioning, targets=None,
+                                        input_mask=input_mask)  # [B, T_ctx+H, P, L^D]
             # temperature scaling
             if temperature and temperature > 0:
                 scaled_logits = logits / float(temperature)
@@ -209,7 +233,9 @@ class DynamicsModel(nn.Module):
         # final completion: fill any remaining masked tokens across all horizon steps via argmax
         # TODO: try removing
         if mask[:, :, :, 0].any():
-            logits, _, _ = self.forward(input_latents, training=False, conditioning=conditioning, targets=None)  # [B, T_ctx+H, P, L^D]
+            input_mask = torch.cat([torch.zeros(B, T_ctx, P, dtype=torch.bool, device=device), mask[..., 0]], dim=1)  # [B, T_ctx+H, P]
+            logits, _, _ = self.forward(input_latents, training=False, conditioning=conditioning, targets=None,
+                                        input_mask=input_mask)  # [B, T_ctx+H, P, L^D]
             if temperature and temperature > 0:
                 scaled_logits = logits / float(temperature)
             else:
