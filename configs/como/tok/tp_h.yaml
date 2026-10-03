@@ -5,3 +5,4 @@ tokenizer_feature: hidden
 history: 3
 train_features: data/zelda_train_tok_tp_h.npy
 test_features: data/zelda_test_tok_tp_h.npy
+feat_device: cpu       # 34 GB table: pinned host memory, rows copied per batch (on the GPU it OOMed the H100)

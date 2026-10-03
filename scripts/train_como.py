@@ -63,18 +63,21 @@ def valid_starts(segs, span, start_index=0):
     return np.concatenate([np.arange(max(s, start_index), e - span) for s, e in segs if e - span > max(s, start_index)])
 
 
-def load_split(cfg, h5_path, feat_path, device, fake=0):
+def load_split(cfg, h5_path, feat_path, device, fake=0, feat_device=None):
+    # feat_device: where the feature table lives (default: device); 'cpu' = pinned host memory, rows copied per batch
+    feat_device = feat_device or device
     with h5py.File(h5_path, 'r') as f:
         n = fake or min(len(f['frames']), cfg.max_frames or len(f['frames']))
         frames = torch.from_numpy(f['frames'][:n]).to(device)  # uint8 [N, H, W, C]
     if fake:
-        feats = torch.randn(n, cfg.get('feat_tokens') or MAE_TOKENS, cfg.get('feat_dim') or MAE_DIM, dtype=torch.float16, device=device)
+        feats = torch.randn(n, cfg.get('feat_tokens') or MAE_TOKENS, cfg.get('feat_dim') or MAE_DIM, dtype=torch.float16, device=feat_device)
     else:
         mm = np.load(feat_path, mmap_mode='r')
         assert mm.shape[0] >= n, (mm.shape, n)
-        feats = torch.empty((n, *mm.shape[1:]), dtype=torch.float16, device=device)  # [N, S, D]
+        feats = torch.empty((n, *mm.shape[1:]), dtype=torch.float16, device=feat_device,
+                            pin_memory=feat_device == 'cpu' and device.startswith('cuda'))  # [N, S, D]
         for i in range(0, n, 2048):  # chunked: the host never holds the whole table
-            feats[i:i + 2048] = torch.from_numpy(np.ascontiguousarray(mm[i:min(i + 2048, n)])).to(device)
+            feats[i:i + 2048] = torch.from_numpy(np.ascontiguousarray(mm[i:min(i + 2048, n)])).to(feat_device)
     if fake:
         return frames, feats, [(0, n)]
     with h5py.File(h5_path, 'r') as f:
@@ -93,7 +96,8 @@ def batch(frames, feats, starts, idx, gap, jitter, gen, device):
     d = torch.randint(1, jitter + 1, (len(t),), generator=gen, device='cpu').to(device)
     d = d * (torch.randint(0, 2, (len(t),), generator=gen, device='cpu').to(device) * 2 - 1)  # +-1..jitter
     b, j = t + gap, t + gap + d
-    return feats[t].float(), feats[b].float(), feats[j].float(), to_pixels(frames[t]), to_pixels(frames[b])
+    f = [feats[i.to(feats.device)].to(device, non_blocking=True).float() for i in (t, b, j)]  # [B, S, D] x3
+    return *f, to_pixels(frames[t]), to_pixels(frames[b])
 
 
 def save_png(path, x_a, x_b, pred, n=8):
@@ -151,10 +155,10 @@ def main():
     os.makedirs(viz_dir, exist_ok=True)
 
     t0 = time.time()
-    frames, feats, segs = load_split(cfg, cfg.train_h5, cfg.train_features, device, cfg.fake_features)
+    frames, feats, segs = load_split(cfg, cfg.train_h5, cfg.train_features, device, cfg.fake_features, cfg.get('feat_device'))
     span = cfg.gap + cfg.jitter
     starts = valid_starts(segs, span, cfg.start_index if not cfg.fake_features else 0)
-    vframes, vfeats, vsegs = load_split(cfg, cfg.test_h5, cfg.test_features, device, cfg.fake_features)
+    vframes, vfeats, vsegs = load_split(cfg, cfg.test_h5, cfg.test_features, device, cfg.fake_features, 'cpu')  # only the val batch is used
     vstarts = valid_starts(vsegs, span)
     vgen = torch.Generator().manual_seed(1)
     vidx = torch.randperm(len(vstarts), generator=vgen)[:cfg.val_batch].numpy()
