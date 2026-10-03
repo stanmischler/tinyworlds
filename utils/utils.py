@@ -18,6 +18,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 MODEL_CHECKPOINT = "model_state_dict.pt"
 OPTIMIZER_CHECKPOINT = "optim_state_dict.pt"
 STATE = "state.pt"
+EMA_CHECKPOINT = "ema_state_dict.pt"  # flow dynamics (STA-28): EMA weights, used for sampling
 
 def readable_timestamp():
     """Generate a sortable timestamp for filenames (no weekday)."""
@@ -366,6 +367,20 @@ def load_dynamics_from_checkpoint(checkpoint_path, device, model = None, is_dist
         'mask_mode': cfg.get('mask_mode', 'maskgit'),
         'copy_prior': cfg.get('copy_prior', False),
     }
+    if cfg.get('dynamics_type', 'maskgit') == 'flow':
+        # flow-matching dynamics (STA-28); prefer the EMA weights when the checkpoint has them
+        from models.flow_dynamics import FlowDynamicsModel
+        for k in ('use_moe', 'num_experts', 'top_k_experts', 'moe_aux_loss_coeff', 'full_last_frame_mask_prob',
+                  'action_dropout_prob', 'mask_mode', 'copy_prior'):
+            kwargs.pop(k)
+        if cfg.get('conditioning_dim') is None:
+            kwargs['conditioning_dim'] = conditioning_dim - 64  # FiLM input = [action, 64-d time embedding]
+        kwargs.update(fm_pred=cfg.get('fm_pred', 'v'), fm_shift=cfg.get('fm_shift', 1.0), qk_norm=cfg.get('qk_norm', True))
+        ema_path = Path(checkpoint_path) / EMA_CHECKPOINT
+        if model is None and ema_path.exists():
+            model_sd = torch.load(ema_path, map_location='cpu', weights_only=True)
+        if model is None:
+            model = FlowDynamicsModel(**kwargs)
     if model is None:
         model = DynamicsModel(**kwargs)
     set_model_state_dict(

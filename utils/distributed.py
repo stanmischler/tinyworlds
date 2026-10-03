@@ -64,7 +64,7 @@ def prepare_model_for_distributed(model: torch.nn.Module, config: DistributedCon
             fully_shard(model.decoder, mesh=device_mesh, **fsdp_kwargs)
             fully_shard(model.quantizer, mesh=device_mesh, **fsdp_kwargs)
 
-        elif model_type == ModelType.DynamicsModel:
+        elif model_type in {ModelType.DynamicsModel, ModelType.FlowDynamicsModel}:
             shard_layers(model.transformer.blocks)
             fully_shard(model.latent_embed, mesh=device_mesh, **fsdp_kwargs)
             fully_shard(model.output_mlp, mesh=device_mesh, **fsdp_kwargs)

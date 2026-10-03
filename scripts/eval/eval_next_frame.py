@@ -117,7 +117,7 @@ def main():
     p.add_argument('--context', type=int, default=3, help='real context frames; training used sequences of context+1')
     p.add_argument('--frame-skip', type=int, default=4, help='stored frames between sequence frames (60 // fps in the loader)')
     p.add_argument('--sample-stride', type=int, default=8, help='stored frames between window starts inside a block')
-    p.add_argument('--num-steps', type=int, default=10, help='MaskGIT unmasking iterations')
+    p.add_argument('--num-steps', type=int, default=10, help='MaskGIT unmasking iterations, or Euler steps for a flow dynamics model')
     p.add_argument('--temperature', type=float, default=0.0)
     p.add_argument('--decode', choices=['context', 'alone'], default='context',
                    help='context: tokenize/detokenize the target with its context frames, as in training (the tokenizer is '
