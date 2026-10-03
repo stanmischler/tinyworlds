@@ -210,6 +210,13 @@ class LatentActionsConfig:
 	ot_plans: Optional[str] = None
 	ot_encoder: bool = False
 	ot_decoder: str = "none"     # 'none' | 'where' | 'plan'
+	# STA-35 itc_loop i5: auxiliary pseudo-label head on the encoder's action latent. aux_labels = .npz of
+	# scripts/eval/itc_pseudo.py (rows = .h5 frames, label of the pair (t, t + frame_skip), -1 = none), column aux_label_key;
+	# CE weight aux_label_weight (0 = off, original)
+	aux_labels: Optional[str] = None
+	aux_label_key: str = "code_itc"
+	aux_label_weight: float = 0.0
+	aux_label_classes: int = 9
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)

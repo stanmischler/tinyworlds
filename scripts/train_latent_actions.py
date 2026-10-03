@@ -62,6 +62,19 @@ def main():
         assert len(plans['sigma']) == len(training_data.data), (len(plans['sigma']), len(training_data.data))
         training_data.ot_plans = plans
     assert bool(args.ot_plans) == (args.ot_encoder or args.ot_decoder != 'none'), 'ot_plans needs ot_encoder / ot_decoder and back'
+    if args.aux_labels:
+        # pseudo-label head (STA-35 i5): per-pair labels of the training .h5, indexed like ot_plans
+        import numpy as np
+        assert not args.ot_plans, 'aux_labels and ot_plans share the second batch item'
+        start = training_data.load_start_index
+        with np.load(args.aux_labels) as z:
+            labels = z[args.aux_label_key][start:].astype(np.int64)
+            assert int(z['gap']) == training_data.frame_skip, (int(z['gap']), training_data.frame_skip)
+        assert len(labels) >= len(training_data.data), (len(labels), len(training_data.data))  # preload_ratio < 1 loads a prefix
+        training_data.aux_labels = labels[:len(training_data.data)]
+        if is_main:
+            print('aux labels:', args.aux_labels, args.aux_label_key, np.bincount(labels[labels >= 0]).tolist())
+    assert bool(args.aux_labels) == (args.aux_label_weight > 0), 'aux_labels needs aux_label_weight > 0 and back'
 
     # init model and optional ckpt load
     model = LatentActionModel(
@@ -99,6 +112,8 @@ def main():
         wta_kernel_repulsion=args.wta_kernel_repulsion,
         ot_encoder=args.ot_encoder,
         ot_decoder=args.ot_decoder,
+        aux_label_weight=args.aux_label_weight,
+        aux_label_classes=args.aux_label_classes,
     ).to(args.device)
     if args.checkpoint:
         model, _ = load_latent_actions_from_checkpoint(
@@ -162,10 +177,12 @@ def main():
                 (x, ot) = next(train_iter)
 
             x = x.to(args.device, non_blocking=True)
-            ot = ot.to(args.device, non_blocking=True) if args.ot_plans else None  # [B, T-1, 2, P]
+            side = ot.to(args.device, non_blocking=True) if (args.ot_plans or args.aux_labels) else None
+            ot = side if args.ot_plans else None  # [B, T-1, 2, P]
+            aux = side if args.aux_labels else None  # [B, T-1] pseudo-labels
 
             with train_ctx:
-                loss, pred_frames = model(x, ot=ot)
+                loss, pred_frames = model(x, ot=ot, aux=aux)
                 loss /= args.gradient_accumulation_steps
                 if isinstance(model, FSDPModule):
                     if (micro_batch + 1) % args.gradient_accumulation_steps == 0:
@@ -221,6 +238,7 @@ def main():
                 visualize_reconstruction(x, pred_frames, save_path)
             
                 print('\n Step', i, 'Loss:', loss.item(), 'Codebook Usage:', codebook_usage, 'Encoder Variance:', z_e_var, 'Decoder Variance:', pred_frames_var, 'Code Entropy:', code_entropy, 'Saturated:', saturated,
+                      *(('Aux acc:', unwrap_model(model).last_aux_acc.item()) if args.aux_labels else ()),
                       *(('WTA encoder agreement:', unwrap_model(model).last_wta_agree.item(), 'Kernel overlap:', unwrap_model(model).last_kernel_overlap.item()) if unwrap_model(model).warp_wta else ()))
 
     # finish wandb

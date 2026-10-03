@@ -398,7 +398,7 @@ class LatentActionModel(nn.Module):
                  decoder_warp_entropy_weight=0.0, decoder_warp_entropy_ramp=3000,
                  decoder_warp_wta=False, wta_sinkhorn_eps=0.05, wta_encoder_weight=1.0, decoder_warp_local=0, decoder_warp_local_mask=False, wta_balance=1.0,
                  decoder_warp_local_gate=0.0, decoder_warp_local_blur=1, wta_kernel_repulsion=0.0,
-                 ot_encoder=False, ot_decoder='none'):
+                 ot_encoder=False, ot_decoder='none', aux_label_weight=0.0, aux_label_classes=9):
         super().__init__()
         assert math.log(n_actions, NUM_LATENT_ACTIONS_BINS).is_integer(), f"n_actions must be a power of {NUM_LATENT_ACTIONS_BINS}"
         self.action_dim=int(math.log(n_actions, NUM_LATENT_ACTIONS_BINS))
@@ -448,6 +448,13 @@ class LatentActionModel(nn.Module):
         self.register_buffer('train_steps', torch.zeros((), dtype=torch.long), persistent=False)
         # OT-conditioned LAM (STA-35): the calibrated token transport plan of each transition as an input
         self.uses_ot = bool(ot_encoder) or ot_decoder != 'none'
+        # aux_label_weight (STA-35 itc_loop i5): linear head on the squashed action latent tanh(z) -> aux_label_classes
+        #   pseudo-labels (e.g. the ITC teacher's 8 directions + STILL), CE weight aux_label_weight, so the codes align with
+        #   the teacher's classes while the decoder objective is kept. 0 = off (original, no extra parameters)
+        self.aux_label_weight = float(aux_label_weight)
+        if self.aux_label_weight > 0:
+            self.aux_head = nn.Linear(self.action_dim, int(aux_label_classes))
+        self.last_aux_acc = torch.zeros(())
         self.var_target = 0.01
         self.var_lambda = 100.0
         # code-usage loss (0.0 = original: variance penalty only). Replaces the variance penalty when on.
@@ -570,11 +577,25 @@ class LatentActionModel(nn.Module):
             total_loss = total_loss - self.entropy_loss_weight * h_batch
         return total_loss, pred_frames.to(frames.dtype)
 
-    def forward(self, frames, ot=None):
-        # frames: [B, T, C, H, W], ot: [B, T - 1, 2, P] OT plans (only for an OT-conditioned LAM)
+    def aux_loss(self, action_latents, aux):
+        # action_latents: [B, T-1, A] pre-tanh, aux: [B, T-1] long pseudo-labels (-1 = none) -> weighted CE (scalar)
+        if self.aux_label_weight <= 0 or aux is None:
+            return action_latents.new_zeros(()).float()
+        logits = self.aux_head(torch.tanh(action_latents.float()))  # [B, T-1, K]
+        valid = aux >= 0  # [B, T-1]
+        if not valid.any():
+            return logits.sum() * 0.0
+        self.last_aux_acc = (logits.argmax(-1)[valid] == aux[valid]).float().mean().detach()
+        return self.aux_label_weight * F.cross_entropy(logits[valid], aux[valid])
+
+    def forward(self, frames, ot=None, aux=None):
+        # frames: [B, T, C, H, W], ot: [B, T - 1, 2, P] OT plans (only for an OT-conditioned LAM),
+        # aux: [B, T - 1] long pseudo-labels (only with aux_label_weight > 0)
         if self.warp_wta:
             assert ot is None, 'wta + OT not wired'
-            return self.forward_wta(frames, self.encoder(frames))
+            action_latents = self.encoder(frames)  # [B, T-1, A]
+            total_loss, pred_frames = self.forward_wta(frames, action_latents)
+            return total_loss + self.aux_loss(action_latents, aux), pred_frames
 
         # get (quantized or sampled) action latents
         action_latents = self.encoder(frames, ot) # [B, T - 1, A] (continuous: [B, T - 1, 2A])
@@ -622,6 +643,7 @@ class LatentActionModel(nn.Module):
             if self.training:
                 self.train_steps += 1
 
+        total_loss = total_loss + self.aux_loss(action_latents[..., :self.action_dim], aux)
         return total_loss, pred_frames
 
     def encode(self, frames, ot=None):

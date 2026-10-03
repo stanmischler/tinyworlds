@@ -124,9 +124,13 @@ class VideoHDF5Dataset(Dataset):
         # load_start_index on), plan of (t, t + frame_skip) at row t -> second item [T-1, 2, P] long instead of 0
         ot_plans = getattr(self, 'ot_plans', None)
         ot = None
+        rows = slice(index, index + (self.num_frames - 1) * self.frame_skip, self.frame_skip)
         if ot_plans is not None:
-            rows = slice(index, index + (self.num_frames - 1) * self.frame_skip, self.frame_skip)
             ot = torch.from_numpy(np.stack([ot_plans['sigma'][rows], ot_plans['created'][rows]], 1).astype(np.int64))
+        # aux_labels (STA-35 i5 pseudo-label head): [N] long aligned like ot_plans -> second item [T-1] long
+        aux_labels = getattr(self, 'aux_labels', None)
+        if aux_labels is not None:
+            ot = torch.from_numpy(np.ascontiguousarray(aux_labels[rows]))
         if len(frame_sequence) != self.num_frames:
             raise ValueError(f"Expected {self.num_frames} frames, got {len(frame_sequence)} frames")
 
