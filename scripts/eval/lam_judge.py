@@ -114,15 +114,29 @@ def lam_codes(ckpt, wins, device, batch=32, k=0):
     from utils.utils import load_latent_actions_from_checkpoint
     lam, _ = load_latent_actions_from_checkpoint(ckpt, device)
     lam.eval()
-    q, A = lam.quantizer, lam.action_dim
-    with h5py.File(H5, 'r') as h5, torch.no_grad():
-        zq = torch.cat([lam.encode(to_model_range(load_window_batch(h5['frames'], wins[i:i + batch], SEQ - 1, SKIP), device))
-                        for i in range(0, len(wins), batch)])  # [N, T-1, A]
     if getattr(lam, 'continuous_actions', False):
-        k = k or q.codebook_size  # --k overrides the number of k-means clusters
-        c = kmeans(zq.reshape(-1, A).float(), k)
-        return torch.cdist(zq.reshape(-1, A).float(), c).argmin(1).reshape(zq.shape[:-1]).cpu().numpy(), k, zq.float().cpu()
-    return q.get_indices_from_latents(zq).cpu().numpy(), q.codebook_size, None
+        zq = encode_windows(lam, wins, device, batch).float()
+        k = k or lam.quantizer.codebook_size  # --k overrides the number of k-means clusters
+        c = kmeans(zq.reshape(-1, lam.action_dim), k)
+        return torch.cdist(zq.reshape(-1, lam.action_dim), c).argmin(1).reshape(zq.shape[:-1]).cpu().numpy(), k, zq.cpu()
+    return (*codes_from_lam(lam, wins, device, batch), None)
+
+
+def encode_windows(lam, wins, device, batch=32):
+    # lam in eval mode -> actions [N, T-1, A] for every held-out window
+    with h5py.File(H5, 'r') as h5, torch.no_grad():
+        return torch.cat([lam.encode(to_model_range(load_window_batch(h5['frames'], wins[i:i + batch], SEQ - 1, SKIP), device))
+                          for i in range(0, len(wins), batch)])
+
+
+def codes_from_lam(lam, wins, device, batch=32):
+    # lam in eval mode -> codes [N, T-1] for every held-out window, n_codes
+    q, A = lam.quantizer, lam.action_dim
+    zq = encode_windows(lam, wins, device, batch)  # [N, T-1, A]
+    if getattr(lam, 'continuous_actions', False):
+        c = kmeans(zq.reshape(-1, A).float(), q.codebook_size)
+        return torch.cdist(zq.reshape(-1, A).float(), c).argmin(1).reshape(zq.shape[:-1]).cpu().numpy(), q.codebook_size  # [N, T-1]
+    return q.get_indices_from_latents(zq).cpu().numpy(), q.codebook_size
 
 
 def probe(z, labels, folds=5, l2=1e-2, seed=0):
@@ -176,6 +190,21 @@ def _table(codes, labels, n_codes, classes):
     return tab
 
 
+def judged_metrics(meta, labels, n_codes, codes_all=None, code_of_id=None):
+    # codes_all [N windows, T-1] (or code_of_id {"<transition id>": code}) -> metrics on the judged set
+    ids, codes, labs = [], [], []
+    for tr in meta['transitions']:
+        i = str(tr['id'])
+        if i not in labels:
+            continue
+        ids.append(i)
+        codes.append(int(codes_all[tr['window'], tr['t']]) if codes_all is not None else int(code_of_id[i]))
+        labs.append(labels[i])
+    return {'n_codes': n_codes, 'all': metrics(codes, labs, n_codes, LABELS),
+            'moves_only': metrics([c for c, l in zip(codes, labs) if l in MOVES], [l for l in labs if l in MOVES], n_codes, MOVES),
+            'per_transition': dict(zip(ids, codes))}
+
+
 def code_grids(name, codes_all, wins, n_codes, out_dir, per_code=6):
     # codes_all: [N, T-1] -> one PNG per code with up to `per_code` random held-out transitions mapped to it
     rng = np.random.default_rng(0)
@@ -214,18 +243,10 @@ def score(args):
         else:  # {"<transition id>": code}: only the judged set, no grids
             cj = json.load(open(path))
             codes_all, n_codes = None, int(max(cj.values())) + 1
-        ids, codes, labs = [], [], []
-        for tr in meta['transitions']:
-            i = str(tr['id'])
-            if i not in labels:
-                continue
-            ids.append(i)
-            codes.append(int(codes_all[tr['window'], tr['t']]) if codes_all is not None else int(cj[i]))
-            labs.append(labels[i])
-        res = {'name': name, 'source': path, 'n_codes': n_codes, 'labels_file': args.labels,
-               'all': metrics(codes, labs, n_codes, LABELS),
-               'moves_only': metrics([c for c, l in zip(codes, labs) if l in MOVES], [l for l in labs if l in MOVES], n_codes, MOVES),
-               'per_transition': dict(zip(ids, codes))}
+        res = {'name': name, 'source': path, 'labels_file': args.labels,
+               **judged_metrics(meta, labels, n_codes, codes_all=codes_all, code_of_id=None if codes_all is not None else cj)}
+        ids = list(res['per_transition'])
+        labs = [labels[i] for i in ids]
         if z_all is not None:  # continuous actions: linear probe on the raw action, independent of the clustering
             trs = {str(tr['id']): tr for tr in meta['transitions']}
             zf = z_all.reshape(-1, z_all.shape[-1])
@@ -234,7 +255,6 @@ def score(args):
             mv = [j for j, l in enumerate(labs) if l in MOVES]
             pa, pm = probe(zs, labs), probe(zs[mv], [labs[j] for j in mv])
             if args.kmeans_seeds > 1:  # clustering noise: moves / all NMI_adj over k-means seeds 0..n-1 (seed 0 = headline)
-                A = z_all.shape[-1]
                 sc = {'moves': [], 'all': []}
                 for sd in range(args.kmeans_seeds):
                     cs = torch.cdist(zf, kmeans(zf, n_codes, seed=sd)).argmin(1).reshape(z_all.shape[:-1]).numpy()
