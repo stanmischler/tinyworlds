@@ -198,6 +198,40 @@ def eval_lam(arms: str, extra: str = ""):
         print(f"EVAL DONE {name} -> evals/{name}")
 
 
+@app.function(gpu="L4", cpu=4, memory=16384, volumes=VOLUMES, timeout=60 * 60)
+def eval_lam_set(game: str, arms: str = "", baselines: str = "random,camera", ot_plans: str = "", pair_encoders: str = "",
+                 kmeans_seeds: int = 10):
+    """Score LAM checkpoints on a game's judge-labelled action set (scripts/eval/lam_eval.py; the set ships with the image
+    from eval_results/lam_eval/<game>/set). arms: "<name>=<checkpoint dir relative to the results volume>,...".
+    Outputs go to the results volume under lam_eval/<game>/<name>/score.json; fetch them with
+    `modal volume get tinyworlds-results lam_eval/<game> eval_results/lam_eval/`.
+        modal run scripts/modal_train.py::eval_lam_set --game zelda --arms "i4=lam_eval_ckpts/zelda_i4_bal16_seed2"
+    OT-conditioned LAMs (STA-35) also need --ot-plans data/zelda_test_uot_gap4.npz (data volume). pair_encoders: same format,
+    train_action_encoder.py encoder.pt files (e.g. itcloop_i5_enc_pix/action_encoder/encoder.pt). Continuous LAMs (CoMo) report
+    NMI_adj mean/sd over kmeans_seeds k-means seeds.
+    """
+    import shutil
+    import subprocess
+
+    cmd = ["python", "scripts/eval/lam_eval.py", "score", "--game", game, "--device", "cuda", "--kmeans-seeds", str(kmeans_seeds)]
+    for spec in [a for a in arms.split(",") if a]:
+        name, ckpt = spec.split("=", 1)
+        cmd += ["--lam", f"{name}={REPO_DIR}/results/{ckpt}"]
+    for spec in [a for a in pair_encoders.split(",") if a]:
+        name, ckpt = spec.split("=", 1)
+        cmd += ["--pair-encoder", f"{name}={REPO_DIR}/results/{ckpt}"]
+    for b in [b for b in baselines.split(",") if b]:
+        cmd += ["--baseline", b]
+    if ot_plans:
+        cmd += ["--ot-plans", ot_plans]
+    subprocess.run(cmd, cwd=REPO_DIR, check=True)
+    for d in os.listdir(f"{REPO_DIR}/eval_results/lam_eval/{game}"):
+        if d not in ("set", "groups"):
+            shutil.copytree(f"{REPO_DIR}/eval_results/lam_eval/{game}/{d}", f"{REPO_DIR}/results/lam_eval/{game}/{d}", dirs_exist_ok=True)
+    results_volume.commit()
+    print(f"EVAL DONE {game} -> lam_eval/{game}")
+
+
 @app.function(gpu=GPU, cpu=4, memory=32768, volumes=VOLUMES, timeout=2 * 60 * 60)
 def como_features(splits: str = "zelda_train,zelda_test", limit: int = 0, suffix: str = ""):
     """Frozen MAE ViT-L features for CoMo (scripts/como_features.py): data/<split>_frames.h5 -> data/<split>_mae_large<suffix>.npy
