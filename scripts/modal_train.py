@@ -198,6 +198,40 @@ def eval_lam(arms: str, extra: str = ""):
         print(f"EVAL DONE {name} -> evals/{name}")
 
 
+@app.function(gpu="L4", cpu=4, memory=16384, volumes=VOLUMES, timeout=60 * 60)
+def eval_lam_set(game: str, arms: str = "", baselines: str = "random,camera", ot_plans: str = "", pair_encoders: str = "",
+                 kmeans_seeds: int = 10):
+    """Score LAM checkpoints on a game's judge-labelled action set (scripts/eval/lam_eval.py; the set ships with the image
+    from eval_results/lam_eval/<game>/set). arms: "<name>=<checkpoint dir relative to the results volume>,...".
+    Outputs go to the results volume under lam_eval/<game>/<name>/score.json; fetch them with
+    `modal volume get tinyworlds-results lam_eval/<game> eval_results/lam_eval/`.
+        modal run scripts/modal_train.py::eval_lam_set --game zelda --arms "i4=lam_eval_ckpts/zelda_i4_bal16_seed2"
+    OT-conditioned LAMs (STA-35) also need --ot-plans data/zelda_test_uot_gap4.npz (data volume). pair_encoders: same format,
+    train_action_encoder.py encoder.pt files (e.g. itcloop_i5_enc_pix/action_encoder/encoder.pt). Continuous LAMs (CoMo) report
+    NMI_adj mean/sd over kmeans_seeds k-means seeds.
+    """
+    import shutil
+    import subprocess
+
+    cmd = ["python", "scripts/eval/lam_eval.py", "score", "--game", game, "--device", "cuda", "--kmeans-seeds", str(kmeans_seeds)]
+    for spec in [a for a in arms.split(",") if a]:
+        name, ckpt = spec.split("=", 1)
+        cmd += ["--lam", f"{name}={REPO_DIR}/results/{ckpt}"]
+    for spec in [a for a in pair_encoders.split(",") if a]:
+        name, ckpt = spec.split("=", 1)
+        cmd += ["--pair-encoder", f"{name}={REPO_DIR}/results/{ckpt}"]
+    for b in [b for b in baselines.split(",") if b]:
+        cmd += ["--baseline", b]
+    if ot_plans:
+        cmd += ["--ot-plans", ot_plans]
+    subprocess.run(cmd, cwd=REPO_DIR, check=True)
+    for d in os.listdir(f"{REPO_DIR}/eval_results/lam_eval/{game}"):
+        if d not in ("set", "groups"):
+            shutil.copytree(f"{REPO_DIR}/eval_results/lam_eval/{game}/{d}", f"{REPO_DIR}/results/lam_eval/{game}/{d}", dirs_exist_ok=True)
+    results_volume.commit()
+    print(f"EVAL DONE {game} -> lam_eval/{game}")
+
+
 @app.function(gpu=GPU, cpu=4, memory=32768, volumes=VOLUMES, timeout=2 * 60 * 60)
 def como_features(splits: str = "zelda_train,zelda_test", limit: int = 0, suffix: str = ""):
     """Frozen MAE ViT-L features for CoMo (scripts/como_features.py): data/<split>_frames.h5 -> data/<split>_mae_large<suffix>.npy
@@ -211,6 +245,24 @@ def como_features(splits: str = "zelda_train,zelda_test", limit: int = 0, suffix
             subprocess.run(cmd + ["--check"], cwd=REPO_DIR, check=True)
         subprocess.run(cmd + (["--limit", str(limit)] if limit else []), cwd=REPO_DIR, check=True)
         data_volume.commit()
+
+
+@app.function(gpu="L4", cpu=4, memory=32768, volumes=VOLUMES, timeout=3 * 60 * 60)
+def tok_features(arms: str = "pf_q,pf_h,tp_q,tp_h", splits: str = "zelda_train,zelda_test", limit: int = 0, suffix: str = ""):
+    """Frozen video-tokenizer features for CoMo (STA-43, scripts/tok_features.py), one set per arm yaml
+    configs/como/tok/<arm>.yaml: data/<split>_tok_<arm><suffix>.npy in the data volume. --limit N --suffix _smoke to check.
+        modal run scripts/modal_train.py::tok_features --arms pf_q,tp_q"""
+    import subprocess
+
+    from omegaconf import OmegaConf
+
+    for arm in [x for x in arms.split(",") if x]:
+        c = OmegaConf.load(f"{REPO_DIR}/configs/como/tok/{arm}.yaml")
+        for sp in [x for x in splits.split(",") if x]:
+            subprocess.run(["python", "scripts/tok_features.py", "--h5", f"data/{sp}_frames.h5", "--tokenizer", c.tokenizer_path,
+                            "--mode", c.tokenizer_feature, "--history", str(c.history), "--out", f"data/{sp}_tok_{arm}{suffix}.npy",
+                            *(["--limit", str(limit)] if limit else [])], cwd=REPO_DIR, check=True)
+            data_volume.commit()
 
 
 @app.function(gpu=GPU, cpu=8, memory=int(os.environ.get("TINYWORLDS_MEMORY_MB", 32768)), volumes=VOLUMES, secrets=SECRETS,
@@ -235,6 +287,28 @@ def train_como(config: str = "configs/como/zelda.yaml", overrides: str = ""):
     finally:
         stop.set()
         results_volume.commit()
+
+
+@app.function(gpu=GPU, cpu=8, memory=int(os.environ.get("TINYWORLDS_MEMORY_MB", 32768)), volumes=VOLUMES, secrets=SECRETS,
+              timeout=24 * 60 * 60)
+def train_como_tok(arm: str, overrides: str = ""):
+    """STA-43 arm end to end on one GPU: tokenizer features for configs/como/tok/<arm>.yaml (scripts/tok_features.py,
+    skipped if the .npy already exist on the data volume), then CoMo training on them (results/como_tok_<arm>/).
+        TINYWORLDS_GPU=H100 modal run --detach scripts/modal_train.py::train_como_tok --arm pf_q
+    """
+    import subprocess
+
+    from omegaconf import OmegaConf
+
+    c = OmegaConf.load(f"{REPO_DIR}/configs/como/tok/{arm}.yaml")
+    for sp, out in (("zelda_train", c.train_features), ("zelda_test", c.test_features)):
+        if not os.path.exists(f"{REPO_DIR}/{out}"):
+            subprocess.run(["python", "scripts/tok_features.py", "--h5", f"data/{sp}_frames.h5", "--tokenizer", c.tokenizer_path,
+                            "--mode", c.tokenizer_feature, "--history", str(c.history), "--out", f"{out}.part.npy", "--batch", "256"],
+                           cwd=REPO_DIR, check=True)
+            os.rename(f"{REPO_DIR}/{out}.part.npy", f"{REPO_DIR}/{out}")  # a killed precompute never looks finished
+            data_volume.commit()
+    train_como.local("configs/como/zelda.yaml,configs/como/tok/base.yaml," + f"configs/como/tok/{arm}.yaml", overrides)
 
 
 @app.function(gpu="L4", cpu=4, memory=32768, volumes=VOLUMES, timeout=60 * 60)

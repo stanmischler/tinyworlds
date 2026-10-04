@@ -33,7 +33,7 @@ import torch
 from PIL import Image, ImageDraw
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from eval_next_frame import test_windows, load_window_batch, to_model_range  # noqa: E402
+from eval_next_frame import test_windows, load_window_batch, load_history_batch, to_model_range  # noqa: E402
 from eval_lam import nmi, kmeans  # noqa: E402
 
 LABELS = ['U', 'D', 'L', 'R', 'UL', 'UR', 'DL', 'DR', 'STILL', 'ATTACK', 'NONCONTROL', 'UNSURE']
@@ -125,7 +125,8 @@ def lam_codes(ckpt, wins, device, batch=32, k=0):
 def encode_windows(lam, wins, device, batch=32):
     # lam in eval mode -> actions [N, T-1, A] for every held-out window
     with h5py.File(H5, 'r') as h5, torch.no_grad():
-        return torch.cat([lam.encode(to_model_range(load_window_batch(h5['frames'], wins[i:i + batch], SEQ - 1, SKIP), device))
+        h = getattr(lam, 'history', 0)  # temporal-tokenizer CoMo: extra earlier frames per window (STA-43)
+        return torch.cat([lam.encode(to_model_range(load_history_batch(h5['frames'], wins[i:i + batch], SEQ - 1, SKIP, h, H5), device))
                           for i in range(0, len(wins), batch)])
 
 

@@ -1,0 +1,28 @@
+# STA-28 sweep arm: flow matching, k16 CoMo actions, v3 tokenizer. Backbone = zelda_como / zelda_v4 dynamics (256/512/12),
+# batch 64, lr 3e-4, 8k steps. fm_pred / fm_shift come from the launch overrides.
+batch_size_per_gpu: 64
+gradient_accumulation_steps: 1
+n_updates: 8000
+learning_rate: 0.0003
+log_interval: 1000   # checkpoint + sampled-prediction PNG every 1000 steps
+
+use_actions: true
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 12
+
+dynamics_type: flow
+fm_pred: v           # v = velocity head, x = clean-latent head (velocity derived); loss = velocity MSE either way
+fm_shift: 1.0        # SD3 timestep shift toward noise (training and sampling)
+qk_norm: true
+ema_decay: 0.999     # sampling uses the EMA weights (ema_state_dict.pt)
+seed: 0
+
+video_tokenizer_path: results/2026_09_26_12_12_49/video_tokenizer/checkpoints/video_tokenizer_step_29000   # zelda_v3 temporal tokenizer
+latent_actions_path: results/como_actions_v1_k16   # CoMo IDM + train z stats (+ centroids), models/como.py CoMoActions
+action_file: data/zelda_train_como_z.npy             # raw z per train .h5 row, so training never runs the MAE ViT-L
+
+# resume: set to a checkpoint dir (…/dynamics/checkpoints/dynamics_step_N) to restore weights, EMA, optimizer, scheduler and step
+checkpoint:
