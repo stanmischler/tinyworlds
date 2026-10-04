@@ -66,6 +66,39 @@ class MAEFeatures(nn.Module):
         return self.vit(pixel_values=x, noise=noise).last_hidden_state
 
 
+class TokenizerFeatures(nn.Module):
+    """Frozen video tokenizer (models/video_tokenizer.py) as the IDM's feature extractor, in place of the MAE (STA-43).
+    frames in [-1, 1] [N, Th, C, H, W] (Th = history + 1, oldest first; per-frame tokenizers take Th = 1) -> features of
+    the last frame [N, S, D]:
+      - mode 'quant' : FSQ-quantized latents [P, L] (the tokens the dynamics model reads)
+      - mode 'hidden': encoder transformer output after the latent head's LayerNorm [P, E] (before the projection to L)
+    then merge x merge space-to-depth (concatenate neighbouring tokens): S = P / merge^2, D = merge^2 * (L or E)."""
+
+    def __init__(self, tokenizer, mode='quant', merge=2):
+        super().__init__()
+        assert mode in ('quant', 'hidden'), mode
+        self.tok = tokenizer.eval().requires_grad_(False)
+        self.mode, self.merge = mode, merge
+        enc = tokenizer.encoder
+        self.hp = enc.patch_embed.Hp  # tokens per side
+        width = enc.latent_head[1].out_features if mode == 'quant' else enc.latent_head[1].in_features
+        self.dim = width * merge * merge
+
+    def train(self, mode=True):
+        return super().train(False)  # always eval
+
+    @torch.no_grad()
+    def forward(self, x):
+        # x: [N, Th, C, H, W] -> [N, S, D]
+        enc = self.tok.encoder
+        h = enc.transformer(enc.patch_embed(x))[:, -1]  # [N, P, E] (causal: the last frame sees the whole history)
+        f = self.tok.quantizer(enc.latent_head(h)) if self.mode == 'quant' else enc.latent_head[0](h)  # [N, P, L or E]
+        N, P, D = f.shape
+        hp, m = self.hp, self.merge
+        f = f.view(N, hp // m, m, hp // m, m, D).permute(0, 1, 3, 2, 4, 5)  # [N, Hp/m, Wp/m, m, m, D]
+        return f.reshape(N, (hp // m) ** 2, m * m * D)
+
+
 class MotionIDM(nn.Module):
     """Q-former over [queries, cond tokens, SEP, difference tokens]: (F_t, F_{t+n} - F_t) [B, S, 1024] -> z [B, Q, L]."""
 
@@ -130,18 +163,19 @@ def info_nce(z, z_pos, z_neg, temperature=0.1):
 
 
 class CoMo(nn.Module):
-    """Trainable part (IDM + decoder); the frozen MAE is not a submodule, so checkpoints hold only trained weights."""
+    """Trainable part (IDM + decoder); the frozen feature extractor is not a submodule, so checkpoints hold only trained weights."""
 
     def __init__(self, frame_size=128, patch_size=8, idm_dim=768, idm_depth=4, idm_heads=12, idm_mlp=3072, n_queries=8,
                  latent_dim=16, dec_dim=768, dec_depth=12, dec_heads=12, dec_mlp=3072, contrastive_weight=0.004,
-                 temperature=0.1):
+                 temperature=0.1, feat_dim=MAE_DIM, feat_tokens=MAE_TOKENS):
         super().__init__()
-        self.idm = MotionIDM(MAE_DIM, MAE_TOKENS, idm_dim, n_queries, idm_depth, idm_heads, idm_mlp, latent_dim)
+        # feat_dim / feat_tokens: the frozen feature extractor's output [S, D] (MAE default; TokenizerFeatures for STA-43)
+        self.idm = MotionIDM(feat_dim, feat_tokens, idm_dim, n_queries, idm_depth, idm_heads, idm_mlp, latent_dim)
         self.decoder = MotionDecoder(frame_size, patch_size, dec_dim, dec_depth, dec_heads, dec_mlp, n_queries, latent_dim)
         self.contrastive_weight, self.temperature = contrastive_weight, temperature
 
     def forward(self, f_a, f_b, f_j, x_a, x_b):
-        # f_a, f_b, f_j: MAE features [B, S, 1024] of frames t, t+n, t+n+delta; x_a, x_b: pixels [B, C, H, W] of t, t+n
+        # f_a, f_b, f_j: frozen features [B, S, D] (MAE: S 197, D 1024) of frames t, t+n, t+n+delta; x_a, x_b: pixels [B, C, H, W] of t, t+n
         z = self.idm(f_a, f_b)  # [B, Q, L]
         pred = self.decoder(x_a, z)
         recon = F.mse_loss(pred, x_b)
@@ -161,20 +195,31 @@ class CoMo(nn.Module):
 
 class CoMoLAM(nn.Module):
     """Eval adapter with the LatentActionModel interface used by scripts/eval (lam_judge, eval_lam's kmeans path):
-    encode(frames [B, T, C, H, W] in [-1, 1]) -> continuous actions [B, T-1, A=Q*L], one per consecutive pair."""
+    encode(frames [B, T, C, H, W] in [-1, 1]) -> continuous actions [B, T-1, A=Q*L], one per consecutive pair.
+    features: frozen extractor (MAEFeatures default, or TokenizerFeatures). history > 0 (temporal tokenizer): the first
+    `history` frames of `frames` are context only, each frame is encoded with the `history` frames before it and
+    encode returns [B, T-history-1, A] (callers load the extra frames, see eval_next_frame.load_history_batch)."""
 
     continuous_actions = True
 
-    def __init__(self, como, n_clusters=16, mae=None):
+    def __init__(self, como, n_clusters=16, features=None, history=0):
         super().__init__()
         self.como = como
-        self.mae = mae if mae is not None else MAEFeatures()
+        self.features = features if features is not None else MAEFeatures()
+        self.history = history
         self.action_dim = como.idm.n_queries * como.idm.down[-1].out_features
         self.quantizer = SimpleNamespace(codebook_size=n_clusters)  # k-means clusters used to turn z into codes
 
     @torch.no_grad()
     def encode(self, frames):
         B, T = frames.shape[:2]
-        f = self.mae(frames.flatten(0, 1)).float().view(B, T, MAE_TOKENS, MAE_DIM)  # [B, T, S, 1024]
+        if isinstance(self.features, MAEFeatures):
+            f = self.features(frames.flatten(0, 1))  # [B*T, S, D]
+        else:  # tokenizer: frame i with its history frames i-history .. i -> [B*(T-history), S, D]
+            h = self.history
+            win = torch.stack([frames[:, i - h:i + 1] for i in range(h, T)], 1)  # [B, T-h, h+1, C, H, W]
+            T = T - h
+            f = self.features(win.flatten(0, 1))
+        f = f.float().view(B, T, *f.shape[1:])  # [B, T, S, D]
         z = self.como.idm(f[:, :-1].flatten(0, 1), f[:, 1:].flatten(0, 1))  # [B*(T-1), Q, L]
         return z.reshape(B, T - 1, -1)

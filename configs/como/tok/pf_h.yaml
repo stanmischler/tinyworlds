@@ -1,0 +1,8 @@
+# per-frame tokenizer (zelda_v5_frametok, STA-34); encoder hidden state after the latent head LayerNorm, 4 x 256 = 1024-d per token
+run_name: como_tok_pf_h
+tokenizer_path: results/zelda_v5_frametok/video_tokenizer/checkpoints/video_tokenizer_step_29000
+tokenizer_feature: hidden
+history: 0
+train_features: data/zelda_train_tok_pf_h.npy
+test_features: data/zelda_test_tok_pf_h.npy
+feat_device: cpu       # 34 GB table: pinned host memory, rows copied per batch (on the GPU it OOMed the H100)
