@@ -1,5 +1,6 @@
 """CoMo actions for the dynamics model (STA-42): run a trained CoMo IDM over every gap-n frame pair of the train/test .h5
-from the precomputed MAE features (scripts/como_features.py), so dynamics training never runs the ViT-L.
+from the precomputed MAE features (scripts/como_features.py), so dynamics training never runs the ViT-L. STA-46: tokenizer-feature
+CoMo (STA-43) reads its scripts/tok_features.py npy via --feature-file instead.
 
 Outputs
   - data/<split>_como_z<suffix>.npy  float32 [N, A=Q*L]: row i = raw z(frame i, frame i+gap); the last `gap` rows are 0
@@ -11,6 +12,8 @@ Outputs
 
     python scripts/como_actions.py --como-ckpt results/como_zelda_v1/como/checkpoints/como_step_50000 --out-dir results/como_actions_v1
     python scripts/como_actions.py ... --check   # online encode (MAE on pixels) vs the npy rows on the first test pairs
+    python scripts/como_actions.py --como-ckpt results/como_tok_pf_h/como/checkpoints/como_step_20000 --out-dir results/como_actions_pf_h \
+        --feature-file 'data/{split}_tok_pf_h.npy' --suffix _pf_h   # STA-46
 """
 
 import argparse
@@ -30,13 +33,13 @@ from utils.utils import load_como_from_checkpoint, STATE  # noqa: E402
 
 @torch.no_grad()
 def pair_z(idm, feats, gap, batch, device, limit=0):
-    # feats: memmap fp16 [N, S, 1024] -> raw z [N, A] float32 (rows >= N - gap stay 0)
+    # feats: memmap fp16 [N, S, D] -> raw z [N, A] float32 (rows >= N - gap stay 0)
     n = min(len(feats), limit) if limit else len(feats)
     z = np.zeros((n, idm.n_queries * idm.down[-1].out_features), np.float32)
     t0 = time.time()
     for i in range(0, n - gap, batch):
         j = min(i + batch, n - gap)
-        fa = torch.from_numpy(np.asarray(feats[i:j])).to(device).float()  # [b, S, 1024]
+        fa = torch.from_numpy(np.asarray(feats[i:j])).to(device).float()  # [b, S, D]
         fb = torch.from_numpy(np.asarray(feats[i + gap:j + gap])).to(device).float()
         z[i:j] = idm(fa, fb).flatten(1).cpu().numpy()
         if (i // batch) % 50 == 0:
@@ -57,15 +60,17 @@ def main():
     p.add_argument('--limit', type=int, default=0, help='only the first N rows of each split (smoke)')
     p.add_argument('--suffix', default='', help='output npy suffix (smoke)')
     p.add_argument('--feature-suffix', default='', help='MAE npy suffix, e.g. _smoke')
+    p.add_argument('--feature-file', default='data/{split}_mae_large{feature_suffix}.npy',
+                   help='feature npy per split (format keys split, feature_suffix), e.g. data/{split}_tok_pf_h.npy (STA-43 CoMo)')
     p.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     p.add_argument('--check', type=int, default=0, help='>0: also compare online encode with the npy on N test pairs')
     a = p.parse_args()
 
-    lam, _ = load_como_from_checkpoint(a.como_ckpt, a.device)  # CoMoLAM (loads the MAE too, used by --check)
+    lam, _ = load_como_from_checkpoint(a.como_ckpt, a.device)  # CoMoLAM (loads the MAE / tokenizer too, used by --check)
     idm = lam.como.idm.eval()
     zs = {}
     for sp in [s for s in a.splits.split(',') if s]:
-        feats = np.load(f'data/{sp}_mae_large{a.feature_suffix}.npy', mmap_mode='r')
+        feats = np.load(a.feature_file.format(split=sp, feature_suffix=a.feature_suffix), mmap_mode='r')
         print(f'{sp}: {len(feats)} feature rows')
         zs[sp] = pair_z(idm, feats, a.gap, a.batch, a.device, a.limit)
         np.save(f'data/{sp}_como_z{a.suffix}.npy', zs[sp])
@@ -74,7 +79,7 @@ def main():
     fit = torch.from_numpy(zs[a.fit_split][a.start_index:len(zs[a.fit_split]) - a.gap])  # [M, A] valid pairs only
     mean, std = fit.mean(0), fit.std(0).clamp_min(1e-6)
     centroids = kmeans(fit, a.k, seed=0)  # [K, A]
-    summary = {'como_ckpt': a.como_ckpt, 'gap': a.gap, 'k': a.k, 'fit_split': a.fit_split, 'fit_rows': len(fit),
+    summary = {'como_ckpt': a.como_ckpt, 'feature_file': a.feature_file, 'gap': a.gap, 'k': a.k, 'fit_split': a.fit_split, 'fit_rows': len(fit),
                'z_std_mean': float(std.mean()), 'z_std_min': float(std.min()), 'z_std_max': float(std.max())}
     for sp, z in zs.items():
         zz = torch.from_numpy(z[:len(z) - a.gap])
