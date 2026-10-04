@@ -288,6 +288,14 @@ class DynamicsConfig:
 	copy_prior: bool = False
 	# Seed for init, masking and batch order (None = unseeded, as before)
 	seed: Optional[int] = None
+	# Generator (STA-28): "maskgit" (default, models/dynamics.py) or "flow" (flow matching on the continuous FSQ latents
+	# of the last frame, rounded to the grid at the end, models/flow_dynamics.py). The fm_* / qk_norm / ema knobs below
+	# only apply to "flow".
+	dynamics_type: str = "maskgit"
+	fm_pred: str = "v"        # network output: "v" velocity, "x" clean latents (velocity derived); loss is velocity MSE
+	fm_shift: float = 1.0     # SD3 timestep shift toward noise, training and sampling (1.0 = uniform)
+	qk_norm: bool = True      # RMSNorm on queries/keys (flow only)
+	ema_decay: float = 0.0    # EMA of the weights, saved as ema_state_dict.pt and used for sampling (0 = off)
 	# Optimizer
 	optimizer: str = "adamw"
 	muon_momentum: float = 0.95
