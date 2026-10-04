@@ -23,7 +23,7 @@ import h5py
 import numpy as np
 import torch
 
-from eval_next_frame import test_windows, load_window_batch, to_model_range, to_unit, psnr, ssim, try_lpips
+from eval_next_frame import test_windows, load_history_batch, to_model_range, to_unit, psnr, ssim, try_lpips
 from eval_lam import kmeans
 
 
@@ -42,15 +42,16 @@ def main():
     p.add_argument('--out-dir', default='eval_results/como_pred')
     a = p.parse_args()
     from utils.utils import load_latent_actions_from_checkpoint
-    lam, _ = load_latent_actions_from_checkpoint(a.ckpt, a.device)  # CoMoLAM: frozen MAE + IDM + decoder
+    lam, _ = load_latent_actions_from_checkpoint(a.ckpt, a.device)  # CoMoLAM: frozen features + IDM + decoder
     lam.eval()
     wins = test_windows(a.test_h5, a.context, a.frame_skip, a.sample_stride)
     zs, xs, ys = [], [], []
     with h5py.File(a.test_h5, 'r') as h5, torch.no_grad():
         for i in range(0, len(wins), a.batch_size):
-            fr = to_model_range(load_window_batch(h5['frames'], wins[i:i + a.batch_size], a.context, a.frame_skip), a.device)
+            h = getattr(lam, 'history', 0)  # temporal-tokenizer CoMo: frame t and t+4 each with h earlier frames (STA-43)
+            fr = to_model_range(load_history_batch(h5['frames'], wins[i:i + a.batch_size], a.context, a.frame_skip, h, a.test_h5), a.device)
             pair = fr[:, -2:]  # [B, 2, C, H, W]: last context frame t, target t+4
-            zs.append(lam.encode(pair)[:, 0].float())  # [B, A]
+            zs.append(lam.encode(fr[:, -2 - h:])[:, -1].float())  # [B, A]: action (t, t+4)
             xs.append(pair[:, 0])
             ys.append(pair[:, 1])
     z, x, y = torch.cat(zs), torch.cat(xs), torch.cat(ys)  # [N, A], [N, C, H, W] x2

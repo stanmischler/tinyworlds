@@ -305,19 +305,23 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, i
 
 
 COMO_ARCH_KEYS = ('frame_size', 'patch_size', 'idm_dim', 'idm_depth', 'idm_heads', 'idm_mlp', 'n_queries', 'latent_dim',
-                  'dec_dim', 'dec_depth', 'dec_heads', 'dec_mlp', 'contrastive_weight', 'temperature')
+                  'dec_dim', 'dec_depth', 'dec_heads', 'dec_mlp', 'contrastive_weight', 'temperature', 'feat_dim', 'feat_tokens')
 
 
 def load_como_from_checkpoint(checkpoint_path, device):
-    """CoMo checkpoint (scripts/train_como.py) -> CoMoLAM eval adapter (frozen MAE + trained IDM; continuous actions,
-    k-means into config n_actions clusters by the evals), and the saved state."""
+    """CoMo checkpoint (scripts/train_como.py) -> CoMoLAM eval adapter (frozen MAE or tokenizer features + trained IDM;
+    continuous actions, k-means into config n_actions clusters by the evals), and the saved state."""
     import torch
-    from models.como import CoMo, CoMoLAM
+    from models.como import CoMo, CoMoLAM, TokenizerFeatures
     state_cfg = torch.load(Path(checkpoint_path) / STATE, map_location='cpu', weights_only=False)
     cfg = state_cfg['config']
     como = CoMo(**{k: cfg[k] for k in COMO_ARCH_KEYS if k in cfg})
     como.load_state_dict(torch.load(Path(checkpoint_path) / MODEL_CHECKPOINT, map_location='cpu', weights_only=True))
-    return CoMoLAM(como, n_clusters=cfg.get('n_actions', 16)).to(device), state_cfg
+    features = None  # MAE
+    if cfg.get('features', 'mae') == 'tokenizer':
+        tok, _ = load_videotokenizer_from_checkpoint(cfg['tokenizer_path'], 'cpu')
+        features = TokenizerFeatures(tok, cfg['tokenizer_feature'], cfg.get('merge', 2))
+    return CoMoLAM(como, n_clusters=cfg.get('n_actions', 16), features=features, history=cfg.get('history', 0)).to(device), state_cfg
 
 
 def load_como_actions(action_dir, device):

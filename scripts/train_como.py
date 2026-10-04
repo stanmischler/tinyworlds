@@ -1,4 +1,8 @@
-"""Train the CoMo motion IDM (models/como.py) on precomputed MAE features (scripts/como_features.py).
+"""Train the CoMo motion IDM (models/como.py) on precomputed frozen features (MAE: scripts/como_features.py).
+
+Features: frozen MAE ViT-L (default) or a frozen video tokenizer's (scripts/tok_features.py, cfg features: tokenizer,
+with tokenizer_path / tokenizer_feature / history / merge recorded for the eval adapter); the feature width and token
+count come from the .npy.
 
 Each sample is a transition (t, t+gap) inside one contiguous stretch of the .h5 (train split cuts and the first
 `start_index` frames excluded, as ZeldaDataset's load_start_index), plus a jittered end t+gap+delta (delta uniform in
@@ -59,18 +63,21 @@ def valid_starts(segs, span, start_index=0):
     return np.concatenate([np.arange(max(s, start_index), e - span) for s, e in segs if e - span > max(s, start_index)])
 
 
-def load_split(cfg, h5_path, feat_path, device, fake=0):
+def load_split(cfg, h5_path, feat_path, device, fake=0, feat_device=None):
+    # feat_device: where the feature table lives (default: device); 'cpu' = pinned host memory, rows copied per batch
+    feat_device = feat_device or device
     with h5py.File(h5_path, 'r') as f:
         n = fake or min(len(f['frames']), cfg.max_frames or len(f['frames']))
         frames = torch.from_numpy(f['frames'][:n]).to(device)  # uint8 [N, H, W, C]
     if fake:
-        feats = torch.randn(n, MAE_TOKENS, MAE_DIM, dtype=torch.float16, device=device)
+        feats = torch.randn(n, cfg.get('feat_tokens') or MAE_TOKENS, cfg.get('feat_dim') or MAE_DIM, dtype=torch.float16, device=feat_device)
     else:
         mm = np.load(feat_path, mmap_mode='r')
         assert mm.shape[0] >= n, (mm.shape, n)
-        feats = torch.empty((n, MAE_TOKENS, MAE_DIM), dtype=torch.float16, device=device)
+        feats = torch.empty((n, *mm.shape[1:]), dtype=torch.float16, device=feat_device,
+                            pin_memory=feat_device == 'cpu' and device.startswith('cuda'))  # [N, S, D]
         for i in range(0, n, 2048):  # chunked: the host never holds the whole table
-            feats[i:i + 2048] = torch.from_numpy(np.ascontiguousarray(mm[i:min(i + 2048, n)])).to(device)
+            feats[i:i + 2048] = torch.from_numpy(np.ascontiguousarray(mm[i:min(i + 2048, n)])).to(feat_device)
     if fake:
         return frames, feats, [(0, n)]
     with h5py.File(h5_path, 'r') as f:
@@ -89,7 +96,8 @@ def batch(frames, feats, starts, idx, gap, jitter, gen, device):
     d = torch.randint(1, jitter + 1, (len(t),), generator=gen, device='cpu').to(device)
     d = d * (torch.randint(0, 2, (len(t),), generator=gen, device='cpu').to(device) * 2 - 1)  # +-1..jitter
     b, j = t + gap, t + gap + d
-    return feats[t].float(), feats[b].float(), feats[j].float(), to_pixels(frames[t]), to_pixels(frames[b])
+    f = [feats[i.to(feats.device)].to(device, non_blocking=True).float() for i in (t, b, j)]  # [B, S, D] x3
+    return *f, to_pixels(frames[t]), to_pixels(frames[b])
 
 
 def save_png(path, x_a, x_b, pred, n=8):
@@ -131,10 +139,10 @@ def judge(ckpt, run_dir, step, cfg):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--config', default='configs/como/zelda.yaml')
+    p.add_argument('--config', default='configs/como/zelda.yaml', help='yaml, or comma-separated yamls merged left to right')
     p.add_argument('overrides', nargs='*')
     a = p.parse_args()
-    cfg = OmegaConf.merge(OmegaConf.load(a.config), OmegaConf.from_dotlist([o for o in a.overrides if o != '--']))
+    cfg = OmegaConf.merge(*[OmegaConf.load(c) for c in a.config.split(',')], OmegaConf.from_dotlist([o for o in a.overrides if o != '--']))
     device = cfg.device
     torch.manual_seed(cfg.seed)
     gen = torch.Generator().manual_seed(cfg.seed)
@@ -147,10 +155,10 @@ def main():
     os.makedirs(viz_dir, exist_ok=True)
 
     t0 = time.time()
-    frames, feats, segs = load_split(cfg, cfg.train_h5, cfg.train_features, device, cfg.fake_features)
+    frames, feats, segs = load_split(cfg, cfg.train_h5, cfg.train_features, device, cfg.fake_features, cfg.get('feat_device'))
     span = cfg.gap + cfg.jitter
     starts = valid_starts(segs, span, cfg.start_index if not cfg.fake_features else 0)
-    vframes, vfeats, vsegs = load_split(cfg, cfg.test_h5, cfg.test_features, device, cfg.fake_features)
+    vframes, vfeats, vsegs = load_split(cfg, cfg.test_h5, cfg.test_features, device, cfg.fake_features, 'cpu')  # only the val batch is used
     vstarts = valid_starts(vsegs, span)
     vgen = torch.Generator().manual_seed(1)
     vidx = torch.randperm(len(vstarts), generator=vgen)[:cfg.val_batch].numpy()
@@ -158,6 +166,7 @@ def main():
     print(f'train: {len(frames)} frames, {len(segs)} segments, {len(starts)} transitions; held-out {len(vstarts)} '
           f'(batch {len(vidx)}); loaded in {time.time() - t0:.0f} s', flush=True)
 
+    cfg.feat_tokens, cfg.feat_dim = feats.shape[1:]  # MAE [197, 1024] or tokenizer features (STA-43); saved in state.pt
     model = CoMo(**{k: cfg[k] for k in COMO_ARCH_KEYS if k in cfg}).to(device)
     n_idm = sum(p.numel() for p in model.idm.parameters())
     n_dec = sum(p.numel() for p in model.decoder.parameters())

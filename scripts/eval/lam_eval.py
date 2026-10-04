@@ -41,7 +41,7 @@ import torch
 from PIL import Image, ImageDraw
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from eval_next_frame import test_windows, load_window_batch, to_model_range  # noqa: E402
+from eval_next_frame import test_windows, load_history_batch, to_model_range  # noqa: E402
 from eval_lam import nmi, kmeans, global_shift, motion_class, window_ot  # noqa: E402
 from lam_judge import transition_panel, stack_rows  # noqa: E402
 
@@ -159,7 +159,8 @@ def lam_codes(ckpt, pool, device, ot_plans=None, kmeans_seeds=1, batch=32):
         with np.load(ot_plans) as z:
             plans = {'sigma': z['sigma'], 'created': z['created']}
     with h5py.File(pool['h5'], 'r') as f, torch.no_grad():
-        x = lambda ws: to_model_range(load_window_batch(f['frames'], ws, SEQ - 1, skip), device)
+        h = getattr(lam, 'history', 0)  # temporal-tokenizer CoMo (STA-43): extra earlier frames per window
+        x = lambda ws: to_model_range(load_history_batch(f['frames'], ws, SEQ - 1, skip, h, pool['h5']), device)
         enc = (lambda ws: lam.encode(x(ws), window_ot(plans, ws, SEQ - 1, skip, device))) if plans is not None else (lambda ws: lam.encode(x(ws)))
         zq = torch.cat([enc(wins[i:i + batch]) for i in range(0, len(wins), batch)])  # [N, T-1, A]
     if getattr(lam, 'continuous_actions', False):  # k-means over all 3 transitions of each pool window, codes of the last

@@ -97,6 +97,17 @@ def load_window_batch(frames_dset, windows, context, frame_skip):
     return out
 
 
+def load_history_batch(frames_dset, windows, context, frame_skip, history, h5_path):
+    # load_window_batch with `history` extra frames before each window (temporal-tokenizer CoMo, STA-43), indices clamped
+    # to the window's test block start (= scripts/tok_features.py rule) -> uint8 [B, T=history+context+1, H, W, C]
+    if not history:
+        return load_window_batch(frames_dset, windows, context, frame_skip)
+    with h5py.File(h5_path, 'r') as f:
+        blocks = json.loads(f.attrs['test_blocks_local'])
+    idx = np.array([[max(s + k * frame_skip, blocks[b][0]) for k in range(-history, context + 1)] for b, s in windows])
+    return np.stack([frames_dset[sorted(set(row))][np.searchsorted(sorted(set(row)), row)] for row in idx])
+
+
 def to_model_range(frames_u8, device):
     # uint8 [B, T, H, W, C] -> float [-1, 1] [B, T, C, H, W], same as the training transform
     x = torch.from_numpy(frames_u8).to(device).permute(0, 1, 4, 2, 3).float() / 255.0
