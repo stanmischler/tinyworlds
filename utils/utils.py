@@ -237,6 +237,8 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, i
     """Instantiate LatentActionModel from a checkpoint's saved config and load weights."""
     import torch
     from models.latent_actions import LatentActionModel
+    if not (Path(checkpoint_path) / MODEL_CHECKPOINT).exists() and (Path(checkpoint_path) / STATE).exists():
+        return load_como_actions(checkpoint_path, device)  # STA-42 action dir (scripts/como_actions.py): no weights of its own
     model_sd = torch.load(Path(checkpoint_path) / MODEL_CHECKPOINT, map_location='cpu', weights_only=True)
     state_cfg = torch.load(Path(checkpoint_path) / STATE, map_location='cpu', weights_only=False)
     cfg = state_cfg.get('config', {}) or {}
@@ -319,6 +321,16 @@ def load_como_from_checkpoint(checkpoint_path, device):
         tok, _ = load_videotokenizer_from_checkpoint(cfg['tokenizer_path'], 'cpu')
         features = TokenizerFeatures(tok, cfg['tokenizer_feature'], cfg.get('merge', 2))
     return CoMoLAM(como, n_clusters=cfg.get('n_actions', 16), features=features, history=cfg.get('history', 0)).to(device), state_cfg
+
+
+def load_como_actions(action_dir, device):
+    """Action dir (scripts/como_actions.py: state.pt {model_type 'como_actions', como_path, mode, mean, std, centroids})
+    -> CoMoActions (CoMo IDM -> standardized full / snapped z), and the saved state."""
+    import torch
+    from models.como import CoMoActions
+    st = torch.load(Path(action_dir) / STATE, map_location='cpu', weights_only=False)
+    lam, _ = load_como_from_checkpoint(st['como_path'], device)
+    return CoMoActions(lam, st['mean'], st['std'], st['centroids'], mode=st['mode']).to(device), st
 
 
 def load_dynamics_from_checkpoint(checkpoint_path, device, model = None, is_distributed = False):
