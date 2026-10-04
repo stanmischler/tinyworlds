@@ -7,8 +7,20 @@ from models.patch_embed import PatchEmbedding
 import math
 import torch.nn.functional as F
 
+class QKNorm(nn.Module):
+    # RMSNorm of queries and keys over the head dim (VFMF / FlowWM): bounds the attention logits
+    def __init__(self, head_dim):
+        super().__init__()
+        self.q_weight = nn.Parameter(torch.ones(head_dim))
+        self.k_weight = nn.Parameter(torch.ones(head_dim))
+
+    def forward(self, q, k):
+        # q, k: [N, H, S, D]
+        return F.rms_norm(q, q.shape[-1:], self.q_weight, 1e-6), F.rms_norm(k, k.shape[-1:], self.k_weight, 1e-6)
+
+
 class SpatialAttention(nn.Module):
-    def __init__(self, embed_dim, num_heads, conditioning_dim=None):
+    def __init__(self, embed_dim, num_heads, conditioning_dim=None, qk_norm=False):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -21,6 +33,7 @@ class SpatialAttention(nn.Module):
         self.out_proj = nn.Linear(embed_dim, embed_dim)
 
         self.norm = AdaptiveNormalizer(embed_dim, conditioning_dim)
+        self.qk_norm = QKNorm(self.head_dim) if qk_norm else None  # None = original attention, old checkpoints load
 
     def forward(self, x, conditioning=None):
         B, T, P, E = x.shape
@@ -30,6 +43,8 @@ class SpatialAttention(nn.Module):
         q = rearrange(self.q_proj(x), 'B T P (H D) -> (B T) H P D', H=self.num_heads)
         k = rearrange(self.k_proj(x), 'B T P (H D) -> (B T) H P D', H=self.num_heads)
         v = rearrange(self.v_proj(x), 'B T P (H D) -> (B T) H P D', H=self.num_heads)
+        if self.qk_norm is not None:
+            q, k = self.qk_norm(q, k)  # [(B*T), H, P, D] each
 
         # attention(q, k, v) = softmax(qk^T / sqrt(d)) v, as a fused kernel (flash / memory-efficient on CUDA):
         # never materializes the [(B*T), H, P, P] scores, which is 4 GB per layer at P = 1024 (128px, patch 4)
@@ -45,7 +60,7 @@ class SpatialAttention(nn.Module):
         return out # [B, T, P, E]
 
 class TemporalAttention(nn.Module):
-    def __init__(self, embed_dim, num_heads, causal=True, conditioning_dim=None):
+    def __init__(self, embed_dim, num_heads, causal=True, conditioning_dim=None, qk_norm=False):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -59,6 +74,7 @@ class TemporalAttention(nn.Module):
         
         self.norm = AdaptiveNormalizer(embed_dim, conditioning_dim)
         self.causal = causal
+        self.qk_norm = QKNorm(self.head_dim) if qk_norm else None
         
     def forward(self, x, conditioning=None):
         B, T, P, E = x.shape
@@ -68,6 +84,8 @@ class TemporalAttention(nn.Module):
         q = rearrange(self.q_proj(x), 'b t p (h d) -> (b p) h t d', h=self.num_heads)
         k = rearrange(self.k_proj(x), 'b t p (h d) -> (b p) h t d', h=self.num_heads)
         v = rearrange(self.v_proj(x), 'b t p (h d) -> (b p) h t d', h=self.num_heads) # [B, P, H, T, D]
+        if self.qk_norm is not None:
+            q, k = self.qk_norm(q, k)  # [(B*P), H, T, D] each
 
         k_t = k.transpose(-2, -1) # [(B*P), H, D, T]
 
@@ -199,11 +217,11 @@ class MoESwiGLUFFN(nn.Module):
 
 class STTransformerBlock(nn.Module):
     def __init__(self, embed_dim, num_heads, hidden_dim, causal=True, conditioning_dim=None,
-                 use_moe=False, num_experts=4, top_k_experts=2, moe_aux_loss_coeff=0.01, temporal=True):
+                 use_moe=False, num_experts=4, top_k_experts=2, moe_aux_loss_coeff=0.01, temporal=True, qk_norm=False):
         super().__init__()
-        self.spatial_attn = SpatialAttention(embed_dim, num_heads, conditioning_dim)
+        self.spatial_attn = SpatialAttention(embed_dim, num_heads, conditioning_dim, qk_norm)
         # temporal=False: spatial-only block, each frame is processed independently of the others
-        self.temporal_attn = TemporalAttention(embed_dim, num_heads, causal, conditioning_dim) if temporal else None
+        self.temporal_attn = TemporalAttention(embed_dim, num_heads, causal, conditioning_dim, qk_norm) if temporal else None
         if use_moe:
             self.ffn = MoESwiGLUFFN(
                 embed_dim, hidden_dim,
@@ -225,7 +243,7 @@ class STTransformerBlock(nn.Module):
 
 class STTransformer(nn.Module):
     def __init__(self, embed_dim, num_heads, hidden_dim, num_blocks, causal=True, conditioning_dim=None,
-                 use_moe=False, num_experts=4, top_k_experts=2, moe_aux_loss_coeff=0.01, temporal=True):
+                 use_moe=False, num_experts=4, top_k_experts=2, moe_aux_loss_coeff=0.01, temporal=True, qk_norm=False):
         super().__init__()
         self.temporal = temporal
         # calculate temporal PE dim
@@ -237,7 +255,7 @@ class STTransformer(nn.Module):
                 embed_dim, num_heads, hidden_dim, causal, conditioning_dim,
                 use_moe=use_moe, num_experts=num_experts,
                 top_k_experts=top_k_experts, moe_aux_loss_coeff=moe_aux_loss_coeff,
-                temporal=temporal,
+                temporal=temporal, qk_norm=qk_norm,
             )
             for _ in range(num_blocks)
         ])

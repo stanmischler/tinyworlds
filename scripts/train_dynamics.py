@@ -4,6 +4,8 @@ import os
 from tqdm import tqdm
 from einops import rearrange
 from models.dynamics import DynamicsModel
+from models.flow_dynamics import FlowDynamicsModel
+import copy
 from datasets.data_utils import visualize_reconstruction, load_data_and_data_loaders
 from tqdm import tqdm
 from einops import rearrange
@@ -87,25 +89,43 @@ def main():
         raise FileNotFoundError(f"Latent Action Model checkpoint not found at {args.latent_actions_path}")
 
     # init dynamics model and optional ckpt load
-    dynamics_model = DynamicsModel(
-        frame_size=(args.frame_size, args.frame_size),
-        patch_size=args.patch_size,
-        embed_dim=args.embed_dim,
-        num_heads=args.num_heads,
-        hidden_dim=args.hidden_dim,
-        num_blocks=args.num_blocks,
-        conditioning_dim=conditioning_dim,
-        latent_dim=args.latent_dim,
-        num_bins=args.num_bins,
-        use_moe=getattr(args, 'use_moe', False),
-        num_experts=getattr(args, 'num_experts', 4),
-        top_k_experts=getattr(args, 'top_k_experts', 2),
-        moe_aux_loss_coeff=getattr(args, 'moe_aux_loss_coeff', 0.01),
-        full_last_frame_mask_prob=getattr(args, 'full_last_frame_mask_prob', 0.0),
-        action_dropout_prob=getattr(args, 'action_dropout_prob', 0.0),
-        mask_mode=args.mask_mode,
-        copy_prior=getattr(args, 'copy_prior', False),
-    ).to(args.device)
+    assert args.dynamics_type in ('maskgit', 'flow'), f"dynamics_type must be 'maskgit' or 'flow', got {args.dynamics_type}"
+    is_flow = args.dynamics_type == 'flow'
+    if is_flow:
+        dynamics_model = FlowDynamicsModel(
+            frame_size=(args.frame_size, args.frame_size),
+            patch_size=args.patch_size,
+            embed_dim=args.embed_dim,
+            num_heads=args.num_heads,
+            hidden_dim=args.hidden_dim,
+            num_blocks=args.num_blocks,
+            latent_dim=args.latent_dim,
+            num_bins=args.num_bins,
+            conditioning_dim=conditioning_dim if args.use_actions else 0,
+            fm_pred=args.fm_pred,
+            fm_shift=args.fm_shift,
+            qk_norm=args.qk_norm,
+        ).to(args.device)
+    else:
+        dynamics_model = DynamicsModel(
+            frame_size=(args.frame_size, args.frame_size),
+            patch_size=args.patch_size,
+            embed_dim=args.embed_dim,
+            num_heads=args.num_heads,
+            hidden_dim=args.hidden_dim,
+            num_blocks=args.num_blocks,
+            conditioning_dim=conditioning_dim,
+            latent_dim=args.latent_dim,
+            num_bins=args.num_bins,
+            use_moe=getattr(args, 'use_moe', False),
+            num_experts=getattr(args, 'num_experts', 4),
+            top_k_experts=getattr(args, 'top_k_experts', 2),
+            moe_aux_loss_coeff=getattr(args, 'moe_aux_loss_coeff', 0.01),
+            full_last_frame_mask_prob=getattr(args, 'full_last_frame_mask_prob', 0.0),
+            action_dropout_prob=getattr(args, 'action_dropout_prob', 0.0),
+            mask_mode=args.mask_mode,
+            copy_prior=getattr(args, 'copy_prior', False),
+        ).to(args.device)
     if args.checkpoint:
         dynamics_model, _ = load_dynamics_from_checkpoint(
             checkpoint_path=args.checkpoint, 
@@ -114,13 +134,26 @@ def main():
             is_distributed=dist_setup['is_distributed'],
         )
 
+    # EMA of the flow model's weights (sampling uses it); kept outside compile/DDP, updated after every optimizer step
+    raw_dynamics = dynamics_model
+    ema_model = None
+    if is_flow and args.ema_decay > 0:
+        ema_model = copy.deepcopy(raw_dynamics).eval()
+        for p in ema_model.parameters():
+            p.requires_grad = False
+        if args.checkpoint:
+            from utils.utils import EMA_CHECKPOINT
+            ema_ckpt = os.path.join(args.checkpoint, EMA_CHECKPOINT)
+            if os.path.exists(ema_ckpt):
+                ema_model.load_state_dict(torch.load(ema_ckpt, map_location=args.device, weights_only=True))
+
     # optional DDP, compile, param count, tf32
-    print_param_count_if_main(dynamics_model, "DynamicsModel", is_main)
+    print_param_count_if_main(dynamics_model, "FlowDynamicsModel" if is_flow else "DynamicsModel", is_main)
     if args.compile:
         # mode="default" rather than "reduce-overhead": CUDA-graph mode crashed the latent-actions stage on H100
         # (inductor: "storage data ptrs are not allocated in pool", torch 2.8); same model is compiled here
         video_tokenizer = torch.compile(video_tokenizer, mode="default", fullgraph=False, dynamic=True)
-        if latent_action_model is not None:
+        if latent_action_model is not None and not args.action_file:
             latent_action_model = torch.compile(latent_action_model, mode="default", fullgraph=False, dynamic=True)
         dynamics_model = torch.compile(dynamics_model, mode="default", fullgraph=False, dynamic=True)
         print("Compiled all models for training.")
@@ -193,6 +226,19 @@ def main():
         world_size=dist_setup['world_size'],
         **data_overrides,
     )
+    if args.action_file:
+        # precomputed per-row actions (scripts/como_actions.py); the .npy rows are .h5 frames, the dataset may skip the
+        # first load_start_index of them (Zelda: 1000)
+        assert not use_gt_actions and hasattr(unwrap_model(latent_action_model), 'standardize'), \
+            'action_file needs a CoMo action dir as latent_actions_path'
+        import numpy as np
+        train_data = training_loader.dataset
+        start = train_data.load_start_index
+        acts = np.load(args.action_file)[start:start + len(train_data.data)]  # [N, A]
+        assert len(acts) == len(train_data.data) and acts.shape[1] == conditioning_dim, (acts.shape, len(train_data.data), conditioning_dim)
+        train_data.actions = acts
+        if is_main:
+            print(f"actions from {args.action_file}: {acts.shape}")
     train_iter = iter(training_loader)
 
     use_moe = getattr(args, 'use_moe', False)
@@ -216,7 +262,9 @@ def main():
             # get video tokens for batch
             video_tokens = video_tokenizer.tokenize(x) # [B, T, P]
             video_latents = video_tokenizer.quantizer.get_latents_from_indices(video_tokens, dim=-1) # [B, T, P, L]
-            if args.use_actions and use_gt_actions:
+            if args.use_actions and args.action_file:
+                quantized_actions = latent_action_model.standardize(gt_actions.to(args.device, non_blocking=True))  # [B, T - 1, A]
+            elif args.use_actions and use_gt_actions:
                 quantized_actions = gt_actions.to(args.device, non_blocking=True).float()  # [B, T - 1, A]
             elif args.use_actions:
                 quantized_actions = latent_action_model.encode(x)  # [B, T - 1, A]
@@ -252,6 +300,10 @@ def main():
             opt.step()
         for sched in schedulers:
             sched.step()
+        if ema_model is not None:
+            with torch.no_grad():
+                ema_p = list(ema_model.parameters())
+                torch._foreach_lerp_(ema_p, [p.detach() for p in raw_dynamics.parameters()], 1 - args.ema_decay)
 
         # wandb logging
         if args.use_wandb and is_main:
@@ -272,7 +324,24 @@ def main():
 
         # save model and visualize results
         if i % args.log_interval == 0:
-            if args.use_wandb:
+            if is_flow:
+                # sample the last frame of 16 training windows from noise (10 Euler steps, EMA weights if on) and decode
+                sampler = ema_model if ema_model is not None else raw_dynamics
+                sampler.eval()
+                with torch.no_grad():
+                    n_vis = min(16, video_latents.shape[0])
+                    cond = quantized_actions[:n_vis] if quantized_actions is not None else None
+                    sampled = sampler.forward_inference(video_latents[:n_vis, :-1], 1, 10, conditioning=cond)  # [n, T, P, L]
+                    predicted_frames = video_tokenizer.decoder(sampled)  # [n, T, C, H, W]
+                    sample_acc = (video_tokenizer.quantizer.get_indices_from_latents(sampled[:, -1])
+                                  == video_tokens[:n_vis, -1]).float().mean().item()
+                raw_dynamics.train()
+                masked_frames = x.clone()
+                masked_frames[:, -1] = 0  # the generated frame
+                print(f'\n Step {i} sample token acc (10 Euler steps, train windows): {sample_acc:.3f}')
+                if args.use_wandb and is_main:
+                    wandb.log({'train/sample_token_acc': sample_acc}, step=i)
+            elif args.use_wandb:
                 predicted_next_indices = torch.argmax(predicted_next_logits, dim=-1)
                 predicted_next_latents = video_tokenizer.quantizer.get_latents_from_indices(predicted_next_indices, dim=-1)
                 with torch.no_grad():
@@ -296,6 +365,9 @@ def main():
             
             hyperparameters = args.__dict__
             ckpt_path = save_training_state(dynamics_model, optimizers[0], schedulers[0], hyperparameters, checkpoints_dir, prefix='dynamics', step=i)
+            if ema_model is not None:
+                from utils.utils import EMA_CHECKPOINT
+                torch.save(ema_model.state_dict(), os.path.join(ckpt_path, EMA_CHECKPOINT))
             # save secondary optimizer/scheduler state when using split optimizers (Muon+AdamW)
             if len(optimizers) > 1:
                 import pathlib

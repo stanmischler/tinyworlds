@@ -223,3 +223,50 @@ class CoMoLAM(nn.Module):
         f = f.float().view(B, T, *f.shape[1:])  # [B, T, S, D]
         z = self.como.idm(f[:, :-1].flatten(0, 1), f[:, 1:].flatten(0, 1))  # [B*(T-1), Q, L]
         return z.reshape(B, T - 1, -1)
+
+
+class CoMoActions(nn.Module):
+    """Dynamics conditioning from a CoMo IDM (STA-42), with the LatentActionModel interface used by train_dynamics and
+    eval_next_frame: encode(frames [B, T, C, H, W]) -> actions [B, T-1, A=Q*L], z standardized per dim with train stats;
+    mode 'k16' (any 'k<N>') first snaps z to its nearest k-means centroid (fit on train z), so the dynamics model sees
+    one of N vectors. quantizer: nearest-centroid codes (logging, eval lam_code) and centroid vectors (eval random)."""
+
+    continuous_actions = True
+
+    def __init__(self, lam, mean, std, centroids, mode='full'):
+        super().__init__()
+        self.lam, self.mode = lam, mode  # CoMoLAM (frozen MAE + IDM)
+        self.action_dim = lam.action_dim
+        self.register_buffer('mean', mean.float())  # [A]
+        self.register_buffer('std', std.float())  # [A]
+        self.register_buffer('centroids', centroids.float())  # [K, A] raw z space
+        self.quantizer = _CentroidQuantizer(self)
+
+    def codes(self, z):
+        # raw z [..., A] -> nearest centroid [...]
+        return torch.cdist(z.reshape(-1, z.shape[-1]).float(), self.centroids).argmin(1).view(z.shape[:-1])
+
+    def standardize(self, z):
+        # raw z [..., A] -> conditioning [..., A] (snapped first in k-modes)
+        if self.mode != 'full':
+            z = self.centroids[self.codes(z)]
+        return (z.float() - self.mean) / self.std
+
+    @torch.no_grad()
+    def encode(self, frames):
+        return self.standardize(self.lam.encode(frames))  # [B, T-1, A]
+
+
+class _CentroidQuantizer:
+    # not an nn.Module (would register a cycle); latents here are standardized conditioning vectors
+    def __init__(self, owner):
+        self.owner = owner
+        self.codebook_size = owner.centroids.shape[0]
+
+    def get_indices_from_latents(self, latents, dim=-1):
+        o = self.owner
+        return o.codes(latents.float() * o.std + o.mean)  # back to raw z, nearest centroid
+
+    def get_latents_from_indices(self, indices, dim=-1):
+        o = self.owner
+        return (o.centroids[indices] - o.mean) / o.std

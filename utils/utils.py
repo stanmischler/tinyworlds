@@ -18,6 +18,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 MODEL_CHECKPOINT = "model_state_dict.pt"
 OPTIMIZER_CHECKPOINT = "optim_state_dict.pt"
 STATE = "state.pt"
+EMA_CHECKPOINT = "ema_state_dict.pt"  # flow dynamics (STA-28): EMA weights, used for sampling
 
 def readable_timestamp():
     """Generate a sortable timestamp for filenames (no weekday)."""
@@ -237,6 +238,8 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, i
     """Instantiate LatentActionModel from a checkpoint's saved config and load weights."""
     import torch
     from models.latent_actions import LatentActionModel
+    if not (Path(checkpoint_path) / MODEL_CHECKPOINT).exists() and (Path(checkpoint_path) / STATE).exists():
+        return load_como_actions(checkpoint_path, device)  # STA-42 action dir (scripts/como_actions.py): no weights of its own
     model_sd = torch.load(Path(checkpoint_path) / MODEL_CHECKPOINT, map_location='cpu', weights_only=True)
     state_cfg = torch.load(Path(checkpoint_path) / STATE, map_location='cpu', weights_only=False)
     cfg = state_cfg.get('config', {}) or {}
@@ -321,6 +324,16 @@ def load_como_from_checkpoint(checkpoint_path, device):
     return CoMoLAM(como, n_clusters=cfg.get('n_actions', 16), features=features, history=cfg.get('history', 0)).to(device), state_cfg
 
 
+def load_como_actions(action_dir, device):
+    """Action dir (scripts/como_actions.py: state.pt {model_type 'como_actions', como_path, mode, mean, std, centroids})
+    -> CoMoActions (CoMo IDM -> standardized full / snapped z), and the saved state."""
+    import torch
+    from models.como import CoMoActions
+    st = torch.load(Path(action_dir) / STATE, map_location='cpu', weights_only=False)
+    lam, _ = load_como_from_checkpoint(st['como_path'], device)
+    return CoMoActions(lam, st['mean'], st['std'], st['centroids'], mode=st['mode']).to(device), st
+
+
 def load_dynamics_from_checkpoint(checkpoint_path, device, model = None, is_distributed = False):
     """Instantiate DynamicsModel from a checkpoint's saved config and load weights."""
     import torch
@@ -358,6 +371,20 @@ def load_dynamics_from_checkpoint(checkpoint_path, device, model = None, is_dist
         'mask_mode': cfg.get('mask_mode', 'maskgit'),
         'copy_prior': cfg.get('copy_prior', False),
     }
+    if cfg.get('dynamics_type', 'maskgit') == 'flow':
+        # flow-matching dynamics (STA-28); prefer the EMA weights when the checkpoint has them
+        from models.flow_dynamics import FlowDynamicsModel
+        for k in ('use_moe', 'num_experts', 'top_k_experts', 'moe_aux_loss_coeff', 'full_last_frame_mask_prob',
+                  'action_dropout_prob', 'mask_mode', 'copy_prior'):
+            kwargs.pop(k)
+        if cfg.get('conditioning_dim') is None:
+            kwargs['conditioning_dim'] = conditioning_dim - 64  # FiLM input = [action, 64-d time embedding]
+        kwargs.update(fm_pred=cfg.get('fm_pred', 'v'), fm_shift=cfg.get('fm_shift', 1.0), qk_norm=cfg.get('qk_norm', True))
+        ema_path = Path(checkpoint_path) / EMA_CHECKPOINT
+        if model is None and ema_path.exists():
+            model_sd = torch.load(ema_path, map_location='cpu', weights_only=True)
+        if model is None:
+            model = FlowDynamicsModel(**kwargs)
     if model is None:
         model = DynamicsModel(**kwargs)
     set_model_state_dict(

@@ -278,12 +278,24 @@ class DynamicsConfig:
 	# Where the dynamics model's actions come from: "lam" = latent action model (Genie, action-less video),
 	# "gt" = the dataset's ground-truth actions (Push-T); gt needs no LAM checkpoint and sets conditioning_dim from the data
 	action_source: str = "lam"
+	# Precomputed actions (STA-42, scripts/como_actions.py): .npy [N, A] of raw actions per .h5 row (row i = transition
+	# (i, i + frame_skip)), served by the dataset and passed through the LAM's standardize() (CoMoActions) instead of
+	# running its encoder on every batch. None = encode on the fly (original behaviour). Needs action_source lam.
+	action_file: Optional[str] = None
 	# Dynamics training mask: "maskgit" (default, see full_last_frame_mask_prob) or "random_target" (models/dynamics.py)
 	mask_mode: str = "maskgit"
 	# Copy prior: learned logit bonus for keeping the previous frame's token at each patch (False = original model)
 	copy_prior: bool = False
 	# Seed for init, masking and batch order (None = unseeded, as before)
 	seed: Optional[int] = None
+	# Generator (STA-28): "maskgit" (default, models/dynamics.py) or "flow" (flow matching on the continuous FSQ latents
+	# of the last frame, rounded to the grid at the end, models/flow_dynamics.py). The fm_* / qk_norm / ema knobs below
+	# only apply to "flow".
+	dynamics_type: str = "maskgit"
+	fm_pred: str = "v"        # network output: "v" velocity, "x" clean latents (velocity derived); loss is velocity MSE
+	fm_shift: float = 1.0     # SD3 timestep shift toward noise, training and sampling (1.0 = uniform)
+	qk_norm: bool = True      # RMSNorm on queries/keys (flow only)
+	ema_decay: float = 0.0    # EMA of the weights, saved as ema_state_dict.pt and used for sampling (0 = off)
 	# Optimizer
 	optimizer: str = "adamw"
 	muon_momentum: float = 0.95

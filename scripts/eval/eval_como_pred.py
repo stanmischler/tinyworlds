@@ -5,10 +5,12 @@ aid, not a world model; it sees one frame (the last context frame t) plus the ac
 Per window (eval_next_frame.test_windows, context 3, frame_skip 4, stride 8 -> 890 Zelda windows), target = frame t+4:
   - `como`      : decoder(frame t, z(t, t+4)), z = the IDM's full 128-d continuous action (true transition given, as
                   eval_next_frame --action-mode lam)
-  - `como_k16`  : z replaced by its k-means centroid (16 clusters fit on all held-out z, seed 0): a 16-code action budget
+  - `como_k16`  : z replaced by its k-means centroid (16 clusters fit on all held-out z, seed 0): a 16-code action budget;
+                  with --action-dir (STA-42, scripts/como_actions.py) the centroids fit on train z that the k16 dynamics
+                  model is conditioned on
   - `shuffled`  : z of another window (roll by 1): how much the prediction depends on the action
   - `copy`      : frame t (copy-last baseline)
-Metrics: PSNR, SSIM (eval_next_frame's implementations, pixels in [0, 1]), mean over windows.
+Metrics: PSNR, SSIM (eval_next_frame's implementations, pixels in [0, 1]), LPIPS if installed, mean over windows.
 
     python scripts/eval/eval_como_pred.py --ckpt results/como_zelda_v1/como/checkpoints/como_step_50000 --name como_v1_50k
 """
@@ -21,7 +23,7 @@ import h5py
 import numpy as np
 import torch
 
-from eval_next_frame import test_windows, load_history_batch, to_model_range, to_unit, psnr, ssim
+from eval_next_frame import test_windows, load_history_batch, to_model_range, to_unit, psnr, ssim, try_lpips
 from eval_lam import kmeans
 
 
@@ -35,6 +37,7 @@ def main():
     p.add_argument('--sample-stride', type=int, default=8)
     p.add_argument('--k', type=int, default=16)
     p.add_argument('--batch-size', type=int, default=32)
+    p.add_argument('--action-dir', help='CoMo action dir (scripts/como_actions.py): use its train-fit centroids for como_k<k>')
     p.add_argument('--device', default='cuda')
     p.add_argument('--out-dir', default='eval_results/como_pred')
     a = p.parse_args()
@@ -52,11 +55,16 @@ def main():
             xs.append(pair[:, 0])
             ys.append(pair[:, 1])
     z, x, y = torch.cat(zs), torch.cat(xs), torch.cat(ys)  # [N, A], [N, C, H, W] x2
-    c = kmeans(z, a.k)
+    if a.action_dir:
+        c = torch.load(os.path.join(a.action_dir, 'state.pt'), map_location='cpu', weights_only=False)['centroids'].to(z.device)
+        a.k = len(c)
+    else:
+        c = kmeans(z, a.k)
     zk = c[torch.cdist(z, c).argmin(1)]
     dec = lam.como.decoder
     shape = (-1, lam.como.idm.n_queries, lam.como.idm.down[-1].out_features)
-    per = {m: {'psnr': [], 'ssim': []} for m in ('como', f'como_k{a.k}', 'shuffled', 'copy')}
+    lpips_fn = try_lpips(a.device)
+    per = {m: {'psnr': [], 'ssim': [], 'lpips': []} for m in ('como', f'como_k{a.k}', 'shuffled', 'copy')}
     with torch.no_grad():
         for i in range(0, len(z), a.batch_size):
             sl = slice(i, i + a.batch_size)
@@ -67,9 +75,11 @@ def main():
                 pu = to_unit(pr)
                 per[m]['psnr'] += psnr(pu, tgt).tolist()
                 per[m]['ssim'] += ssim(pu, tgt).tolist()
-    summary = {m: {k: round(float(np.mean(v)), 4) for k, v in d.items()} for m, d in per.items()}
+                if lpips_fn is not None:
+                    per[m]['lpips'] += lpips_fn(pu * 2 - 1, tgt * 2 - 1).flatten().tolist()
+    summary = {m: {k: round(float(np.mean(v)), 4) for k, v in d.items() if v} for m, d in per.items()}
     os.makedirs(a.out_dir, exist_ok=True)
-    json.dump({'name': a.name, 'ckpt': a.ckpt, 'n_windows': len(wins), 'k': a.k, 'summary': summary},
+    json.dump({'name': a.name, 'ckpt': a.ckpt, 'action_dir': a.action_dir, 'n_windows': len(wins), 'k': a.k, 'summary': summary},
               open(f'{a.out_dir}/{a.name}.json', 'w'), indent=1)
     print(a.name, len(wins), 'windows', json.dumps(summary))
 
