@@ -1,0 +1,26 @@
+# STA-46 arm: k16 actions (z snapped to 16 k-means centroids of train z, then standardized) from the STA-43 per-frame-tokenizer CoMo (como_tok_pf_h step 20000), v5 tokenizer. STA-42 recipe; lr from the STA-46 sweep.
+#   TINYWORLDS_GPU=H100 modal run --detach scripts/infra/modal_train.py --dataset ZELDA_TRAIN --training-config configs/experiments/zelda_como/training.yaml \
+#     --overrides "dynamics_config=configs/experiments/zelda_pf_como/dynamics_k16.yaml" --run-name zelda_pfcomo_k16
+batch_size_per_gpu: 64
+gradient_accumulation_steps: 1
+n_updates: 30000
+learning_rate: 0.0006
+log_interval: 1000   # checkpoint + prediction PNG every 1000 steps
+
+use_actions: true
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 12
+
+full_last_frame_mask_prob: 0.8
+copy_prior: true
+seed: 0
+
+video_tokenizer_path: results/zelda_v5_frametok/video_tokenizer/checkpoints/video_tokenizer_step_29000      # zelda_v5 per-frame tokenizer
+latent_actions_path: results/como_actions_pf_h_k16   # CoMo IDM + train z stats (+ centroids), models/como.py CoMoActions
+action_file: data/zelda_train_como_z_pf_h.npy           # raw z per train .h5 row, so training never runs the tokenizer CoMo
+
+# resume: set to a checkpoint dir (…/dynamics/checkpoints/dynamics_step_N) to restore weights, optimizer, scheduler and step
+checkpoint:

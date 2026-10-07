@@ -206,12 +206,12 @@ class LatentActionsConfig:
 	decoder_warp_local_blur: int = 1   # blur (px) for the gate and the local WTA cost (1 = none)
 	wta_kernel_repulsion: float = 0.0   # weight of the summed pairwise warp-kernel overlap (0 = off)
 	# OT-conditioned LAM (STA-35): .npz of per-pair token transport plans aligned with the dataset .h5
-	# (scripts/eval/patch_similarity.py ot-plans), fed to the encoder and/or the decoder
+	# (experiments/patch_similarity/patch_similarity.py ot-plans), fed to the encoder and/or the decoder
 	ot_plans: Optional[str] = None
 	ot_encoder: bool = False
 	ot_decoder: str = "none"     # 'none' | 'where' | 'plan'
 	# STA-35 itc_loop i5: auxiliary pseudo-label head on the encoder's action latent. aux_labels = .npz of
-	# scripts/eval/itc_pseudo.py (rows = .h5 frames, label of the pair (t, t + frame_skip), -1 = none), column aux_label_key;
+	# experiments/itc_actions/itc_pseudo.py (rows = .h5 frames, label of the pair (t, t + frame_skip), -1 = none), column aux_label_key;
 	# CE weight aux_label_weight (0 = off, original)
 	aux_labels: Optional[str] = None
 	aux_label_key: str = "code_itc"
@@ -278,7 +278,7 @@ class DynamicsConfig:
 	# Where the dynamics model's actions come from: "lam" = latent action model (Genie, action-less video),
 	# "gt" = the dataset's ground-truth actions (Push-T); gt needs no LAM checkpoint and sets conditioning_dim from the data
 	action_source: str = "lam"
-	# Precomputed actions (STA-42, scripts/como_actions.py): .npy [N, A] of raw actions per .h5 row (row i = transition
+	# Precomputed actions (STA-42, scripts/actions/como_actions.py): .npy [N, A] of raw actions per .h5 row (row i = transition
 	# (i, i + frame_skip)), served by the dataset and passed through the LAM's standardize() (CoMoActions) instead of
 	# running its encoder on every batch. None = encode on the fly (original behaviour). Needs action_source lam.
 	action_file: Optional[str] = None

@@ -38,7 +38,6 @@ import argparse
 import json
 import math
 import os
-import sys
 import time
 
 import h5py
@@ -46,122 +45,18 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from eval_next_frame import psnr, test_windows, load_window_batch, to_model_range, to_unit  # noqa: E402
-from utils.utils import load_latent_actions_from_checkpoint  # noqa: E402
-
-MOTION_LABELS = [f'{v}{h}' for v in ('U', '0', 'D') for h in ('L', '0', 'R')]  # 9 classes, '00' = still
+from evaluation.action_metrics import heldout_r2, entropy_nats, nmi, kmeans
+from evaluation.image_metrics import psnr
+from evaluation.lam_decode import window_ot, decode, per_sample_loss
+from evaluation.motion import MOTION_LABELS, global_shift, motion_class, player_move
+from evaluation.windows import test_windows, load_window_batch, to_model_range, to_unit
+from utils.utils import load_latent_actions_from_checkpoint
 
 
 # ----------------------------------------------------------------------------- helpers
-def global_shift(a, b):
-    # a, b: [N, H, W] grayscale -> integer (dy, dx) [N, 2] such that b ~ roll(a, (dy, dx)), by phase correlation
-    Fa, Fb = torch.fft.fft2(a), torch.fft.fft2(b)
-    r = Fb * Fa.conj()
-    r = r / r.abs().clamp_min(1e-8)
-    corr = torch.fft.ifft2(r).real  # [N, H, W]
-    N, H, W = corr.shape
-    flat = corr.flatten(1).argmax(1)
-    dy, dx = flat // W, flat % W
-    dy = torch.where(dy > H // 2, dy - H, dy)
-    dx = torch.where(dx > W // 2, dx - W, dx)
-    return torch.stack([dy, dx], 1)  # [N, 2]
 
 
-def motion_class(shift, tol=1):
-    # shift: [N, 2] (dy, dx) -> class index [N] in 0..8 (row = vertical U/0/D, col = horizontal L/0/R)
-    v = torch.where(shift[:, 0] < -tol, 0, torch.where(shift[:, 0] > tol, 2, 1))
-    h = torch.where(shift[:, 1] < -tol, 0, torch.where(shift[:, 1] > tol, 2, 1))
-    return v * 3 + h
 
-
-def local_shift(a, b, max_shift=4, block=8, thr=0.08, min_frac=0.05):
-    # a, b: [N, H, W] grayscale in [0, 1] -> dominant integer (dy, dx) [N, 2] of the blocks that changed (0 if none)
-    pool = lambda t: F.avg_pool2d(t[:, None], block)[:, 0]  # [N, h, w]
-    changed = pool(((a - b).abs() > thr).float()) > min_frac  # [N, h, w]
-    shifts = [(dy, dx) for dy in range(-max_shift, max_shift + 1) for dx in range(-max_shift, max_shift + 1)]
-    err = torch.stack([pool((torch.roll(a, (dy, dx), (1, 2)) - b).abs()) for dy, dx in shifts])  # [S, N, h, w]
-    best = torch.tensor(shifts, device=a.device)[err.argmin(0)]  # [N, h, w, 2]
-    moving = changed & (best.abs().sum(-1) > 0)  # [N, h, w]
-    out = torch.zeros(a.shape[0], 2, dtype=torch.long, device=a.device)
-    for n in torch.nonzero(moving.flatten(1).any(1)).flatten().tolist():
-        v, c = best[n][moving[n]].unique(dim=0, return_counts=True)
-        out[n] = v[c.argmax()]
-    return out  # [N, 2]
-
-
-def player_move(a, b):
-    # a, b: [N, H, W] -> (dy, dx) [N, 2]: minus the camera scroll if there is one, else the dominant local move
-    cam = global_shift(a, b)  # content shift
-    scrolling = (cam.abs() > 1).any(1, keepdim=True)
-    return torch.where(scrolling, -cam, local_shift(a, b))
-
-
-def heldout_r2(feats, target):
-    # feats: [N, D], target: [N, 2] -> R^2 of least squares (with bias) fit on the first half, scored on the second
-    X = torch.cat([feats.double(), torch.ones(len(feats), 1, dtype=torch.double)], 1)
-    y = target.double()
-    h = len(X) // 2
-    w = torch.linalg.lstsq(X[:h], y[:h]).solution
-    resid = y[h:] - X[h:] @ w
-    return float(1 - resid.pow(2).sum() / (y[h:] - y[h:].mean(0)).pow(2).sum().clamp_min(1e-8))
-
-
-def entropy_nats(counts):
-    p = counts / counts.sum()
-    p = p[p > 0]
-    return float(-(p * np.log(p)).sum())
-
-
-def nmi(table):
-    # table: [n_codes, n_classes] joint counts -> I(X;Y) / sqrt(H(X) H(Y))
-    pxy = table / table.sum()
-    px, py = pxy.sum(1, keepdims=True), pxy.sum(0, keepdims=True)
-    nz = pxy > 0
-    mi = float((pxy[nz] * np.log(pxy[nz] / (px @ py)[nz])).sum())
-    hx, hy = entropy_nats(table.sum(1)), entropy_nats(table.sum(0))
-    return mi / math.sqrt(hx * hy) if hx > 0 and hy > 0 else 0.0
-
-
-def kmeans(z, k, iters=50, seed=0):
-    # z: [N, A] -> centres [k, A] (Lloyd, k-means++ init, seeded)
-    g = torch.Generator().manual_seed(seed)
-    zc = z.cpu().float()
-    centres = [zc[torch.randint(len(zc), (1,), generator=g)].squeeze(0)]
-    for _ in range(1, k):
-        d = torch.cdist(zc, torch.stack(centres)).min(1).values.pow(2)
-        centres.append(zc[torch.multinomial(d / d.sum(), 1, generator=g)].squeeze(0))
-    c = torch.stack(centres)
-    for _ in range(iters):
-        a = torch.cdist(zc, c).argmin(1)
-        c = torch.stack([zc[a == j].mean(0) if (a == j).any() else c[j] for j in range(k)])
-    return c.to(z.device)
-
-
-def window_ot(plans, windows, n_trans, frame_skip, device):
-    # OT plans of the first n_trans transitions of each window -> [B, n_trans, 2, P] long, or None without plans
-    if plans is None:
-        return None
-    idx = np.array([[s + k * frame_skip for k in range(n_trans)] for _, s in windows])  # [B, n_trans]
-    return torch.from_numpy(np.stack([plans['sigma'][idx], plans['created'][idx]], 2).astype(np.int64)).to(device)
-
-
-def decode(lam, x, actions, masked, ot=None):
-    # x: [B, T, C, H, W], actions: [B, T-1, A], ot: [B, T-1, 2, P] or None -> predicted frames 1..T-1 [B, T-1, C, H, W]
-    # the decoder masks frames 1.. only when in train mode (no other layer of the LAM depends on the mode);
-    # reseeded so the true and shuffled decodes see the same mask
-    torch.manual_seed(0)
-    lam.decoder.train(masked)
-    out = lam.decoder(x, actions, training=True, ot=ot)
-    lam.decoder.eval()
-    return out
-
-
-def per_sample_loss(pred, target):
-    # [B, T-1, C, H, W] -> smooth L1 [B], PSNR [B] (mean over frames, in [0, 1] space)
-    l1 = F.smooth_l1_loss(pred, target, reduction='none').flatten(1).mean(1)
-    p = torch.stack([psnr(to_unit(pred[:, t]), to_unit(target[:, t])) for t in range(pred.shape[1])], 1).mean(1)
-    return l1, p
 
 
 # ----------------------------------------------------------------------------- per model

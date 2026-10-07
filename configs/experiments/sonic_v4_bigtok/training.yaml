@@ -1,0 +1,48 @@
+# Sonic v4 big tokenizer (diagnostic): ONLY the tokenizer stage, with the Zelda-v3-sized model (256/512/8 blocks)
+# trained from scratch for 50k steps. Tells whether Sonic's blurry reconstructions come from too few steps (sonic_v4
+# answers that) or from too small a model (this run). Not consumed by sonic_v4's dynamics stage.
+# Launch: TINYWORLDS_GPU=H100 modal run --detach scripts/infra/modal_train.py --dataset SONIC_TRAIN --training-config configs/experiments/sonic_v4_bigtok/training.yaml
+# Keys here override the same keys in the stage yamls below; per-stage knobs live in those files.
+use_wandb: true
+wandb_project: tinyworlds
+
+dataset: SONIC_TRAIN     # sonic_train_frames.h5: all frames minus the held-out test blocks (scripts/data/split_dataset.py)
+preload_ratio: 1.0        # all ~37k train frames
+
+patch_size: 4
+context_length: 4
+frame_size: 64            # sonic_frames.h5 is 64x64; the Modal launcher re-reads it from the .h5
+latent_dim: 6             # tokenizer vocab = num_bins**latent_dim = 4096, as in the pretrained Sonic set
+num_bins: 4
+n_actions: 8              # as in v3 (16 -> 8 did not fix LAM collapse; kept for comparability)
+
+amp: true
+tf32: true
+compile: true
+
+# dataloader throughput (sonic_v2 used the defaults: 2 workers, no pinning, and left the H100 at 2 GB / 3.4 it/s).
+# Remove both lines (or set them to null) to return to the defaults.
+num_workers: 8
+pin_memory: true
+
+distributed:
+  use_ddp: false
+  use_fsdp: false
+  reshard_after_forward: false
+nproc_per_node: 1
+standalone: true
+
+video_tokenizer_config: configs/experiments/sonic_v4_bigtok/video_tokenizer.yaml
+latent_actions_config: configs/experiments/sonic_v4_bigtok/latent_actions.yaml
+dynamics_config: configs/experiments/sonic_v4_bigtok/dynamics.yaml
+run_video_tokenizer: true
+run_latent_actions: false
+run_dynamics: false
+
+optimizer: adamw
+muon_momentum: 0.95
+muon_backend_steps: 5
+use_moe: false
+num_experts: 4
+top_k_experts: 2
+moe_aux_loss_coeff: 0.01

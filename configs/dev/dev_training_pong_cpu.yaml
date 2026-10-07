@@ -1,6 +1,6 @@
 # CPU smoke profile for the pong_v1 recipe: loads the pong_v1 stage yamls (so their keys are validated) but shrinks
 # every model and runs 2 steps per stage. Use with:
-#   WANDB_MODE=offline MPLBACKEND=Agg python scripts/full_train.py --config configs/dev/dev_training_pong_cpu.yaml
+#   WANDB_MODE=offline MPLBACKEND=Agg python scripts/pipeline/full_train.py --config configs/dev/dev_training_pong_cpu.yaml
 # Delete the resulting results/<timestamp>/ afterwards so it doesn't shadow real checkpoints.
 use_wandb: true
 wandb_project: tinyworlds-dev
@@ -31,9 +31,9 @@ gradient_accumulation_steps: 1
 num_workers: 0
 pin_memory: false
 
-video_tokenizer_config: configs/pong_v1/video_tokenizer.yaml
-latent_actions_config: configs/pong_v1/latent_actions.yaml
-dynamics_config: configs/pong_v1/dynamics.yaml
+video_tokenizer_config: configs/experiments/pong_v1/video_tokenizer.yaml
+latent_actions_config: configs/experiments/pong_v1/latent_actions.yaml
+dynamics_config: configs/experiments/pong_v1/dynamics.yaml
 
 run_video_tokenizer: true
 run_latent_actions: true

@@ -14,6 +14,7 @@ TinyWorlds is meant to help people understand the clever autoregressive, unsuper
 ## Table of Contents
 
 - [Getting Started](#getting-started)
+- [Repository Layout](#repository-layout)
 - [Overview](#architecture-overview)
 - [Building Blocks](#architecture-building-blocks)
    - [Space-Time Transformer](#space-time-transformer-stt)
@@ -41,16 +42,62 @@ export PYTHONPATH="/workspace/tinyworlds:$PYTHONPATH"
 
 # Training
 # 1. download data from huggingface
-python scripts/download_assets.py datasets --pattern "zelda_frames.h5"
+python scripts/data/download_assets.py datasets --pattern "zelda_frames.h5"
 # 2. run training
-python scripts/full_train.py --config configs/training.yaml -- --dataset=ZELDA
+python scripts/pipeline/full_train.py --config configs/training.yaml -- --dataset=ZELDA
 
 # Inference
 # 1. pull pretrained sonic checkpoints from huggingface
-python scripts/download_assets.py models --suite-name sonic
+python scripts/data/download_assets.py models --suite-name sonic
 # 2. run inference
-python scripts/run_inference.py --config configs/inference.yaml -- use_latest_checkpoints=true dataset=SONIC
+python scripts/inference/run_inference.py --config configs/inference.yaml -- use_latest_checkpoints=true dataset=SONIC
 ```
+
+# Repository Layout
+
+Library code lives in importable packages; everything you run lives in `scripts/` (the pipeline) or `experiments/` (one-off studies).
+Run everything from the repo root with `PYTHONPATH=$PWD`: data, config and checkpoint paths are relative to it.
+
+```
+models/        the networks: video tokenizer, latent action models (LAM, CoMo, LAOF), MaskGIT and flow-matching dynamics,
+               and the shared space-time transformer, FSQ, norms and embeddings they are built from
+datasets/      per-game .h5 video datasets, the DataLoader factory, the deterministic train/test split helpers
+evaluation/    metrics and helpers shared by the eval scripts: image metrics, held-out windows, motion proxies,
+               action-code metrics (NMI, k-means), LAM decoding, the judge-labelled Zelda action set
+utils/         config schema and loading, checkpoint save/load, distributed setup, optimizers, schedulers, W&B, inference
+scripts/       entry points, one folder per pipeline stage (see scripts/README.md):
+  data/          download assets, convert / split datasets, visualise batches
+  tokenizer/     stage 1: train the video tokenizer
+  actions/       stage 2: train the latent action model (LAM, or CoMo on precomputed features) and export its actions
+  dynamics/      stage 3: train the dynamics model (MaskGIT or flow matching)
+  pipeline/      run stages 1-3 in sequence
+  inference/     play the trained world model
+  eval/          score each stage on held-out data
+  infra/         Modal launcher and run checks, worktree and remote-control helpers
+experiments/   one folder per study that is not part of the pipeline: its scripts, figures and Modal functions (see experiments/README.md)
+configs/       base configs (one yaml per stage + training.yaml), configs/como/ for CoMo, configs/dev/ for CPU smoke runs,
+               configs/experiments/<run>/ for the exact configs of each past run
+```
+
+The pipeline in one line: `scripts/data` -> `scripts/tokenizer` -> `scripts/actions` -> `scripts/dynamics` -> `scripts/inference`, with
+`scripts/eval` after each stage; `scripts/pipeline/full_train.py` chains the three training stages.
+
+### Building on it
+
+- **New model or model variant**: a module in `models/`. If its checkpoints must load through `utils/utils.py`, add its
+  constructor kwargs next to the existing `*_kwargs(cfg)` helpers so training and loading build it the same way.
+- **New training stage or variant that the pipeline uses**: a script in the `scripts/<stage>/` folder it belongs to, with its
+  base yaml in `configs/`. Shared logic goes in a package, never in another script: scripts import from `models`, `datasets`,
+  `evaluation` and `utils` only, so no script depends on where another one sits.
+- **New metric or eval protocol**: functions in `evaluation/`, a thin command-line script in `scripts/eval/`.
+- **New game**: an mp4 or .h5 in `data/`, a `VideoHDF5Dataset` subclass in `datasets/datasets.py`, one row in `VIDEO_GAMES`
+  (`datasets/data_utils.py`) and the dataset name in `utils/config.py`.
+- **New study** (an idea you are testing, not yet part of the pipeline): a folder `experiments/<what_it_tests>/` named in a word or
+  two, with its scripts, a `modal_<name>.py` if it runs on Modal (importing `app`, `VOLUMES` and `committing` from
+  `scripts/infra/modal_train.py`), and a line in `experiments/README.md`. Its run configs go in `configs/experiments/<run>/`.
+  When a study graduates into the pipeline, move its code into the packages and `scripts/` and delete what is left.
+- **New run of an existing recipe**: copy a folder of `configs/experiments/` and point the launcher at it
+  (`--training-config configs/experiments/<run>/training.yaml`).
 
 # Overview
 

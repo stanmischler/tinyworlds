@@ -33,17 +33,17 @@ import argparse
 import glob
 import json
 import os
-import sys
 
 import h5py
 import numpy as np
 import torch
 from PIL import Image, ImageDraw
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from eval_next_frame import test_windows, load_history_batch, to_model_range  # noqa: E402
-from eval_lam import nmi, kmeans, global_shift, motion_class, window_ot  # noqa: E402
-from lam_judge import transition_panel, stack_rows  # noqa: E402
+from evaluation.action_metrics import kmeans, label_metrics
+from evaluation.lam_decode import window_ot
+from evaluation.motion import global_shift, motion_class
+from evaluation.windows import test_windows, load_history_batch, to_model_range
+from evaluation.zelda_judge import transition_panel, stack_rows
 
 # frame_skip = 60 // fps of the dataset class (datasets/datasets.py); every LAM so far uses context_length 4
 GAMES = {'zelda': ('data/zelda_test_frames.h5', 4), 'sonic': ('data/sonic_test_frames.h5', 4), 'pong': ('data/pong_test_frames.h5', 2)}
@@ -171,9 +171,8 @@ def lam_codes(ckpt, pool, device, ot_plans=None, kmeans_seeds=1, batch=32):
 
 
 def pair_encoder_codes(ckpt, pool, device, batch=256):
-    # frame-pair classifier (scripts/train_action_encoder.py PairEncoder, e.g. STA-35 enc_pix) -> argmax class of each pair
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-    from train_action_encoder import PairEncoder, N_CLASSES, to_float
+    # frame-pair classifier (experiments/itc_actions/train_action_encoder.py PairEncoder, e.g. STA-35 enc_pix) -> argmax class of each pair
+    from models.pair_encoder import PairEncoder, N_CLASSES, to_float
     ck = torch.load(ckpt, map_location='cpu', weights_only=False)
     model = PairEncoder(ck['args']['width']).to(device).eval()
     model.load_state_dict(ck['model'])
@@ -195,26 +194,6 @@ def baseline_codes(kind, pool):
         ab = np.stack([np.stack(pair_of(fr, w, pool['frame_skip'])) for w in pool['windows']])  # [N, 2, H, W, C]
     g = torch.from_numpy(ab).float().mean(-1) / 255  # [N, 2, H, W]
     return motion_class(global_shift(g[:, 0], g[:, 1])).numpy(), 9
-
-
-def table_of(codes, labels, n_codes, classes):
-    tab = np.zeros((n_codes, len(classes)))
-    for c, l in zip(codes, labels):
-        tab[c, classes.index(l)] += 1
-    return tab
-
-
-def metrics(codes, labels, n_codes, classes):
-    if not len(codes):
-        return {'n': 0}
-    tab = table_of(codes, labels, n_codes, classes)
-    rng = np.random.default_rng(0)
-    perm = np.mean([nmi(table_of(rng.permutation(codes), labels, n_codes, classes)) for _ in range(200)])
-    v, n = nmi(tab), tab.sum()
-    return {'n': int(n), 'nmi': round(v, 4), 'nmi_chance': round(float(perm), 4), 'nmi_adj': round((v - perm) / (1 - perm), 4),
-            'purity': round(float(tab.max(1).sum() / n), 4), 'completeness': round(float(tab.max(0).sum() / n), 4),
-            'majority_baseline': round(float(tab.sum(0).max() / n), 4), 'codes_used': int((tab.sum(1) > 0).sum()),
-            'table': {f'code {k}': {cl: int(tab[k, j]) for j, cl in enumerate(classes) if tab[k, j]} for k in range(n_codes) if tab[k].sum()}}
 
 
 def score(args):
@@ -240,9 +219,9 @@ def score(args):
         res = {'name': name, 'source': src, 'game': args.game, 'n_codes': n_codes}
         for split in ['main', 'uncertain']:
             ids = sorted(labs[split], key=int)
-            res[split] = metrics([int(codes[int(i)]) for i in ids], [labs[split][i] for i in ids], n_codes, classes)
+            res[split] = label_metrics([int(codes[int(i)]) for i in ids], [labs[split][i] for i in ids], n_codes, classes, extended=True)
             if len(runs) > 1:  # continuous LAM: clustering noise over k-means seeds
-                v = [metrics([int(c[int(i)]) for i in ids], [labs[split][i] for i in ids], n_codes, classes).get('nmi_adj', 0) for c in runs]
+                v = [label_metrics([int(c[int(i)]) for i in ids], [labs[split][i] for i in ids], n_codes, classes, extended=True).get('nmi_adj', 0) for c in runs]
                 res[split]['nmi_adj_kmeans'] = {'mean': round(float(np.mean(v)), 4), 'sd': round(float(np.std(v)), 4), 'n_seeds': len(runs)}
         u = np.bincount(codes, minlength=n_codes) / len(codes)
         p = u[u > 0]
@@ -277,7 +256,7 @@ def main():
     for c in ['sample', 'consensus', 'score', 'table']:
         cmds[c] = s = sub.add_parser(c)
         s.add_argument('--game', required=True, help=f'one of {list(GAMES)} or any name with --h5/--skip')
-        s.add_argument('--h5', default=None, help='test h5 with a test_blocks_local attr (scripts/eval/split_dataset.py)')
+        s.add_argument('--h5', default=None, help='test h5 with a test_blocks_local attr (scripts/data/split_dataset.py)')
         s.add_argument('--skip', type=int, default=None, help='stored frames between LAM frames (60 // dataset fps)')
     cmds['sample'].add_argument('--n', type=int, default=400)
     cmds['consensus'].add_argument('files', nargs='+', help='one labels json per judge; a judge split in parts: a0.json,a1.json')

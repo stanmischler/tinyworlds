@@ -1,0 +1,49 @@
+# STA-28: flow-matching dynamics on Zelda (dynamics_type flow, models/flow_dynamics.py). Same frozen v3 tokenizer, CoMo
+# actions and backbone as the STA-42 MaskGIT arms (configs/experiments/zelda_como/), so each FM arm has a MaskGIT twin.
+# Sweep (k16 actions, 8k steps), 4 arms {fm_pred v, x} x {fm_shift 1, 3}, one dynamics yaml each (fm_* keys are not
+# TrainingConfig keys, so they cannot be --overrides):
+#   TINYWORLDS_GPU=H100 modal run --detach scripts/infra/modal_train.py --dataset ZELDA_TRAIN --training-config configs/experiments/zelda_fm/training.yaml \
+#     --overrides "dynamics_config=configs/experiments/zelda_fm/dynamics_k16_v_s1.yaml" --run-name zelda_fm_sweep_v_s1
+# Long runs: --overrides "dynamics_config=configs/experiments/zelda_fm/dynamics_{k16,full}_long.yaml" --run-name zelda_fm_{k16,full}
+use_wandb: true
+wandb_project: tinyworlds
+
+dataset: ZELDA_TRAIN      # zelda_train_frames.h5: all frames minus the 10 held-out test blocks (scripts/data/split_dataset.py)
+preload_ratio: 1.0        # all ~65k train frames (ZeldaDataset defaults to 0.2)
+
+patch_size: 4             # 48 pixel values per code, same density as the Sonic runs; 1024 tokens per 128px frame
+context_length: 4
+frame_size: 128           # zelda_frames.h5 is 128x128; the Modal launcher re-reads it from the .h5
+latent_dim: 6             # tokenizer vocab = num_bins**latent_dim = 4096
+num_bins: 4
+n_actions: 16             # k-means clusters of the CoMo z (k16 arm); logging only for the full arm
+
+amp: true
+tf32: true
+compile: true
+
+# dataloader throughput; remove both lines (or set them to null) to return to the defaults (2 workers, no pinning)
+num_workers: 8
+pin_memory: true
+
+distributed:
+  use_ddp: false
+  use_fsdp: false
+  reshard_after_forward: false
+nproc_per_node: 1
+standalone: true
+
+video_tokenizer_config: configs/experiments/zelda_v3/video_tokenizer.yaml
+latent_actions_config: configs/experiments/lam_loop/i4_bal16_seed2.yaml
+dynamics_config: configs/experiments/zelda_fm/dynamics_k16.yaml
+run_video_tokenizer: false   # frozen checkpoints, paths set in the dynamics yamls
+run_latent_actions: false
+run_dynamics: true
+
+optimizer: adamw
+muon_momentum: 0.95
+muon_backend_steps: 5
+use_moe: false
+num_experts: 4
+top_k_experts: 2
+moe_aux_loss_coeff: 0.01

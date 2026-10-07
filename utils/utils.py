@@ -201,15 +201,31 @@ def save_training_state(model, optimizer, scheduler, config, checkpoints_dir, pr
     return ckpt_path
 
 
-def load_videotokenizer_from_checkpoint(checkpoint_path, device, model = None, is_distributed = False):
-    """Instantiate VideoTokenizer from a checkpoint's saved config and load weights."""
+def _load_checkpoint_files(checkpoint_path):
+    """-> (model state dict, state.pt dict, its config dict or {})."""
     import torch
-    from models.video_tokenizer import VideoTokenizer
     model_sd = torch.load(Path(checkpoint_path) / MODEL_CHECKPOINT, map_location='cpu', weights_only=True)
     state_cfg = torch.load(Path(checkpoint_path) / STATE, map_location='cpu', weights_only=False)
-    cfg = state_cfg.get('config', {}) or {}
+    return model_sd, state_cfg, state_cfg.get('config', {}) or {}
+
+
+def _set_weights(model, model_sd, device, is_distributed):
+    set_model_state_dict(
+        model=model,
+        model_state_dict=model_sd,
+        options=StateDictOptions(
+            full_state_dict=True,
+            broadcast_from_rank0=is_distributed,
+        ),
+    )
+    return model.to(device)
+
+
+# model constructor kwargs from a config dict: a checkpoint's saved config (defaults cover keys older runs lack)
+# or vars(args) of the stage dataclass in the train scripts (every key present, so the defaults never apply)
+def video_tokenizer_kwargs(cfg):
     frame_size = cfg.get('frame_size', 128)
-    kwargs = {
+    return {
         'frame_size': (frame_size, frame_size),
         'patch_size': cfg.get('patch_size', 8),
         'embed_dim': cfg.get('embed_dim', 128),
@@ -220,38 +236,11 @@ def load_videotokenizer_from_checkpoint(checkpoint_path, device, model = None, i
         'num_bins': cfg.get('num_bins', 4),
         'per_frame': cfg.get('per_frame', False),
     }
-    if model is None:
-        model = VideoTokenizer(**kwargs)
-    set_model_state_dict(
-        model=model,
-        model_state_dict=model_sd,
-        options=StateDictOptions(
-            full_state_dict=True,
-            broadcast_from_rank0=is_distributed,
-        ),
-    )
-    model = model.to(device)
-    return model, state_cfg
 
 
-def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, is_distributed = False):
-    """Instantiate LatentActionModel from a checkpoint's saved config and load weights."""
-    import torch
-    from models.latent_actions import LatentActionModel
-    if not (Path(checkpoint_path) / MODEL_CHECKPOINT).exists() and (Path(checkpoint_path) / STATE).exists():
-        return load_como_actions(checkpoint_path, device)  # STA-42 action dir (scripts/como_actions.py): no weights of its own
-    model_sd = torch.load(Path(checkpoint_path) / MODEL_CHECKPOINT, map_location='cpu', weights_only=True)
-    state_cfg = torch.load(Path(checkpoint_path) / STATE, map_location='cpu', weights_only=False)
-    cfg = state_cfg.get('config', {}) or {}
-    if state_cfg.get('model_type') == 'laof':  # LAOF (models/laof.py, scripts/train_laof.py): kwargs saved verbatim
-        from models.laof import LAOF
-        model = LAOF(**state_cfg['model_kwargs']) if model is None else model
-        model.load_state_dict(model_sd)
-        return model.to(device), state_cfg
-    if cfg.get('model_type') == 'como':  # CoMo motion IDM (scripts/train_como.py): eval adapter with the same encode()
-        return load_como_from_checkpoint(checkpoint_path, device)
+def latent_action_kwargs(cfg):
     frame_size = cfg.get('frame_size', 128)
-    kwargs = {
+    return {
         'frame_size': (frame_size, frame_size),
         'n_actions': cfg.get('n_actions', 8),
         'patch_size': cfg.get('patch_size', 8),
@@ -290,69 +279,11 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, i
         'aux_label_classes': cfg.get('aux_label_classes', 9),
         'aux_label_target': cfg.get('aux_label_target', 'latent'),
     }
-    if model is None:
-        model = LatentActionModel(**kwargs)
-    set_model_state_dict(
-        model=model,
-        model_state_dict=model_sd,
-        options=StateDictOptions(
-            full_state_dict=True,
-            broadcast_from_rank0=is_distributed,
-        ),
-    )
-    model = model.to(device)
-    return model, state_cfg
 
 
-COMO_ARCH_KEYS = ('frame_size', 'patch_size', 'idm_dim', 'idm_depth', 'idm_heads', 'idm_mlp', 'n_queries', 'latent_dim',
-                  'dec_dim', 'dec_depth', 'dec_heads', 'dec_mlp', 'contrastive_weight', 'temperature', 'feat_dim', 'feat_tokens')
-
-
-def load_como_from_checkpoint(checkpoint_path, device):
-    """CoMo checkpoint (scripts/train_como.py) -> CoMoLAM eval adapter (frozen MAE or tokenizer features + trained IDM;
-    continuous actions, k-means into config n_actions clusters by the evals), and the saved state."""
-    import torch
-    from models.como import CoMo, CoMoLAM, TokenizerFeatures
-    state_cfg = torch.load(Path(checkpoint_path) / STATE, map_location='cpu', weights_only=False)
-    cfg = state_cfg['config']
-    como = CoMo(**{k: cfg[k] for k in COMO_ARCH_KEYS if k in cfg})
-    como.load_state_dict(torch.load(Path(checkpoint_path) / MODEL_CHECKPOINT, map_location='cpu', weights_only=True))
-    features = None  # MAE
-    if cfg.get('features', 'mae') == 'tokenizer':
-        tok, _ = load_videotokenizer_from_checkpoint(cfg['tokenizer_path'], 'cpu')
-        features = TokenizerFeatures(tok, cfg['tokenizer_feature'], cfg.get('merge', 2))
-    return CoMoLAM(como, n_clusters=cfg.get('n_actions', 16), features=features, history=cfg.get('history', 0)).to(device), state_cfg
-
-
-def load_como_actions(action_dir, device):
-    """Action dir (scripts/como_actions.py: state.pt {model_type 'como_actions', como_path, mode, mean, std, centroids})
-    -> CoMoActions (CoMo IDM -> standardized full / snapped z), and the saved state."""
-    import torch
-    from models.como import CoMoActions
-    st = torch.load(Path(action_dir) / STATE, map_location='cpu', weights_only=False)
-    lam, _ = load_como_from_checkpoint(st['como_path'], device)
-    return CoMoActions(lam, st['mean'], st['std'], st['centroids'], mode=st['mode']).to(device), st
-
-
-def load_dynamics_from_checkpoint(checkpoint_path, device, model = None, is_distributed = False):
-    """Instantiate DynamicsModel from a checkpoint's saved config and load weights."""
-    import torch
-    from models.dynamics import DynamicsModel
-    model_sd = torch.load(Path(checkpoint_path) / MODEL_CHECKPOINT, map_location='cpu', weights_only=True)
-    state_cfg = torch.load(Path(checkpoint_path) / STATE, map_location='cpu', weights_only=False)
-    cfg = state_cfg.get('config', {}) or {}
+def maskgit_dynamics_kwargs(cfg, conditioning_dim):
     frame_size = cfg.get('frame_size', 128)
-    # Infer conditioning_dim from checkpoint if missing
-    conditioning_dim = cfg.get('conditioning_dim', None)
-    if conditioning_dim is None:
-        cond_inferred = None
-        for k, v in model_sd.items():
-            # Linear weight shape: [out_features, in_features]; in_features is conditioning dim
-            if k.endswith('to_gamma_beta.1.weight'):
-                cond_inferred = int(v.shape[1])
-                break
-        conditioning_dim = cond_inferred if cond_inferred is not None else 3
-    kwargs = {
+    return {
         'frame_size': (frame_size, frame_size),
         'patch_size': cfg.get('patch_size', 8),
         'embed_dim': cfg.get('embed_dim', 128),
@@ -371,6 +302,81 @@ def load_dynamics_from_checkpoint(checkpoint_path, device, model = None, is_dist
         'mask_mode': cfg.get('mask_mode', 'maskgit'),
         'copy_prior': cfg.get('copy_prior', False),
     }
+
+
+def load_videotokenizer_from_checkpoint(checkpoint_path, device, model = None, is_distributed = False):
+    """Instantiate VideoTokenizer from a checkpoint's saved config and load weights."""
+    from models.video_tokenizer import VideoTokenizer
+    model_sd, state_cfg, cfg = _load_checkpoint_files(checkpoint_path)
+    if model is None:
+        model = VideoTokenizer(**video_tokenizer_kwargs(cfg))
+    return _set_weights(model, model_sd, device, is_distributed), state_cfg
+
+
+def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, is_distributed = False):
+    """Instantiate LatentActionModel from a checkpoint's saved config and load weights."""
+    from models.latent_actions import LatentActionModel
+    if not (Path(checkpoint_path) / MODEL_CHECKPOINT).exists() and (Path(checkpoint_path) / STATE).exists():
+        return load_como_actions(checkpoint_path, device)  # STA-42 action dir (scripts/actions/como_actions.py): no weights of its own
+    model_sd, state_cfg, cfg = _load_checkpoint_files(checkpoint_path)
+    if state_cfg.get('model_type') == 'laof':  # LAOF (models/laof.py, experiments/laof/train_laof.py): kwargs saved verbatim
+        from models.laof import LAOF
+        model = LAOF(**state_cfg['model_kwargs']) if model is None else model
+        model.load_state_dict(model_sd)
+        return model.to(device), state_cfg
+    if cfg.get('model_type') == 'como':  # CoMo motion IDM (scripts/actions/train_como.py): eval adapter with the same encode()
+        return load_como_from_checkpoint(checkpoint_path, device)
+    if model is None:
+        model = LatentActionModel(**latent_action_kwargs(cfg))
+    return _set_weights(model, model_sd, device, is_distributed), state_cfg
+
+
+COMO_ARCH_KEYS = ('frame_size', 'patch_size', 'idm_dim', 'idm_depth', 'idm_heads', 'idm_mlp', 'n_queries', 'latent_dim',
+                  'dec_dim', 'dec_depth', 'dec_heads', 'dec_mlp', 'contrastive_weight', 'temperature', 'feat_dim', 'feat_tokens')
+
+
+def load_como_from_checkpoint(checkpoint_path, device):
+    """CoMo checkpoint (scripts/actions/train_como.py) -> CoMoLAM eval adapter (frozen MAE or tokenizer features + trained IDM;
+    continuous actions, k-means into config n_actions clusters by the evals), and the saved state."""
+    import torch
+    from models.como import CoMo, CoMoLAM, TokenizerFeatures
+    state_cfg = torch.load(Path(checkpoint_path) / STATE, map_location='cpu', weights_only=False)
+    cfg = state_cfg['config']
+    como = CoMo(**{k: cfg[k] for k in COMO_ARCH_KEYS if k in cfg})
+    como.load_state_dict(torch.load(Path(checkpoint_path) / MODEL_CHECKPOINT, map_location='cpu', weights_only=True))
+    features = None  # MAE
+    if cfg.get('features', 'mae') == 'tokenizer':
+        tok, _ = load_videotokenizer_from_checkpoint(cfg['tokenizer_path'], 'cpu')
+        features = TokenizerFeatures(tok, cfg['tokenizer_feature'], cfg.get('merge', 2))
+    return CoMoLAM(como, n_clusters=cfg.get('n_actions', 16), features=features, history=cfg.get('history', 0)).to(device), state_cfg
+
+
+def load_como_actions(action_dir, device):
+    """Action dir (scripts/actions/como_actions.py: state.pt {model_type 'como_actions', como_path, mode, mean, std, centroids})
+    -> CoMoActions (CoMo IDM -> standardized full / snapped z), and the saved state."""
+    import torch
+    from models.como import CoMoActions
+    st = torch.load(Path(action_dir) / STATE, map_location='cpu', weights_only=False)
+    lam, _ = load_como_from_checkpoint(st['como_path'], device)
+    return CoMoActions(lam, st['mean'], st['std'], st['centroids'], mode=st['mode']).to(device), st
+
+
+def load_dynamics_from_checkpoint(checkpoint_path, device, model = None, is_distributed = False):
+    """Instantiate DynamicsModel from a checkpoint's saved config and load weights."""
+    import torch
+    from models.dynamics import DynamicsModel
+    model_sd, state_cfg, cfg = _load_checkpoint_files(checkpoint_path)
+    # Infer conditioning_dim from checkpoint if missing
+    conditioning_dim = cfg.get('conditioning_dim', None)
+    if conditioning_dim is None:
+        cond_inferred = None
+        for k, v in model_sd.items():
+            # Linear weight shape: [out_features, in_features]; in_features is conditioning dim
+            if k.endswith('to_gamma_beta.1.weight'):
+                cond_inferred = int(v.shape[1])
+                break
+        conditioning_dim = cond_inferred if cond_inferred is not None else 3
+    kwargs = maskgit_dynamics_kwargs(cfg, conditioning_dim)
     if cfg.get('dynamics_type', 'maskgit') == 'flow':
         # flow-matching dynamics (STA-28); prefer the EMA weights when the checkpoint has them
         from models.flow_dynamics import FlowDynamicsModel
@@ -387,16 +393,7 @@ def load_dynamics_from_checkpoint(checkpoint_path, device, model = None, is_dist
             model = FlowDynamicsModel(**kwargs)
     if model is None:
         model = DynamicsModel(**kwargs)
-    set_model_state_dict(
-        model=model,
-        model_state_dict=model_sd,
-        options=StateDictOptions(
-            full_state_dict=True,
-            broadcast_from_rank0=is_distributed,
-        )
-    )
-    model = model.to(device)
-    return model, state_cfg
+    return _set_weights(model, model_sd, device, is_distributed), state_cfg
 
 def prepare_pipeline_run_root(run_name: Optional[str] = None, base_cwd: Optional[str] = None):
     """Create a top-level run root directory results/<timestamp_or_name>"""

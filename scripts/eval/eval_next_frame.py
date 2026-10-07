@@ -34,88 +34,19 @@ import time
 import h5py
 import numpy as np
 import torch
-import torch.nn.functional as F
 
+from evaluation.image_metrics import psnr, ssim, try_lpips
+from evaluation.windows import test_windows, load_window_batch, to_model_range, to_unit
 from utils.inference_utils import load_models
 from utils.utils import find_latest_checkpoint
 
 
 # ----------------------------------------------------------------------------- metrics
-def psnr(pred, target):
-    # pred, target: [B, C, H, W] in [0, 1] -> [B]
-    mse = ((pred - target) ** 2).flatten(1).mean(1)
-    return 10 * torch.log10(1.0 / mse.clamp_min(1e-10))
 
-
-def _gaussian_window(size=11, sigma=1.5, device='cpu'):
-    x = torch.arange(size, device=device, dtype=torch.float32) - size // 2
-    g = torch.exp(-(x ** 2) / (2 * sigma ** 2))
-    g = g / g.sum()
-    return (g[:, None] * g[None, :])  # [size, size]
-
-
-def ssim(pred, target, window_size=11):
-    # standard SSIM (Wang et al.), gaussian window, per channel, mean over image -> [B]
-    B, C, H, W = pred.shape
-    w = _gaussian_window(window_size, device=pred.device).expand(C, 1, window_size, window_size)
-    pad = window_size // 2
-    mu_p = F.conv2d(pred, w, padding=pad, groups=C)
-    mu_t = F.conv2d(target, w, padding=pad, groups=C)
-    sigma_p = F.conv2d(pred * pred, w, padding=pad, groups=C) - mu_p ** 2
-    sigma_t = F.conv2d(target * target, w, padding=pad, groups=C) - mu_t ** 2
-    sigma_pt = F.conv2d(pred * target, w, padding=pad, groups=C) - mu_p * mu_t
-    c1, c2 = 0.01 ** 2, 0.03 ** 2
-    s = ((2 * mu_p * mu_t + c1) * (2 * sigma_pt + c2)) / ((mu_p ** 2 + mu_t ** 2 + c1) * (sigma_p + sigma_t + c2))
-    return s.flatten(1).mean(1)
-
-
-def try_lpips(device):
-    try:
-        import lpips  # optional dependency
-        return lpips.LPIPS(net='alex', verbose=False).to(device).eval()
-    except Exception:
-        return None
 
 
 # ----------------------------------------------------------------------------- data
-def test_windows(h5_path, context, frame_skip, sample_stride):
-    """Deterministic list of (block_id, local_start) windows; the target is local_start + context*frame_skip."""
-    with h5py.File(h5_path, 'r') as f:
-        blocks = json.loads(f.attrs['test_blocks_local'])
-    span = context * frame_skip  # index offset of the target from the window start
-    windows = []
-    for block_id, (start, end) in enumerate(blocks):
-        for s in range(start, end - span, sample_stride):
-            windows.append((block_id, s))
-    return windows
 
-
-def load_window_batch(frames_dset, windows, context, frame_skip):
-    # -> uint8 [B, T=context+1, H, W, C]
-    idx = np.array([[s + k * frame_skip for k in range(context + 1)] for _, s in windows])
-    out = np.stack([frames_dset[list(row)] for row in idx])
-    return out
-
-
-def load_history_batch(frames_dset, windows, context, frame_skip, history, h5_path):
-    # load_window_batch with `history` extra frames before each window (temporal-tokenizer CoMo, STA-43), indices clamped
-    # to the window's test block start (= scripts/tok_features.py rule) -> uint8 [B, T=history+context+1, H, W, C]
-    if not history:
-        return load_window_batch(frames_dset, windows, context, frame_skip)
-    with h5py.File(h5_path, 'r') as f:
-        blocks = json.loads(f.attrs['test_blocks_local'])
-    idx = np.array([[max(s + k * frame_skip, blocks[b][0]) for k in range(-history, context + 1)] for b, s in windows])
-    return np.stack([frames_dset[sorted(set(row))][np.searchsorted(sorted(set(row)), row)] for row in idx])
-
-
-def to_model_range(frames_u8, device):
-    # uint8 [B, T, H, W, C] -> float [-1, 1] [B, T, C, H, W], same as the training transform
-    x = torch.from_numpy(frames_u8).to(device).permute(0, 1, 4, 2, 3).float() / 255.0
-    return x * 2 - 1
-
-
-def to_unit(x):
-    return ((x + 1) / 2).clamp(0, 1)
 
 
 # ----------------------------------------------------------------------------- main
