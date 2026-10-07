@@ -102,6 +102,13 @@ def main():
     def idx_to_latents(idx):
         return tok.quantizer.get_latents_from_indices(idx, dim=-1)
 
+    def token_acc(a, b):
+        # a, b: [B, 1, P, L] latents -> per-window fraction of equal FSQ codes (NaN for a continuous tokenizer)
+        if tok.continuous:
+            return [float('nan')] * a.shape[0]
+        ia, ib = (tok.quantizer.get_indices_from_latents(z, dim=-1) for z in (a, b))  # [B, 1, P]
+        return (ia == ib).float().flatten(1).mean(1).tolist()
+
     per = {k: [] for k in ('block', 'source_start', 'psnr', 'ssim', 'lpips', 'token_acc',
                            'copy_psnr', 'copy_ssim', 'copy_lpips', 'copy_token_acc',
                            'recon_psnr', 'recon_ssim', 'recon_lpips', 'action', 'lam_code')}
@@ -119,13 +126,13 @@ def main():
             context, target = x[:, :args.context], x[:, args.context:]  # [B, Tc, C, H, W], [B, 1, C, H, W]
             B = x.shape[0]
 
+            # latents via tok.encode (FSQ: grid values = indices -> latents; continuous: unit-RMS latents, no codes)
             if args.decode == 'context':
-                full_idx = tok.tokenize(x)  # [B, T, P] causal encoder: context codes are the same as tokenizing them alone
-                ctx_idx, target_idx = full_idx[:, :args.context], full_idx[:, args.context:]  # [B, Tc, P], [B, 1, P]
+                full_lat = tok.encode(x)  # [B, T, P, L] causal encoder: context latents are the same as encoding them alone
+                ctx_lat, target_lat = full_lat[:, :args.context], full_lat[:, args.context:]  # [B, Tc, P, L], [B, 1, P, L]
             else:
-                ctx_idx = tok.tokenize(context)  # [B, Tc, P]
-                target_idx = tok.tokenize(target)  # [B, 1, P]
-            ctx_lat = idx_to_latents(ctx_idx)  # [B, Tc, P, L]
+                ctx_lat = tok.encode(context)  # [B, Tc, P, L]
+                target_lat = tok.encode(target)  # [B, 1, P, L]
 
             lam_cond = lam.encode(x)  # [B, T-1, A]: every transition incl. the one into the target
             lam_code = lam.quantizer.get_indices_from_latents(lam_cond[:, -1])  # [B] true code of the target transition
@@ -145,13 +152,12 @@ def main():
             pred_lat = dyn.forward_inference(ctx_lat, prediction_horizon=1, num_steps=args.num_steps,
                                              index_to_latents_fn=idx_to_latents, conditioning=cond,
                                              temperature=args.temperature)  # [B, T, P, L]
-            pred_idx = tok.quantizer.get_indices_from_latents(pred_lat[:, -1:], dim=-1)  # [B, 1, P]
             if args.decode == 'context':  # decode context + target together, keep the target
-                pred = to_unit(tok.detokenize(pred_lat)[:, -1])  # [B, C, H, W]
-                recon = to_unit(tok.detokenize(idx_to_latents(full_idx))[:, -1])  # tokenizer ceiling
+                pred = to_unit(tok.decode(pred_lat)[:, -1])  # [B, C, H, W]
+                recon = to_unit(tok.decode(full_lat)[:, -1])  # tokenizer ceiling
             else:
-                pred = to_unit(tok.detokenize(pred_lat[:, -1:])[:, 0])  # [B, C, H, W]
-                recon = to_unit(tok.detokenize(idx_to_latents(target_idx))[:, 0])  # tokenizer ceiling
+                pred = to_unit(tok.decode(pred_lat[:, -1:])[:, 0])  # [B, C, H, W]
+                recon = to_unit(tok.decode(target_lat)[:, 0])  # tokenizer ceiling
             tgt = to_unit(target[:, 0])
             copy = to_unit(context[:, -1])
 
@@ -162,9 +168,9 @@ def main():
             per['source_start'] += [int(source_index[s]) for _, s in batch]
             per['action'] += last_action.tolist(); per['lam_code'] += lam_code.tolist()
             per['psnr'] += psnr(pred, tgt).tolist(); per['ssim'] += ssim(pred, tgt).tolist(); per['lpips'] += lp(pred, tgt).tolist()
-            per['token_acc'] += (pred_idx == target_idx).float().flatten(1).mean(1).tolist()
+            per['token_acc'] += token_acc(pred_lat[:, -1:], target_lat)
             per['copy_psnr'] += psnr(copy, tgt).tolist(); per['copy_ssim'] += ssim(copy, tgt).tolist(); per['copy_lpips'] += lp(copy, tgt).tolist()
-            per['copy_token_acc'] += (ctx_idx[:, -1:] == target_idx).float().flatten(1).mean(1).tolist()
+            per['copy_token_acc'] += token_acc(ctx_lat[:, -1:], target_lat)
             per['recon_psnr'] += psnr(recon, tgt).tolist(); per['recon_ssim'] += ssim(recon, tgt).tolist(); per['recon_lpips'] += lp(recon, tgt).tolist()
 
             for j, w in enumerate(batch):
@@ -217,8 +223,10 @@ def main():
                 if c == 0:
                     ax.set_ylabel(f'block {w[0]}\nsrc {source_index[w[1]]}', fontsize=7)
         s = summary
-        fig.suptitle(f"{name}: PSNR {s['model']['psnr']:.2f} (copy {s['copy_baseline']['psnr']:.2f}, recon {s['tokenizer_recon']['psnr']:.2f})  "
-                     f"token acc {s['model']['token_acc']:.3f} (copy {s['copy_baseline']['token_acc']:.3f})", fontsize=9)
+        acc_txt = '' if s['model']['token_acc'] is None else \
+            f"  token acc {s['model']['token_acc']:.3f} (copy {s['copy_baseline']['token_acc']:.3f})"  # None: continuous tokenizer
+        fig.suptitle(f"{name}: PSNR {s['model']['psnr']:.2f} (copy {s['copy_baseline']['psnr']:.2f}, recon {s['tokenizer_recon']['psnr']:.2f})"
+                     + acc_txt, fontsize=9)
         plt.tight_layout()
         png_path = os.path.join(args.out_dir, f'{name}.png')
         plt.savefig(png_path, dpi=130); plt.close(fig)

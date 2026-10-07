@@ -235,6 +235,9 @@ def video_tokenizer_kwargs(cfg):
         'latent_dim': cfg.get('latent_dim', 6),
         'num_bins': cfg.get('num_bins', 4),
         'per_frame': cfg.get('per_frame', False),
+        'bottleneck': cfg.get('bottleneck', 'fsq'),
+        'latent_noise': cfg.get('latent_noise', 0.8),
+        'kl_weight': cfg.get('kl_weight', 1e-6),
     }
 
 
@@ -385,7 +388,8 @@ def load_dynamics_from_checkpoint(checkpoint_path, device, model = None, is_dist
             kwargs.pop(k)
         if cfg.get('conditioning_dim') is None:
             kwargs['conditioning_dim'] = conditioning_dim - 64  # FiLM input = [action, 64-d time embedding]
-        kwargs.update(fm_pred=cfg.get('fm_pred', 'v'), fm_shift=cfg.get('fm_shift', 1.0), qk_norm=cfg.get('qk_norm', True))
+        kwargs.update(fm_pred=cfg.get('fm_pred', 'v'), fm_shift=cfg.get('fm_shift', 1.0), qk_norm=cfg.get('qk_norm', True),
+                      round_latents=not cfg.get('continuous_latents', False))
         ema_path = Path(checkpoint_path) / EMA_CHECKPOINT
         if model is None and ema_path.exists():
             model_sd = torch.load(ema_path, map_location='cpu', weights_only=True)

@@ -145,7 +145,10 @@ def main():
 
         # save model and visualize results
         if i % args.log_interval == 0:
-            if args.use_wandb:
+            if args.use_wandb and unwrap_model(model).continuous:
+                if is_main:  # running latent RMS (the dynamics latents are divided by it)
+                    wandb.log({'train/latent_scale': unwrap_model(model).latent_scale.item()}, step=i)
+            elif args.use_wandb:
                 with torch.no_grad():
                     indices = unwrap_model(model).tokenize(x)
                     unique_codes = torch.unique(indices).numel()

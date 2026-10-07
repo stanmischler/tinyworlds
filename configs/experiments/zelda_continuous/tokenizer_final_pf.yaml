@@ -1,0 +1,20 @@
+# STA-62 final continuous tokenizer (per-frame): identical to
+# configs/experiments/zelda_v5_frametok/video_tokenizer.yaml except the bottleneck.
+# bottleneck / latent_dim = sweep winner (latent_dim via --overrides).
+batch_size_per_gpu: 64
+gradient_accumulation_steps: 1
+n_updates: 30000
+learning_rate: 0.0002
+log_interval: 1000
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 8
+
+per_frame: true
+bottleneck: SWEEP_WINNER
+latent_noise: 0.8
+kl_weight: 1.0e-6
+
+checkpoint:
