@@ -1,7 +1,7 @@
-# CPU smoke profile for the pusht_v1 recipe: tokenizer + gt-action dynamics (configs/pusht_v1/dynamics.yaml: action_source gt,
-# mask_mode random_target), tiny models, 2 steps per stage, no LAM. Needs data/pusht_frames.h5 (scripts/convert_pusht.py,
+# CPU smoke profile for the pusht_v1 recipe: tokenizer + gt-action dynamics (configs/experiments/pusht_v1/dynamics.yaml: action_source gt,
+# mask_mode random_target), tiny models, 2 steps per stage, no LAM. Needs data/pusht_frames.h5 (scripts/data/convert_pusht.py,
 # --limit-episodes 50 is enough). Use with:
-#   WANDB_MODE=offline MPLBACKEND=Agg python scripts/full_train.py --config configs/dev/dev_training_pusht_cpu.yaml
+#   WANDB_MODE=offline MPLBACKEND=Agg python scripts/pipeline/full_train.py --config configs/dev/dev_training_pusht_cpu.yaml
 # Delete the resulting results/<timestamp>/ afterwards so it doesn't shadow real checkpoints.
 use_wandb: true  # must stay true: LAM/dynamics logging crashes when false; WANDB_MODE=offline avoids needing a key
 wandb_project: tinyworlds-dev
@@ -32,7 +32,7 @@ gradient_accumulation_steps: 1
 
 video_tokenizer_config: configs/video_tokenizer.yaml
 latent_actions_config: configs/latent_actions.yaml
-dynamics_config: configs/pusht_v1/dynamics.yaml
+dynamics_config: configs/experiments/pusht_v1/dynamics.yaml
 
 run_video_tokenizer: true
 run_latent_actions: false

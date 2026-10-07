@@ -12,7 +12,7 @@ NUM_LATENT_ACTIONS_BINS = 2
 
 def ot_features(ot, Wp):
     # ot: [B, T-1, 2, P] long, per transition t -> t+1 the unbalanced OT plan between the tokenizer tokens of the two frames
-    #   (scripts/eval/patch_similarity.py ot-plans): [:, :, 0] = destination of token i of frame t (-1 = destroyed),
+    #   (experiments/patch_similarity/patch_similarity.py ot-plans): [:, :, 0] = destination of token i of frame t (-1 = destroyed),
     #   [:, :, 1] = 1 if token j of frame t+1 is created (fed by nothing)
     # -> src [B, T-1, P, 4] at frame t positions: (moved, destroyed, drow / 8, dcol / 8) (rows / cols in token cells),
     #    created [B, T-1, P, 1] at frame t+1 positions, changed [B, T-1, P, 1]: any token leaving, arriving, destroyed or

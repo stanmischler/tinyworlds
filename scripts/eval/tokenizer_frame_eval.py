@@ -20,7 +20,8 @@ import argparse, json, os, sys
 import h5py, numpy as np, torch
 sys.path.insert(0, os.getcwd())
 from utils.utils import load_videotokenizer_from_checkpoint
-from scripts.eval.eval_next_frame import psnr, ssim, test_windows, to_model_range, to_unit
+from evaluation.image_metrics import psnr, ssim
+from evaluation.windows import test_windows, to_model_range, to_unit
 
 p = argparse.ArgumentParser()
 p.add_argument('--run', action='append', required=True, help='label=<checkpoint dir>')

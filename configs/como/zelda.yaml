@@ -1,10 +1,10 @@
-# CoMo motion IDM on Zelda (STA-38): scripts/train_como.py. Paper recipe (CoMo Tab.6 + released code) at the
+# CoMo motion IDM on Zelda (STA-38): scripts/actions/train_como.py. Paper recipe (CoMo Tab.6 + released code) at the
 # Zelda LAM eval gap; decisions in the STA-38 ledger.
 run_name: como_zelda
 device: cuda
 seed: 0
 
-# data: frames + precomputed MAE ViT-L features (scripts/como_features.py), row-aligned with the .h5
+# data: frames + precomputed MAE ViT-L features (scripts/actions/como_features.py), row-aligned with the .h5
 train_h5: data/zelda_train_frames.h5
 train_features: data/zelda_train_mae_large.npy
 test_h5: data/zelda_test_frames.h5

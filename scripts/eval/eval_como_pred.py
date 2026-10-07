@@ -6,7 +6,7 @@ Per window (eval_next_frame.test_windows, context 3, frame_skip 4, stride 8 -> 8
   - `como`      : decoder(frame t, z(t, t+4)), z = the IDM's full 128-d continuous action (true transition given, as
                   eval_next_frame --action-mode lam)
   - `como_k16`  : z replaced by its k-means centroid (16 clusters fit on all held-out z, seed 0): a 16-code action budget;
-                  with --action-dir (STA-42, scripts/como_actions.py) the centroids fit on train z that the k16 dynamics
+                  with --action-dir (STA-42, scripts/actions/como_actions.py) the centroids fit on train z that the k16 dynamics
                   model is conditioned on
   - `shuffled`  : z of another window (roll by 1): how much the prediction depends on the action
   - `copy`      : frame t (copy-last baseline)
@@ -23,8 +23,9 @@ import h5py
 import numpy as np
 import torch
 
-from eval_next_frame import test_windows, load_history_batch, to_model_range, to_unit, psnr, ssim, try_lpips
-from eval_lam import kmeans
+from evaluation.action_metrics import kmeans
+from evaluation.image_metrics import psnr, ssim, try_lpips
+from evaluation.windows import test_windows, load_history_batch, to_model_range, to_unit
 
 
 def main():
@@ -37,7 +38,7 @@ def main():
     p.add_argument('--sample-stride', type=int, default=8)
     p.add_argument('--k', type=int, default=16)
     p.add_argument('--batch-size', type=int, default=32)
-    p.add_argument('--action-dir', help='CoMo action dir (scripts/como_actions.py): use its train-fit centroids for como_k<k>')
+    p.add_argument('--action-dir', help='CoMo action dir (scripts/actions/como_actions.py): use its train-fit centroids for como_k<k>')
     p.add_argument('--device', default='cuda')
     p.add_argument('--out-dir', default='eval_results/como_pred')
     a = p.parse_args()

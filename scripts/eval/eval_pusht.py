@@ -16,7 +16,7 @@ Scored at two resolutions:
 References in every table: copy-last (frame 0 repeated), tokenizer_recon (the 4 real frames tokenized and decoded:
 the ceiling of any token prediction), resize_ceiling (256 only: the 128 ground truth bicubic-upsampled, the best any
 128px model can score at 256), and nanowm (if --nanowm-npz: NanoWM's own predictions from
-scripts/eval/nanowm_rescore_modal.py, scored with the same code; use predictions_f16.npz: rounding their float
+experiments/pusht_nanowm/nanowm_rescore_modal.py, scored with the same code; use predictions_f16.npz: rounding their float
 predictions to uint8 alone raises LPIPS by ~0.003 and FID by ~3; at 128 they are INTER_AREA-downsampled).
 
 Outputs <out_dir>/<name>.json and <out_dir>/<name>.png (8 clips: context, targets, predictions).
@@ -50,7 +50,7 @@ def nanowm_clips(seq_lengths, num_clips, seed):
     """NanoWM's fixed val subset: [(episode, start)] in selection order."""
     span = NUM_FRAMES * FRAME_INTERVAL
     # their val split (split_ratio 0) still shuffles the episodes first (_split_trajectories_indices, np.random.seed(42));
-    # verified against their fixed_subset.json by scripts/eval/nanowm_rescore_modal.py: identical list and order
+    # verified against their fixed_subset.json by experiments/pusht_nanowm/nanowm_rescore_modal.py: identical list and order
     np.random.seed(seed)
     order = np.arange(len(seq_lengths))
     np.random.shuffle(order)
@@ -72,7 +72,7 @@ def load_clips(h5, ep_offset, clips, mean, std):
 
 
 def area_resize(frames, size):
-    # [..., H, W, 3] uint8 (or float, kept float32) -> [..., size, size, 3], INTER_AREA as scripts/convert_pusht.py
+    # [..., H, W, 3] uint8 (or float, kept float32) -> [..., size, size, 3], INTER_AREA as scripts/data/convert_pusht.py
     frames = frames if frames.dtype == np.uint8 else frames.astype(np.float32)
     flat = frames.reshape(-1, *frames.shape[-3:])
     out = np.stack([cv2.resize(f, (size, size), interpolation=cv2.INTER_AREA) for f in flat])
@@ -187,7 +187,7 @@ def main():
     p.add_argument('--val-h5', default='data/pusht_val_frames.h5')
     p.add_argument('--run-dir', help='results dir holding the tokenizer + dynamics checkpoints (latest step of each)')
     p.add_argument('--video-tokenizer-path'); p.add_argument('--dynamics-path')
-    p.add_argument('--nanowm-npz', help='NanoWM predictions (scripts/eval/nanowm_rescore_modal.py) to score alongside')
+    p.add_argument('--nanowm-npz', help='NanoWM predictions (experiments/pusht_nanowm/nanowm_rescore_modal.py) to score alongside')
     p.add_argument('--num-clips', type=int, default=256)
     p.add_argument('--seed', type=int, default=42, help="NanoWM's validation_fixed_subset_seed")
     p.add_argument('--num-steps', type=int, default=10, help='MaskGIT unmasking iterations per frame')

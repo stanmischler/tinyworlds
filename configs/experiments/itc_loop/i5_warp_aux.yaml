@@ -1,0 +1,39 @@
+# itc_loop i5 arm B (i5_warp_aux): STA-36 WTA warp LAM (= configs/experiments/lam_loop/i4_bal16_seed2.yaml) + an auxiliary linear head on tanh(action latent)
+# predicting the frozen i4 teacher's pseudo-label (gate_stat_itc, 8 directions + STILL) of each transition, CE weight 0.5.
+# Launch: TINYWORLDS_GPU=H100 modal run --detach scripts/infra/modal_train.py --dataset ZELDA_TRAIN --training-config configs/experiments/lam_loop/training.yaml \
+#   --overrides "latent_actions_config=configs/experiments/itc_loop/i5_warp_aux.yaml,n_actions=16,compile=false" --run-name itcloop_i5_warp_aux
+batch_size_per_gpu: 64
+gradient_accumulation_steps: 1
+n_updates: 6001       # +1 so the last checkpoint is step 6000
+learning_rate: 0.0003
+log_interval: 500     # checkpoint + reconstruction PNG every 500 steps
+
+embed_dim: 128
+num_heads: 8
+hidden_dim: 256
+num_blocks: 4
+
+decoder_keep_rate: 0.5
+decoder_residual: true
+entropy_loss_weight: 0.0   # balance comes from the Sinkhorn assignment
+entropy_sample_weight: 0.0
+encoder_pooling: attention
+recon_change_weight: 0.0
+continuous_actions: false
+action_kl_capacity: 2.0794   # ln 8 nats: the information of 8 discrete codes (continuous_actions only)
+action_kl_weight: 1.0
+
+checkpoint: null
+encoder_input: frames
+decoder_hint: none
+decoder_warp: global
+decoder_warp_radius: 12   # px at 128px; walking scroll is 7-11 px per transition
+decoder_warp_wta: true
+wta_sinkhorn_eps: 0.05    # on losses normalized by their batch mean
+wta_encoder_weight: 1.0
+n_actions: 16              # NOTE: training.yaml sets n_actions 8 and beats this file: launch with --overrides n_actions=16
+wta_balance: 0.5   # Sinkhorn column-normalisation exponent (1 = equal partition)
+aux_labels: data/zelda_train_itc_pseudo_gap4.npz   # experiments/itc_actions/itc_pseudo.py (Modal itc_pseudo)
+aux_label_key: code_itc
+aux_label_weight: 0.5
+aux_label_classes: 9

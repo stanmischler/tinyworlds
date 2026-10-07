@@ -156,79 +156,30 @@ class VideoHDF5Dataset(Dataset):
             self.h5_file.close() 
 
 # TODO: add more datasets
+# per-game subclasses: only the kwargs that differ from VideoHDF5Dataset's defaults (load_chunk_size 1000, load_start_index 0,
+# sequence_stride None, preprocess_read_step 1, preprocess_slice None)
 class PongDataset(VideoHDF5Dataset):
     def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=1, resolution=(64, 64), fps=30, preload_ratio=1):
-        super().__init__(
-            video_path=video_path,
-            transform=transform,
-            save_path=save_path,
-            train=train,
-            num_frames=num_frames,
-            resize_to=resolution,
-            fps=fps,
-            preload_ratio=preload_ratio,
-            load_chunk_size=1000,
-            load_start_index=0,
-            preprocess_read_step=10,  # keep every 10th frame from raw
-            preprocess_slice=None,
-        )
+        super().__init__(video_path=video_path, transform=transform, save_path=save_path, train=train, num_frames=num_frames,
+                         resize_to=resolution, fps=fps, preload_ratio=preload_ratio, preprocess_read_step=10)  # keep every 10th frame from raw
 
 class PolePositionDataset(VideoHDF5Dataset):
     def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4, resolution=(64, 64), fps=30, preload_ratio=1):
-        super().__init__(
-            video_path=video_path,
-            transform=transform,
-            save_path=save_path,
-            train=train,
-            num_frames=num_frames,
-            resize_to=resolution,
-            fps=fps,
-            preload_ratio=preload_ratio,
-            sequence_stride=None,
-            load_chunk_size=1000,
-            load_start_index=0,
-            preprocess_read_step=1,
-            preprocess_slice=(1/50, 1/4),
-        )
+        super().__init__(video_path=video_path, transform=transform, save_path=save_path, train=train, num_frames=num_frames,
+                         resize_to=resolution, fps=fps, preload_ratio=preload_ratio, preprocess_slice=(1/50, 1/4))
 
 class SonicDataset(VideoHDF5Dataset):
     def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4, resolution=(128, 128), fps=15, preload_ratio=1):
-        super().__init__(
-            video_path=video_path,
-            transform=transform,
-            save_path=save_path,
-            train=train,
-            num_frames=num_frames,
-            resize_to=resolution,
-            fps=fps,
-            preload_ratio=preload_ratio,
-            sequence_stride=None,
-            load_chunk_size=1000,
-            load_start_index=100,
-            preprocess_read_step=1,
-            preprocess_slice=None,
-        )
+        super().__init__(video_path=video_path, transform=transform, save_path=save_path, train=train, num_frames=num_frames,
+                         resize_to=resolution, fps=fps, preload_ratio=preload_ratio, load_start_index=100)
 
 class PicoDoomDataset(VideoHDF5Dataset):
     def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4, resolution=(128, 128), fps=30, preload_ratio=0.3):
-        super().__init__(
-            video_path=video_path,
-            transform=transform,
-            save_path=save_path,
-            train=train,
-            num_frames=num_frames,
-            resize_to=resolution,
-            fps=fps,
-            preload_ratio=preload_ratio,
-            sequence_stride=None,
-            load_chunk_size=1000,
-            load_start_index=300,
-            preprocess_read_step=1,
-            preprocess_slice=None,
-        )
+        super().__init__(video_path=video_path, transform=transform, save_path=save_path, train=train, num_frames=num_frames,
+                         resize_to=resolution, fps=fps, preload_ratio=preload_ratio, load_start_index=300)
 
 class PushTDataset(Dataset):
-    """Push-T clips with their ground-truth actions, from scripts/convert_pusht.py's pusht_frames.h5.
+    """Push-T clips with their ground-truth actions, from scripts/data/convert_pusht.py's pusht_frames.h5.
 
     The .h5 already holds every 5th env frame (NanoWM's frame_interval) and the 10-D action leading from each kept
     frame to the next, so a clip is `num_frames` consecutive rows; clips never cross an episode boundary.
@@ -262,18 +213,5 @@ class PushTDataset(Dataset):
 
 class ZeldaDataset(VideoHDF5Dataset):
     def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4, resolution=(128, 128), fps=15, preload_ratio=0.2):
-        super().__init__(
-            video_path=video_path,
-            transform=transform,
-            save_path=save_path,
-            train=train,
-            num_frames=num_frames,
-            resize_to=resolution,
-            fps=fps,
-            preload_ratio=preload_ratio,
-            sequence_stride=None,
-            load_chunk_size=1000,
-            load_start_index=1000,
-            preprocess_read_step=1,
-            preprocess_slice=None,
-        )
+        super().__init__(video_path=video_path, transform=transform, save_path=save_path, train=train, num_frames=num_frames,
+                         resize_to=resolution, fps=fps, preload_ratio=preload_ratio, load_start_index=1000)

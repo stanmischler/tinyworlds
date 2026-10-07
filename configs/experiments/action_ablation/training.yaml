@@ -1,0 +1,47 @@
+# Action-conditioning ablation (see PROTOCOL.md): dynamics stage only, on the v3 tokenizer + LAM
+# (results/2026_09_23_17_38_44 on the tinyworlds-results volume, resolved by find_latest_checkpoint).
+# Launch one arm per app, selecting its dynamics yaml by override:
+#   TINYWORLDS_GPU=H100 modal run --detach scripts/infra/modal_train.py --dataset SONIC_TRAIN \
+#     --training-config configs/experiments/action_ablation/training.yaml --overrides dynamics_config=configs/experiments/action_ablation/dynamics_lam.yaml
+# Keys here override the same keys in the stage yamls. Do NOT put action_dropout_prob / full_last_frame_mask_prob /
+# seed here: they would override every arm.
+use_wandb: true
+wandb_project: tinyworlds
+
+dataset: SONIC_TRAIN     # sonic_train_frames.h5: all frames minus the held-out test blocks (scripts/data/split_dataset.py)
+preload_ratio: 1.0
+
+patch_size: 4
+context_length: 4
+frame_size: 64            # the Modal launcher re-reads it from the .h5
+latent_dim: 6             # tokenizer vocab = 4**6 = 4096, as the shared tokenizer
+num_bins: 4
+n_actions: 8              # as the shared LAM
+
+amp: true
+tf32: true
+compile: true
+num_workers: 8
+pin_memory: true
+
+distributed:
+  use_ddp: false
+  use_fsdp: false
+  reshard_after_forward: false
+nproc_per_node: 1
+standalone: true
+
+video_tokenizer_config: configs/experiments/sonic_v2/video_tokenizer.yaml   # unused: stages skipped
+latent_actions_config: configs/experiments/sonic_v2/latent_actions.yaml     # unused: stages skipped
+dynamics_config: configs/experiments/action_ablation/dynamics_lam.yaml      # overridden per arm at launch
+run_video_tokenizer: false
+run_latent_actions: false
+run_dynamics: true
+
+optimizer: adamw
+muon_momentum: 0.95
+muon_backend_steps: 5
+use_moe: false
+num_experts: 4
+top_k_experts: 2
+moe_aux_loss_coeff: 0.01
