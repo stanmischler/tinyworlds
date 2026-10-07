@@ -65,7 +65,7 @@ datasets/      per-game .h5 video datasets, the DataLoader factory, the determin
 evaluation/    metrics and helpers shared by the eval scripts: image metrics, held-out windows, motion proxies,
                action-code metrics (NMI, k-means), LAM decoding, the judge-labelled Zelda action set
 utils/         config schema and loading, checkpoint save/load, distributed setup, optimizers, schedulers, W&B, inference
-scripts/       entry points, one folder per pipeline stage (see scripts/README.md):
+scripts/       entry points, one folder per pipeline stage:
   data/          download assets, convert / split datasets, visualise batches
   tokenizer/     stage 1: train the video tokenizer
   actions/       stage 2: train the latent action model (LAM, or CoMo on precomputed features) and export its actions
@@ -74,7 +74,7 @@ scripts/       entry points, one folder per pipeline stage (see scripts/README.m
   inference/     play the trained world model
   eval/          score each stage on held-out data
   infra/         Modal launcher and run checks, worktree and remote-control helpers
-experiments/   one folder per study that is not part of the pipeline: its scripts, figures and Modal functions (see experiments/README.md)
+experiments/   one folder per study that is not part of the pipeline: its scripts, figures and Modal functions
 configs/       base configs (one yaml per stage + training.yaml), configs/como/ for CoMo, configs/dev/ for CPU smoke runs,
                configs/experiments/<run>/ for the exact configs of each past run
 ```
@@ -94,7 +94,7 @@ The pipeline in one line: `scripts/data` -> `scripts/tokenizer` -> `scripts/acti
   (`datasets/data_utils.py`) and the dataset name in `utils/config.py`.
 - **New study** (an idea you are testing, not yet part of the pipeline): a folder `experiments/<what_it_tests>/` named in a word or
   two, with its scripts, a `modal_<name>.py` if it runs on Modal (importing `app`, `VOLUMES` and `committing` from
-  `scripts/infra/modal_train.py`), and a line in `experiments/README.md`. Its run configs go in `configs/experiments/<run>/`.
+  `scripts/infra/modal_train.py`). Its run configs go in `configs/experiments/<run>/`.
   When a study graduates into the pipeline, move its code into the packages and `scripts/` and delete what is left.
 - **New run of an existing recipe**: copy a folder of `configs/experiments/` and point the launcher at it
   (`--training-config configs/experiments/<run>/training.yaml`).
