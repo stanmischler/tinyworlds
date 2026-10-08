@@ -1,0 +1,19 @@
+# STA-62 sweep tokenizer (kl bottleneck): zelda_v5_frametok recipe (256/512/8, per-frame, lr 2e-4, batch 64) with the
+# FSQ replaced by a continuous bottleneck; 15k steps (half the final budget). latent_dim comes from training.yaml / --overrides.
+batch_size_per_gpu: 64
+gradient_accumulation_steps: 1
+n_updates: 15000
+learning_rate: 0.0002
+log_interval: 1000   # checkpoint + reconstruction PNG every 1000 steps
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 8
+
+per_frame: true
+bottleneck: kl
+latent_noise: 0.8     # tanh: decoder input noise std ~ |N(0, 0.8^2)| x latent RMS (RAE recipe); unused for kl
+kl_weight: 1.0e-6     # kl: LDM value; unused for tanh
+
+checkpoint:

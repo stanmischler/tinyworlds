@@ -65,7 +65,10 @@ def main():
     # optional DDP, compile, param count, tf32
     print_param_count_if_main(model, "VideoTokenizer", is_main)
     if args.compile:
-        model = torch.compile(model, mode="reduce-overhead", fullgraph=False, dynamic=True)
+        # continuous bottlenecks update the latent_scale buffer in place every step, which CUDA graphs ("reduce-overhead")
+        # reject ("storage data ptrs are not allocated in pool", temporal KL tokenizer, STA-62): plain compile for them
+        mode = "default" if model.continuous else "reduce-overhead"
+        model = torch.compile(model, mode=mode, fullgraph=False, dynamic=True)
     model = prepare_model_for_distributed(
         model, 
         args.distributed, 
@@ -145,7 +148,10 @@ def main():
 
         # save model and visualize results
         if i % args.log_interval == 0:
-            if args.use_wandb:
+            if args.use_wandb and unwrap_model(model).continuous:
+                if is_main:  # running latent RMS (the dynamics latents are divided by it)
+                    wandb.log({'train/latent_scale': unwrap_model(model).latent_scale.item()}, step=i)
+            elif args.use_wandb:
                 with torch.no_grad():
                     indices = unwrap_model(model).tokenize(x)
                     unique_codes = torch.unique(indices).numel()

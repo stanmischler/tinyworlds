@@ -109,8 +109,7 @@ def main():
             context_frames = generated_frames[:, -args.context_window:, :, :, :]  # [1, context_window, C, H, W]
 
         # encode context frames each iteration
-        video_indices = video_tokenizer.tokenize(context_frames)
-        video_latents = video_tokenizer.quantizer.get_latents_from_indices(video_indices)
+        video_latents = video_tokenizer.encode(context_frames)  # [1, T, P, L] FSQ grid values or unit-RMS continuous latents
 
         sampled_action_index, action_latent = get_action_latent(args, inferred_actions, n_actions, context_frames, latent_action_model, i)
 
@@ -131,7 +130,7 @@ def main():
             )
 
         # decode next video tokens to frames
-        next_frames = video_tokenizer.detokenize(next_video_latents)  # [1, T, C, H, W]
+        next_frames = video_tokenizer.decode(next_video_latents)  # [1, T, C, H, W]
 
         generated_frames = torch.cat([generated_frames, next_frames[:, -args.prediction_horizon:, :, :]], dim=1)
         # TODO: if using interactive mode, visualize next_frames[:, -1] (recently inferred frame) every time, probably with matplotlib is easiest

@@ -29,12 +29,14 @@ class FlowDynamicsModel(nn.Module):
     last frame is noised; the context frames are clean (their time embedding is t = 1). Each frame's FiLM conditioning
     is [action a_{t-1} (zeros at frame 0), embedding of its flow time], so the backbone's per-frame adaptive norms act as
     adaLN for the noise level. fm_pred 'v' regresses the velocity, 'x' predicts x1 and derives the velocity; the loss is
-    the velocity MSE in both cases. Samples are rounded to the FSQ grid at the very end."""
+    the velocity MSE in both cases. Samples are rounded to the FSQ grid at the very end (unless round_latents is False, for
+    the unit-RMS latents of a continuous tokenizer)."""
 
     def __init__(self, frame_size=(128, 128), patch_size=4, embed_dim=256, num_heads=8, hidden_dim=512, num_blocks=12,
                  latent_dim=6, num_bins=4, conditioning_dim=0, time_dim=64, fm_pred="v", fm_shift=1.0, qk_norm=True,
-                 t_eps=0.05):
+                 t_eps=0.05, round_latents=True):
         super().__init__()
+        self.round_latents = round_latents  # False for a continuous tokenizer (STA-62): samples are used as they are
         assert fm_pred in ("v", "x"), fm_pred
         self.fm_pred, self.fm_shift, self.t_eps = fm_pred, float(fm_shift), float(t_eps)
         self.num_bins, self.latent_dim = num_bins, latent_dim
@@ -84,7 +86,7 @@ class FlowDynamicsModel(nn.Module):
         return (out.float() - latents[:, -1].float()) / s  # (x1_hat - x_t) / (1 - t)
 
     def forward(self, latents, training=True, conditioning=None, targets=None):
-        # latents: [B, T, P, L] clean FSQ latents; conditioning: [B, T-1, A] actions. Returns (v_hat, None, loss) like
+        # latents: [B, T, P, L] clean FSQ (or continuous) latents; conditioning: [B, T-1, A] actions. Returns (v_hat, None, loss) like
         # DynamicsModel.forward returns (logits, mask, loss).
         B, T, P, L = latents.shape
         x1 = latents[:, -1].float()  # [B, P, L]
@@ -118,7 +120,7 @@ class FlowDynamicsModel(nn.Module):
             inp = torch.cat([context_latents.float(), x[:, None]], dim=1)  # [B, Tc+1, P, L]
             v = self.velocity(inp, conditioning, t).float()  # [B, P, L]
             x = x + (s_grid[k] - s_grid[k + 1]) * v  # dt = t_{k+1} - t_k
-        return self.round_to_grid(x)
+        return self.round_to_grid(x) if self.round_latents else x
 
     @torch.no_grad()
     def forward_inference(self, context_latents, prediction_horizon, num_steps, index_to_latents_fn=None,

@@ -122,6 +122,11 @@ class VideoTokenizerConfig:
 	pin_memory: Optional[bool] = None
 	# True: no temporal attention in encoder/decoder (per-frame tokenizer)
 	per_frame: bool = False
+	# STA-62 bottleneck: "fsq" (default, discrete codes), "tanh" (continuous, tanh-bounded, decoder trained on latents noised
+	# with per-sample std ~ |N(0, latent_noise^2)| x latent RMS) or "kl" (continuous KL-VAE, weight kl_weight)
+	bottleneck: str = "fsq"
+	latent_noise: float = 0.8
+	kl_weight: float = 1e-6
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)
@@ -296,6 +301,8 @@ class DynamicsConfig:
 	fm_shift: float = 1.0     # SD3 timestep shift toward noise, training and sampling (1.0 = uniform)
 	qk_norm: bool = True      # RMSNorm on queries/keys (flow only)
 	ema_decay: float = 0.0    # EMA of the weights, saved as ema_state_dict.pt and used for sampling (0 = off)
+	# set by train_dynamics.py from the tokenizer (STA-62): True = continuous latents, flow samples are not rounded to the grid
+	continuous_latents: bool = False
 	# Optimizer
 	optimizer: str = "adamw"
 	muon_momentum: float = 0.95

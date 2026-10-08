@@ -14,6 +14,8 @@ so f_{T-1} is the last frame of W1 and the first of W2. Metrics:
   - static_token_change: among patches pixel-identical (uint8) between consecutive frames of W1, fraction whose code changes
   - token_copy_rate: fraction of all patches whose code equals the previous frame's (copy-last token accuracy ceiling),
     next to pixel_static_rate, the fraction of patches that are pixel-identical to the previous frame
+  - continuous tokenizers (bottleneck tanh/kl) have no codes; the three code metrics become RMS distances of the
+    unit-RMS latents: latent_dist_position, latent_dist_static, latent_dist_step (all patches)
 Writes <out>.json and <out>.png (rows: ground truth, then each run's T=4 reconstruction of the last frame of W1).
 """
 import argparse, json, os, sys
@@ -64,35 +66,48 @@ def evaluate(ckpt):
             x = to_model_range(u8, args.device)                          # [B, 2T-1, C, H, W]
             B = x.shape[0]
             w1, w2 = x[:, :T], x[:, T - 1:]
-            idx1 = model.tokenize(w1)                                    # [B, T, P]
-            idx2 = model.tokenize(w2)                                    # [B, T, P]
-            rec = model.detokenize(model.quantizer.get_latents_from_indices(idx1)).clamp(-1, 1)  # [B, T, C, H, W]
-            idx_s = model.tokenize(w1.reshape(B * T, 1, *w1.shape[2:]))  # [B*T, 1, P]
-            rec_s = model.detokenize(model.quantizer.get_latents_from_indices(idx_s)).clamp(-1, 1).reshape(rec.shape)
+            z1, z2 = model.encode(w1), model.encode(w2)                  # [B, T, P, L] (FSQ grid or unit-RMS continuous)
+            rec = model.decode(z1).clamp(-1, 1)                          # [B, T, C, H, W]
+            rec_s = model.decode(model.encode(w1.reshape(B * T, 1, *w1.shape[2:]))).clamp(-1, 1).reshape(rec.shape)
             gt = to_unit(w1).flatten(0, 1)                               # [B*T, C, H, W]
             for key, r in (('w', rec), ('s', rec_s)):
                 r = to_unit(r).flatten(0, 1)
                 acc[key + 'p'].append(psnr(r, gt).cpu())
                 acc[key + 's'].append(ssim(r, gt).cpu())
-            mism += (idx1[:, T - 1] != idx2[:, 0]).sum().item()
-            static = patch_static(u8[:, :T], ps)                        # [B, T-1, P]
-            changed = (idx1[:, 1:] != idx1[:, :-1]).cpu()                # [B, T-1, P]
-            st_change += (changed & static).sum().item(); st_n += static.sum().item()
-            copy_eq += (~changed).sum().item(); copy_n += changed.numel()
+            if model.continuous:
+                # no codes: same metrics as latent distances (RMS over L, unit-RMS latents) instead of code-change rates
+                pos = (z1[:, T - 1] - z2[:, 0]).pow(2).mean(-1).sqrt()  # [B, P]
+                step = (z1[:, 1:] - z1[:, :-1]).pow(2).mean(-1).sqrt().cpu()  # [B, T-1, P]
+                mism += pos.sum().item()
+                static = patch_static(u8[:, :T], ps)                    # [B, T-1, P]
+                st_change += step[static].sum().item(); st_n += static.sum().item()
+                copy_eq += step.sum().item(); copy_n += step.numel()
+            else:
+                idx1 = model.quantizer.get_indices_from_latents(z1)      # [B, T, P]
+                idx2 = model.quantizer.get_indices_from_latents(z2)      # [B, T, P]
+                mism += (idx1[:, T - 1] != idx2[:, 0]).sum().item()
+                static = patch_static(u8[:, :T], ps)                    # [B, T-1, P]
+                changed = (idx1[:, 1:] != idx1[:, :-1]).cpu()            # [B, T-1, P]
+                st_change += (changed & static).sum().item(); st_n += static.sum().item()
+                copy_eq += (~changed).sum().item(); copy_n += changed.numel()
             for j in range(B):
                 if i + j in vis_ids:
                     vis[i + j] = to_unit(rec[j, T - 1]).permute(1, 2, 0).cpu().numpy()
-    P = idx1.shape[-1]
+    P = z1.shape[2]
     m = {key: float(torch.cat(v).mean()) for key, v in acc.items()}
-    return {
+    out = {
         'recon_window_psnr': m['wp'], 'recon_window_ssim': m['ws'],
         'recon_single_psnr': m['sp'], 'recon_single_ssim': m['ss'],
-        'token_mismatch_position': mism / (len(frames) * P),
-        'static_token_change': st_change / max(st_n, 1),
-        'token_copy_rate': copy_eq / copy_n,
         'pixel_static_rate': st_n / copy_n,
         'n_windows': len(frames), 'checkpoint': ckpt,
-    }, vis
+    }
+    if model.continuous:  # continuous: RMS latent distances (FSQ keys below are code-change rates)
+        out.update(latent_dist_position=mism / (len(frames) * P), latent_dist_static=st_change / max(st_n, 1),
+                   latent_dist_step=copy_eq / copy_n)
+    else:
+        out.update(token_mismatch_position=mism / (len(frames) * P), static_token_change=st_change / max(st_n, 1),
+                   token_copy_rate=copy_eq / copy_n)
+    return out, vis
 
 
 results, vis_all = {}, {}
@@ -100,9 +115,11 @@ for spec in args.run:
     label, ckpt = spec.split('=', 1)
     results[label], vis_all[label] = evaluate(ckpt)
     r = results[label]
+    stab = (f"pos-dist {r['latent_dist_position']:.3f}  static-dist {r['latent_dist_static']:.3f}  step-dist {r['latent_dist_step']:.3f}"
+            if 'latent_dist_step' in r else f"pos-mismatch {r['token_mismatch_position']:.3f}  static-change {r['static_token_change']:.3f}  "
+            f"copy {r['token_copy_rate']:.3f}")
     print(f"{label:24s} window {r['recon_window_psnr']:.2f} dB / {r['recon_window_ssim']:.3f}  single {r['recon_single_psnr']:.2f} dB / "
-          f"{r['recon_single_ssim']:.3f}  pos-mismatch {r['token_mismatch_position']:.3f}  static-change {r['static_token_change']:.3f}  "
-          f"copy {r['token_copy_rate']:.3f} (pixel-static {r['pixel_static_rate']:.3f})", flush=True)
+          f"{r['recon_single_ssim']:.3f}  {stab} (pixel-static {r['pixel_static_rate']:.3f})", flush=True)
 
 os.makedirs(os.path.dirname(args.out) or '.', exist_ok=True)
 with open(args.out + '.json', 'w') as f:

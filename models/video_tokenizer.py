@@ -77,25 +77,64 @@ class VideoTokenizerDecoder(nn.Module):
 
 
 class VideoTokenizer(nn.Module):
+    """bottleneck 'fsq' (default): discrete FSQ codes. Continuous bottlenecks (STA-62) keep the latents unquantized:
+    'tanh' bounds them with tanh and trains the decoder on noised latents (RAE: per-sample std ~ |N(0, latent_noise^2)| in
+    units of the latent RMS); 'kl' is a KL-VAE (encoder emits mean and log-variance, KL weight kl_weight). encode()/decode()
+    are the latent API for the dynamics model: FSQ grid values, or continuous latents divided by latent_scale (running RMS
+    of the training latents) so they have unit RMS."""
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8,
-                 hidden_dim=256, num_blocks=4, latent_dim=3, num_bins=4, per_frame=False):
+                 hidden_dim=256, num_blocks=4, latent_dim=3, num_bins=4, per_frame=False,
+                 bottleneck='fsq', latent_noise=0.8, kl_weight=1e-6):
         super().__init__()
+        assert bottleneck in ('fsq', 'tanh', 'kl'), bottleneck
+        self.bottleneck, self.latent_noise, self.kl_weight = bottleneck, float(latent_noise), float(kl_weight)
         # per_frame=True: encoder and decoder have no temporal attention, so a frame's tokens depend on that frame only
-        self.encoder = VideoTokenizerEncoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, latent_dim, per_frame)
+        enc_dim = 2 * latent_dim if bottleneck == 'kl' else latent_dim  # kl: [mean, log-variance]
+        self.encoder = VideoTokenizerEncoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, enc_dim, per_frame)
         self.decoder = VideoTokenizerDecoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, latent_dim, per_frame)
         self.quantizer = FiniteScalarQuantizer(latent_dim, num_bins)
         self.codebook_size = num_bins**latent_dim
+        if self.continuous:
+            self.register_buffer('latent_scale', torch.ones(()))  # running RMS of the continuous latents (saved)
+
+    @property
+    def continuous(self):
+        return self.bottleneck != 'fsq'
+
+    def _bottleneck(self, h):
+        # h: [B, T, P, L or 2L] encoder output -> (latents [B, T, P, L], deterministic latents [B, T, P, L], kl or None);
+        # kl samples only in training, and its deterministic latents (what encode() returns) are the mean
+        if self.bottleneck == 'fsq':
+            z = self.quantizer(h)
+            return z, z, None
+        if self.bottleneck == 'tanh':
+            z = torch.tanh(h)
+            return z, z, None
+        mean, logvar = h.float().chunk(2, dim=-1)  # [B, T, P, L] each
+        logvar = logvar.clamp(-30, 20)
+        kl = 0.5 * (mean.pow(2) + logvar.exp() - 1 - logvar).mean()
+        z = mean + torch.randn_like(mean) * (0.5 * logvar).exp() if self.training else mean
+        return z, mean, kl
 
     def forward(self, frames):
-        # encode frames to latent representations, quantize, and decode back to frames
+        # encode frames to latent representations, quantize (or bottleneck), and decode back to frames
         embeddings = self.encoder(frames)  # [B, T, P, L]
-        quantized_z = self.quantizer(embeddings)
-        x_hat = self.decoder(quantized_z)  # [B, T, C, H, W]
+        z, z_det, kl = self._bottleneck(embeddings)  # [B, T, P, L]
+        if self.continuous and self.training:
+            with torch.no_grad():  # running RMS of encode()'s latents -> unit-RMS latents for the dynamics model
+                self.latent_scale.lerp_(z_det.detach().float().pow(2).mean().sqrt(), 0.01)
+            if self.bottleneck == 'tanh' and self.latent_noise > 0:
+                std = (torch.randn(z.shape[0], 1, 1, 1, device=z.device).abs() * self.latent_noise) * self.latent_scale  # [B, 1, 1, 1]
+                z = z + std * torch.randn_like(z)
+        x_hat = self.decoder(z)  # [B, T, C, H, W]
         recon_loss = F.smooth_l1_loss(x_hat, frames)
+        if kl is not None:
+            recon_loss = recon_loss + self.kl_weight * kl
         return recon_loss, x_hat
 
     def tokenize(self, frames):
         # encode frames to latent representations, quantize, and return indices
+        assert not self.continuous, 'continuous tokenizer has no indices: use encode()'
         embeddings = self.encoder(frames)  # [B, T, P, L]
         quantized_z = self.quantizer(embeddings)
         indices = self.quantizer.get_indices_from_latents(quantized_z, dim=-1)
@@ -105,6 +144,18 @@ class VideoTokenizer(nn.Module):
         # decode quantized latents back to frames
         x_hat = self.decoder(quantized_z)  # [B, T, C, H, W]
         return x_hat
+
+    def encode(self, frames):
+        # frames [B, T, C, H, W] -> dynamics latents [B, T, P, L]: FSQ grid values (exactly as indices -> latents), or
+        # deterministic continuous latents / latent_scale
+        if not self.continuous:
+            return self.quantizer.get_latents_from_indices(self.tokenize(frames), dim=-1)
+        _, z, _ = self._bottleneck(self.encoder(frames))
+        return z / self.latent_scale
+
+    def decode(self, latents):
+        # dynamics latents [B, T, P, L] -> frames [B, T, C, H, W]
+        return self.decoder(latents * self.latent_scale if self.continuous else latents)
 
     @property
     def model_type(self) -> str:

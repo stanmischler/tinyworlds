@@ -1,5 +1,6 @@
 from contextlib import nullcontext
 import torch
+import torch.nn.functional as F
 import os
 from tqdm import tqdm
 from einops import rearrange
@@ -67,6 +68,11 @@ def main():
             p.requires_grad = False
     else:
         raise FileNotFoundError(f"Video tokenizer checkpoint not found at {args.video_tokenizer_path}")
+    # the dynamics latents are the tokenizer's: take their width and kind from the checkpoint, not the yaml
+    args.continuous_latents = video_tokenizer.continuous
+    if args.latent_dim != video_tokenizer.decoder.latent_embed.in_features:
+        print(f"latent_dim {args.latent_dim} -> {video_tokenizer.decoder.latent_embed.in_features} (from the tokenizer)")
+        args.latent_dim = video_tokenizer.decoder.latent_embed.in_features
     assert args.action_source in ('lam', 'gt'), f"action_source must be 'lam' or 'gt', got {args.action_source}"
     use_gt_actions = args.action_source == 'gt'
     if use_gt_actions:
@@ -92,6 +98,7 @@ def main():
     # init dynamics model and optional ckpt load
     assert args.dynamics_type in ('maskgit', 'flow'), f"dynamics_type must be 'maskgit' or 'flow', got {args.dynamics_type}"
     is_flow = args.dynamics_type == 'flow'
+    assert is_flow or not args.continuous_latents, 'a continuous tokenizer needs dynamics_type flow (MaskGIT predicts codes)'
     if is_flow:
         dynamics_model = FlowDynamicsModel(
             frame_size=(args.frame_size, args.frame_size),
@@ -106,6 +113,7 @@ def main():
             fm_pred=args.fm_pred,
             fm_shift=args.fm_shift,
             qk_norm=args.qk_norm,
+            round_latents=not args.continuous_latents,
         ).to(args.device)
     else:
         dynamics_model = DynamicsModel(**maskgit_dynamics_kwargs(vars(args), conditioning_dim)).to(args.device)
@@ -243,8 +251,12 @@ def main():
             x = x.to(args.device, non_blocking=True)  # [batch_size, seq_len, channels, height, width]
 
             # get video tokens for batch
-            video_tokens = video_tokenizer.tokenize(x) # [B, T, P]
-            video_latents = video_tokenizer.quantizer.get_latents_from_indices(video_tokens, dim=-1) # [B, T, P, L]
+            if args.continuous_latents:
+                video_tokens = None
+                video_latents = video_tokenizer.encode(x)  # [B, T, P, L] unit-RMS continuous latents
+            else:
+                video_tokens = video_tokenizer.tokenize(x) # [B, T, P]
+                video_latents = video_tokenizer.quantizer.get_latents_from_indices(video_tokens, dim=-1) # [B, T, P, L]
             if args.use_actions and args.action_file:
                 quantized_actions = latent_action_model.standardize(gt_actions.to(args.device, non_blocking=True))  # [B, T - 1, A]
             elif args.use_actions and use_gt_actions:
@@ -315,15 +327,18 @@ def main():
                     n_vis = min(16, video_latents.shape[0])
                     cond = quantized_actions[:n_vis] if quantized_actions is not None else None
                     sampled = sampler.forward_inference(video_latents[:n_vis, :-1], 1, 10, conditioning=cond)  # [n, T, P, L]
-                    predicted_frames = video_tokenizer.decoder(sampled)  # [n, T, C, H, W]
-                    sample_acc = (video_tokenizer.quantizer.get_indices_from_latents(sampled[:, -1])
-                                  == video_tokens[:n_vis, -1]).float().mean().item()
+                    predicted_frames = video_tokenizer.decode(sampled)  # [n, T, C, H, W]
+                    if args.continuous_latents:  # no codes: latent MSE of the sample instead of token accuracy
+                        sample_metric = ('sample_latent_mse', F.mse_loss(sampled[:, -1].float(), video_latents[:n_vis, -1].float()).item())
+                    else:
+                        sample_metric = ('sample_token_acc', (video_tokenizer.quantizer.get_indices_from_latents(sampled[:, -1])
+                                                              == video_tokens[:n_vis, -1]).float().mean().item())
                 raw_dynamics.train()
                 masked_frames = x.clone()
                 masked_frames[:, -1] = 0  # the generated frame
-                print(f'\n Step {i} sample token acc (10 Euler steps, train windows): {sample_acc:.3f}')
+                print(f'\n Step {i} {sample_metric[0]} (10 Euler steps, train windows): {sample_metric[1]:.3f}')
                 if args.use_wandb and is_main:
-                    wandb.log({'train/sample_token_acc': sample_acc}, step=i)
+                    wandb.log({f'train/{sample_metric[0]}': sample_metric[1]}, step=i)
             elif args.use_wandb:
                 predicted_next_indices = torch.argmax(predicted_next_logits, dim=-1)
                 predicted_next_latents = video_tokenizer.quantizer.get_latents_from_indices(predicted_next_indices, dim=-1)
