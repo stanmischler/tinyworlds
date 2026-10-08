@@ -12,6 +12,10 @@
 #   --run-name zelda_cont_final_<pf|tp>
 # FSQ per-frame twin (frozen v5 tokenizer, FM only):
 #   --overrides "run_video_tokenizer=false,dynamics_config=configs/experiments/zelda_continuous/dynamics_fsq_pf.yaml" --run-name zelda_cont_fsq_pf
+# Eval (890 held-out windows; add --video-tokenizer-path for the FSQ twin, whose run dir holds no tokenizer):
+#   modal run --detach scripts/infra/modal_train.py::eval_dynamics --run-dir <run> --name <run>_29000 --num-steps 1,4 \
+#     --extra-args "--test-h5 data/zelda_test_frames.h5 --latent-actions-path results/como_actions_v1_full"
+#   scripts/eval/tokenizer_frame_eval.py --run "<label>=<tokenizer ckpt>" ... --test-h5 data/zelda_test_frames.h5
 use_wandb: true
 wandb_project: tinyworlds
 
