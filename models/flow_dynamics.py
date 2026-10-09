@@ -117,7 +117,8 @@ class FlowDynamicsModel(nn.Module):
         prev = prev.float()
         if self.fm_source_noise == 0:
             return prev
-        n = torch.randn(prev.shape, device=prev.device, generator=generator)
+        # randn_like when unseeded: torch.randn(shape) fails under torch.compile(dynamic=True) (symbolic shape)
+        n = torch.randn_like(prev) if generator is None else torch.randn(prev.shape, device=prev.device, generator=generator)
         return prev + self.fm_source_noise * n
 
     def round_to_grid(self, x):
