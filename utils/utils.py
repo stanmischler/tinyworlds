@@ -307,6 +307,36 @@ def maskgit_dynamics_kwargs(cfg, conditioning_dim):
     }
 
 
+def flow_dynamics_kwargs(cfg, action_dim):
+    # FlowDynamicsModel / BiFlowDynamicsModel kwargs (STA-28, STA-61); action_dim = FiLM action width (0 = no actions)
+    frame_size = cfg.get('frame_size', 128)
+    kwargs = {
+        'frame_size': (frame_size, frame_size),
+        'patch_size': cfg.get('patch_size', 8),
+        'embed_dim': cfg.get('embed_dim', 128),
+        'num_heads': cfg.get('num_heads', 8),
+        'hidden_dim': cfg.get('hidden_dim', 256),
+        'num_blocks': cfg.get('num_blocks', 4),
+        'latent_dim': cfg.get('latent_dim', 6),
+        'num_bins': cfg.get('num_bins', 4),
+        'conditioning_dim': action_dim,
+        'qk_norm': cfg.get('qk_norm', True),
+        'round_latents': not cfg.get('continuous_latents', False),
+    }
+    if cfg.get('dynamics_type') == 'biflow':
+        kwargs.update(bf_alpha_max=cfg.get('bf_alpha_max', 1.0), bf_eps=cfg.get('bf_eps', 0.1))
+    else:
+        kwargs.update(fm_pred=cfg.get('fm_pred', 'v'), fm_shift=cfg.get('fm_shift', 1.0),
+                      fm_source=cfg.get('fm_source', 'noise'), fm_source_noise=cfg.get('fm_source_noise', 0.0))
+    return kwargs
+
+
+def build_flow_dynamics(cfg, action_dim):
+    from models.flow_dynamics import FlowDynamicsModel, BiFlowDynamicsModel
+    cls = BiFlowDynamicsModel if cfg.get('dynamics_type') == 'biflow' else FlowDynamicsModel
+    return cls(**flow_dynamics_kwargs(cfg, action_dim))
+
+
 def load_videotokenizer_from_checkpoint(checkpoint_path, device, model = None, is_distributed = False):
     """Instantiate VideoTokenizer from a checkpoint's saved config and load weights."""
     from models.video_tokenizer import VideoTokenizer
@@ -380,21 +410,16 @@ def load_dynamics_from_checkpoint(checkpoint_path, device, model = None, is_dist
                 break
         conditioning_dim = cond_inferred if cond_inferred is not None else 3
     kwargs = maskgit_dynamics_kwargs(cfg, conditioning_dim)
-    if cfg.get('dynamics_type', 'maskgit') == 'flow':
-        # flow-matching dynamics (STA-28); prefer the EMA weights when the checkpoint has them
-        from models.flow_dynamics import FlowDynamicsModel
-        for k in ('use_moe', 'num_experts', 'top_k_experts', 'moe_aux_loss_coeff', 'full_last_frame_mask_prob',
-                  'action_dropout_prob', 'mask_mode', 'copy_prior'):
-            kwargs.pop(k)
-        if cfg.get('conditioning_dim') is None:
-            kwargs['conditioning_dim'] = conditioning_dim - 64  # FiLM input = [action, 64-d time embedding]
-        kwargs.update(fm_pred=cfg.get('fm_pred', 'v'), fm_shift=cfg.get('fm_shift', 1.0), qk_norm=cfg.get('qk_norm', True),
-                      round_latents=not cfg.get('continuous_latents', False))
+    if cfg.get('dynamics_type', 'maskgit') in ('flow', 'biflow'):
+        # flow-matching dynamics (STA-28) or Bi-flow (STA-61); prefer the EMA weights when the checkpoint has them.
+        # FiLM input = [action, 64-d time embedding (+ 64-d noise-level embedding for Bi-flow)]
+        n_time = 2 if cfg.get('dynamics_type') == 'biflow' else 1
+        action_dim = cfg['conditioning_dim'] if cfg.get('conditioning_dim') is not None else conditioning_dim - 64 * n_time
         ema_path = Path(checkpoint_path) / EMA_CHECKPOINT
         if model is None and ema_path.exists():
             model_sd = torch.load(ema_path, map_location='cpu', weights_only=True)
         if model is None:
-            model = FlowDynamicsModel(**kwargs)
+            model = build_flow_dynamics(cfg, action_dim)
     if model is None:
         model = DynamicsModel(**kwargs)
     return _set_weights(model, model_sd, device, is_distributed), state_cfg
