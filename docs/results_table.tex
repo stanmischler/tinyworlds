@@ -23,8 +23,7 @@
 
 \paragraph{Metrics.}
 Tokenizer: reconstruction PSNR/SSIM on held-out frames.
-Action model: NMI$_\text{adj}$ between action codes and VLM-judged action groups, all groups, on the frozen
-action-group set; same protocol for every model, random $\approx 0$.
+Action model: NMI$_\text{adj}$ of action codes vs.\ judged actions (random = 0).
 Dynamics: one-step next-frame prediction from real context on the held-out split (Push-T: NanoWM protocol, 3 autoregressive steps).
 -- = not relevant or not measured.
 
