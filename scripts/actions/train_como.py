@@ -17,6 +17,11 @@ prediction PNG, and the held-out LAM judge (scripts/eval/lam_judge.py, k-means k
 
     python scripts/actions/train_como.py --config configs/como/zelda.yaml -- run_name=como_zelda n_updates=50000
     python scripts/actions/train_como.py --config configs/como/zelda.yaml -- fake_features=1500 device=cpu ...  # CPU code check
+
+features: joint (STA-65, configs/como/joint/): no feature table; a per-frame video tokenizer (cfg.tokenizer) is trained from
+scratch with the IDM + decoder (models/como.py JointCoMo), and each checkpoint also exports it as a standard tokenizer
+checkpoint (results/<run>/video_tokenizer/checkpoints/video_tokenizer_step_N). Logged in addition: tokenizer recon loss,
+and held-out tokenizer PSNR.
 """
 
 import argparse
@@ -36,8 +41,9 @@ from omegaconf import OmegaConf
 from PIL import Image
 
 from datasets.split import segments
-from models.como import CoMo, MAE_TOKENS, MAE_DIM
-from utils.utils import COMO_ARCH_KEYS, MODEL_CHECKPOINT, OPTIMIZER_CHECKPOINT, STATE
+from models.como import CoMo, JointCoMo, MAE_TOKENS, MAE_DIM
+from models.video_tokenizer import VideoTokenizer
+from utils.utils import COMO_ARCH_KEYS, MODEL_CHECKPOINT, OPTIMIZER_CHECKPOINT, STATE, video_tokenizer_kwargs
 
 
 
@@ -52,7 +58,9 @@ def load_split(cfg, h5_path, feat_path, device, fake=0, feat_device=None):
     with h5py.File(h5_path, 'r') as f:
         n = fake or min(len(f['frames']), cfg.max_frames or len(f['frames']))
         frames = torch.from_numpy(f['frames'][:n]).to(device)  # uint8 [N, H, W, C]
-    if fake:
+    if feat_path is None:  # joint: pixels only
+        feats = None
+    elif fake:
         feats = torch.randn(n, cfg.get('feat_tokens') or MAE_TOKENS, cfg.get('feat_dim') or MAE_DIM, dtype=torch.float16, device=feat_device)
     else:
         mm = np.load(feat_path, mmap_mode='r')
@@ -79,6 +87,8 @@ def batch(frames, feats, starts, idx, gap, jitter, gen, device):
     d = torch.randint(1, jitter + 1, (len(t),), generator=gen, device='cpu').to(device)
     d = d * (torch.randint(0, 2, (len(t),), generator=gen, device='cpu').to(device) * 2 - 1)  # +-1..jitter
     b, j = t + gap, t + gap + d
+    if feats is None:  # joint: pixels of t, t+n, t+n+delta
+        return tuple(to_pixels(frames[i]) for i in (t, b, j))
     f = [feats[i.to(feats.device)].to(device, non_blocking=True).float() for i in (t, b, j)]  # [B, S, D] x3
     return *f, to_pixels(frames[t]), to_pixels(frames[b])
 
@@ -90,18 +100,23 @@ def save_png(path, x_a, x_b, pred, n=8):
 
 @torch.no_grad()
 def held_out(model, vb, amp):
-    f_a, f_b, f_j, x_a, x_b = vb
+    x_a, x_b = vb[-2:] if len(vb) == 5 else vb[:2]
+    decoder = model.como.decoder if isinstance(model, JointCoMo) else model.decoder
     model.eval()
     with amp():
-        out = model(f_a, f_b, f_j, x_a, x_b)
+        out = model(*vb)
         z = out['z'].float().flatten(1)  # [B, A]
-        shuf = F.mse_loss(model.decoder(x_a, out['z'].roll(1, 0)).float(), x_b)
+        shuf = F.mse_loss(decoder(x_a, out['z'].roll(1, 0)).float(), x_b)
     model.train()
+    tok = {}
+    if 'x_hat' in out:  # joint: tokenizer reconstruction of frames t, t+n
+        mse = F.mse_loss((out['x_hat'].float().clamp(-1, 1) + 1) / 2, (torch.stack([x_a, x_b], 1) + 1) / 2)
+        tok = {'val/tok_recon': out['tok_recon'].item(), 'val/tok_psnr': (-10 * torch.log10(mse)).item()}
     zn = F.normalize(z, dim=1)
     cos = (zn @ zn.T)[~torch.eye(len(z), dtype=torch.bool, device=z.device)].mean()
     return {'val/recon': out['recon'].item(), 'val/copy': F.mse_loss(x_a, x_b).item(), 'val/shuffled': shuf.item(),
             'val/shuffle_gap': shuf.item() - out['recon'].item(), 'val/nce': out.get('nce', torch.zeros(())).item(),
-            'val/z_std': z.std(0).mean().item(), 'val/z_cos': cos.item()}, out['pred']
+            'val/z_std': z.std(0).mean().item(), 'val/z_cos': cos.item(), **tok}, out['pred']
 
 
 def judge(ckpt, run_dir, step, cfg):
@@ -137,11 +152,12 @@ def main():
     os.makedirs(ckpt_dir, exist_ok=True)
     os.makedirs(viz_dir, exist_ok=True)
 
+    joint = cfg.get('features') == 'joint'
     t0 = time.time()
-    frames, feats, segs = load_split(cfg, cfg.train_h5, cfg.train_features, device, cfg.fake_features, cfg.get('feat_device'))
+    frames, feats, segs = load_split(cfg, cfg.train_h5, None if joint else cfg.train_features, device, cfg.fake_features, cfg.get('feat_device'))
     span = cfg.gap + cfg.jitter
     starts = valid_starts(segs, span, cfg.start_index if not cfg.fake_features else 0)
-    vframes, vfeats, vsegs = load_split(cfg, cfg.test_h5, cfg.test_features, device, cfg.fake_features, 'cpu')  # only the val batch is used
+    vframes, vfeats, vsegs = load_split(cfg, cfg.test_h5, None if joint else cfg.test_features, device, cfg.fake_features, 'cpu')  # only the val batch is used
     vstarts = valid_starts(vsegs, span)
     vgen = torch.Generator().manual_seed(1)
     vidx = torch.randperm(len(vstarts), generator=vgen)[:cfg.val_batch].numpy()
@@ -149,11 +165,21 @@ def main():
     print(f'train: {len(frames)} frames, {len(segs)} segments, {len(starts)} transitions; held-out {len(vstarts)} '
           f'(batch {len(vidx)}); loaded in {time.time() - t0:.0f} s', flush=True)
 
-    cfg.feat_tokens, cfg.feat_dim = feats.shape[1:]  # MAE [197, 1024] or tokenizer features (STA-43); saved in state.pt
-    model = CoMo(**{k: cfg[k] for k in COMO_ARCH_KEYS if k in cfg}).to(device)
-    n_idm = sum(p.numel() for p in model.idm.parameters())
-    n_dec = sum(p.numel() for p in model.decoder.parameters())
-    print(f'params: IDM {n_idm / 1e6:.1f}M, decoder {n_dec / 1e6:.1f}M', flush=True)
+    if joint:  # IDM input = merged tokenizer hidden state (STA-43 TokenizerFeatures 'hidden' layout)
+        tokenizer = VideoTokenizer(**video_tokenizer_kwargs(cfg.tokenizer))
+        hp = cfg.frame_size // cfg.tokenizer.patch_size
+        cfg.feat_tokens, cfg.feat_dim = (hp // cfg.merge) ** 2, cfg.tokenizer.embed_dim * cfg.merge ** 2
+    else:
+        cfg.feat_tokens, cfg.feat_dim = feats.shape[1:]  # MAE [197, 1024] or tokenizer features (STA-43); saved in state.pt
+    model = CoMo(**{k: cfg[k] for k in COMO_ARCH_KEYS if k in cfg})
+    if joint:
+        model = JointCoMo(tokenizer, model, cfg.merge, cfg.recon_weight, cfg.stop_grad)
+    model = model.to(device)
+    como = model.como if joint else model
+    n_idm = sum(p.numel() for p in como.idm.parameters())
+    n_dec = sum(p.numel() for p in como.decoder.parameters())
+    n_tok = sum(p.numel() for p in model.tokenizer.parameters()) if joint else 0
+    print(f'params: IDM {n_idm / 1e6:.1f}M, decoder {n_dec / 1e6:.1f}M, tokenizer {n_tok / 1e6:.1f}M', flush=True)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate, betas=tuple(cfg.betas), eps=1e-8, weight_decay=cfg.weight_decay)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: max(cfg.lr_floor, 1 - s / cfg.n_updates))
     step0 = 0
@@ -177,9 +203,10 @@ def main():
     tl = time.time()
     for step in range(step0, cfg.n_updates + 1):
         idx = torch.randint(0, len(starts), (cfg.batch_size,), generator=gen).numpy()
-        f_a, f_b, f_j, x_a, x_b = batch(frames, feats, starts, idx, cfg.gap, cfg.jitter, gen, device)
+        b = batch(frames, feats, starts, idx, cfg.gap, cfg.jitter, gen, device)
+        x_a, x_b = b[-2:] if len(b) == 5 else b[:2]
         with amp():
-            out = fwd(f_a, f_b, f_j, x_a, x_b)
+            out = fwd(*b)
         opt.zero_grad(set_to_none=True)
         out['loss'].backward()
         gn = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
@@ -187,6 +214,7 @@ def main():
         sched.step()
         if step % cfg.log_interval == 0:
             rec = {'step': step, 'loss': out['loss'].item(), 'recon': out['recon'].item(), 'nce': out.get('nce', torch.zeros(())).item(),
+                   **({'tok_recon': out['tok_recon'].item()} if joint else {}),
                    'copy': F.mse_loss(x_a, x_b).item(), 'grad_norm': gn.item(), 'lr': sched.get_last_lr()[0],
                    'it_s': cfg.log_interval / max(time.time() - tl, 1e-6) if step > step0 else 0.0}
             tl = time.time()
@@ -194,7 +222,7 @@ def main():
                 v, pred = held_out(model, vb, amp)
                 rec.update(v)
                 if step % cfg.ckpt_interval == 0:
-                    save_png(f'{viz_dir}/pred_step_{step}.png', vb[3], vb[4], pred)
+                    save_png(f'{viz_dir}/pred_step_{step}.png', *(vb[-2:] if len(vb) == 5 else vb[:2]), pred)
             print(' '.join(f'{k} {v:.4g}' if isinstance(v, float) else f'{k} {v}' for k, v in rec.items()), flush=True)
             log.write(json.dumps(rec) + '\n')
             log.flush()
@@ -206,6 +234,11 @@ def main():
             torch.save(model.state_dict(), f'{ck}/{MODEL_CHECKPOINT}')
             torch.save(opt.state_dict(), f'{ck}/{OPTIMIZER_CHECKPOINT}')
             torch.save({'config': {**OmegaConf.to_container(cfg), 'model_type': 'como'}, 'scheduler': sched.state_dict(), 'step': step}, f'{ck}/{STATE}')
+            if joint:  # the tokenizer alone, in the standard format (tokenizer_frame_eval, dynamics training)
+                tk = f'{run_dir}/video_tokenizer/checkpoints/video_tokenizer_step_{step}'
+                os.makedirs(tk, exist_ok=True)
+                torch.save(model.tokenizer.state_dict(), f'{tk}/{MODEL_CHECKPOINT}')
+                torch.save({'config': {**OmegaConf.to_container(cfg.tokenizer), 'frame_size': cfg.frame_size}, 'step': step}, f'{tk}/{STATE}')
             print(f'CHECKPOINT {ck}', flush=True)
             if cfg.judge and not cfg.fake_features:
                 res = judge(ck, run_dir, step, cfg)

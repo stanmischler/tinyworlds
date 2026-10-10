@@ -345,9 +345,17 @@ def load_como_from_checkpoint(checkpoint_path, device):
     from models.como import CoMo, CoMoLAM, TokenizerFeatures
     state_cfg = torch.load(Path(checkpoint_path) / STATE, map_location='cpu', weights_only=False)
     cfg = state_cfg['config']
+    from models.como import JointCoMo
+    from models.video_tokenizer import VideoTokenizer
     como = CoMo(**{k: cfg[k] for k in COMO_ARCH_KEYS if k in cfg})
-    como.load_state_dict(torch.load(Path(checkpoint_path) / MODEL_CHECKPOINT, map_location='cpu', weights_only=True))
+    sd = torch.load(Path(checkpoint_path) / MODEL_CHECKPOINT, map_location='cpu', weights_only=True)
     features = None  # MAE
+    if cfg.get('features') == 'joint':  # STA-65: tokenizer trained with the IDM, saved in the same state dict
+        joint = JointCoMo(VideoTokenizer(**video_tokenizer_kwargs(cfg['tokenizer'])), como, cfg.get('merge', 2))
+        joint.load_state_dict(sd)
+        features = TokenizerFeatures(joint.tokenizer, 'hidden', cfg.get('merge', 2))
+    else:
+        como.load_state_dict(sd)
     if cfg.get('features', 'mae') == 'tokenizer':
         tok, _ = load_videotokenizer_from_checkpoint(cfg['tokenizer_path'], 'cpu')
         features = TokenizerFeatures(tok, cfg['tokenizer_feature'], cfg.get('merge', 2))

@@ -1,0 +1,3 @@
+# J1-sg: IDM features detached, so only the tokenizer reconstruction trains the encoder
+run_name: como_joint_j1_sg
+stop_grad: true
