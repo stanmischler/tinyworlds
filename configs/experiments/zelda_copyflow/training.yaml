@@ -1,15 +1,17 @@
 # Copy-last flow matching (STA-61): the dynamics flow starts from the previous frame's latents instead of noise.
 # Frozen: STA-62 KL c16 temporal tokenizer (zelda_cont_final_tp step 29000) and CoMo full-z actions; only dynamics trains.
 # FlowC2S (arXiv 2604.17625): fine-tune the STA-62 noise FM (EMA weights) on x3 + sigma*n -> x4, sigma in {0, .1, .3, .5}.
-# Video Bi-flow (arXiv 2503.06364): two nets (velocity + denoiser) from scratch, alpha_max in {0.5, 1, 2}; eps at eval.
-# Sweep 8k steps, finals 30k (best next-frame PSNR at its best step count).
+# Video Bi-flow (arXiv 2503.06364): two nets (velocity + denoiser) from scratch, alpha_max in {0.5, 1, 2, 4}; eps at eval.
+# Sweep 8k steps (arms c2s_s0/s01/s03/s05, bf_a05/a1/a2/a4), finals 30k: c2s_final (sigma 0.3) 34.09 dB, bf_final
+# (alpha 2, eps 0.3) 33.72 dB, vs the STA-62 noise-start FM 33.78 (1 Euler step).
 #   TINYWORLDS_GPU=H100 modal run --detach scripts/infra/modal_train.py --dataset ZELDA_TRAIN \
 #     --training-config configs/experiments/zelda_copyflow/training.yaml \
 #     --overrides "dynamics_config=configs/experiments/zelda_copyflow/<arm>.yaml" --run-name zelda_copyflow_<arm>
 # Eval (890 held-out windows; the run dir holds no tokenizer; Bi-flow adds --bf-eps <eps> and a name suffix):
 #   modal run --detach scripts/infra/modal_train.py::eval_dynamics --run-dir zelda_copyflow_<arm> --name zelda_copyflow_<arm> \
 #     --num-steps 1,2,4,8 --extra-args "--test-h5 data/zelda_test_frames.h5 --latent-actions-path results/como_actions_v1_full \
-#     --video-tokenizer-path results/zelda_cont_final_tp/video_tokenizer/checkpoints/video_tokenizer_step_29000"
+#     --video-tokenizer-path results/zelda_cont_final_tp/video_tokenizer/checkpoints/video_tokenizer_step_29000 \
+#     --dynamics-path results/zelda_copyflow_<arm>/dynamics/checkpoints/dynamics_step_<7000 sweep | 29000 final> [--bf-eps <eps>]"
 use_wandb: true
 wandb_project: tinyworlds
 
