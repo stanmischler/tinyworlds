@@ -34,8 +34,13 @@ class FlowDynamicsModel(nn.Module):
 
     def __init__(self, frame_size=(128, 128), patch_size=4, embed_dim=256, num_heads=8, hidden_dim=512, num_blocks=12,
                  latent_dim=6, num_bins=4, conditioning_dim=0, time_dim=64, fm_pred="v", fm_shift=1.0, qk_norm=True,
-                 t_eps=0.05, round_latents=True):
+                 t_eps=0.05, round_latents=True, fm_source="noise", fm_source_noise=0.0, noise_cond=False):
         super().__init__()
+        # fm_source (STA-61): "noise" = x0 ~ N(0, I) (original); "copy" = FlowC2S, x0 = the previous frame's latents
+        # + fm_source_noise * N(0, I), so the flow carries frame t to frame t+1. noise_cond adds a second FiLM input, the
+        # embedding of a per-frame noise level alpha (Bi-flow's denoising axis, see BiFlowDynamicsModel).
+        assert fm_source in ("noise", "copy"), fm_source
+        self.fm_source, self.fm_source_noise, self.noise_cond = fm_source, float(fm_source_noise), bool(noise_cond)
         self.round_latents = round_latents  # False for a continuous tokenizer (STA-62): samples are used as they are
         assert fm_pred in ("v", "x"), fm_pred
         self.fm_pred, self.fm_shift, self.t_eps = fm_pred, float(fm_shift), float(t_eps)
@@ -46,9 +51,11 @@ class FlowDynamicsModel(nn.Module):
 
         self.latent_embed = nn.Linear(latent_dim, embed_dim)
         self.time_mlp = nn.Sequential(nn.Linear(time_dim, 2 * time_dim), nn.SiLU(), nn.Linear(2 * time_dim, time_dim))
+        if self.noise_cond:
+            self.alpha_mlp = nn.Sequential(nn.Linear(time_dim, 2 * time_dim), nn.SiLU(), nn.Linear(2 * time_dim, time_dim))
         self.transformer = STTransformer(
             embed_dim, num_heads, hidden_dim, num_blocks, causal=True,
-            conditioning_dim=self.action_dim + time_dim, qk_norm=qk_norm,
+            conditioning_dim=self.action_dim + time_dim * (2 if self.noise_cond else 1), qk_norm=qk_norm,
         )
         # zero-init output: the model starts by predicting v = 0 (or x1 = 0), as DiT's zero-init final layer
         self.output_mlp = nn.Linear(embed_dim, latent_dim)
@@ -57,9 +64,13 @@ class FlowDynamicsModel(nn.Module):
         pe_spatial = build_spatial_only_pe((H, W), patch_size, embed_dim, device='cpu', dtype=torch.float32)  # [1,P,E]
         self.register_buffer("pos_spatial_dec", pe_spatial, persistent=False)
 
-    def _conditioning(self, actions, t, T):
-        # actions: [B, T-1, A] or None; t: [B, T] flow time per frame -> [B, T, A + Dt]
+    def _conditioning(self, actions, t, T, alpha=None):
+        # actions: [B, T-1, A] or None; t: [B, T] flow time per frame; alpha: [B, T] noise level (noise_cond only)
+        # -> [B, T, A + Dt (+ Dt)]
         temb = self.time_mlp(timestep_embedding(t, self.time_dim))  # [B, T, Dt]
+        if self.noise_cond:
+            alpha = torch.zeros_like(t) if alpha is None else alpha
+            temb = torch.cat([temb, self.alpha_mlp(timestep_embedding(alpha, self.time_dim))], dim=-1)  # [B, T, 2Dt]
         if self.action_dim == 0:
             return temb
         B = t.shape[0]
@@ -70,11 +81,11 @@ class FlowDynamicsModel(nn.Module):
             a = torch.cat([torch.zeros_like(actions[:, :1]), actions[:, :T - 1]], dim=1).to(temb.dtype)  # [B, T, A]
         return torch.cat([a, temb], dim=-1)  # [B, T, A + Dt]
 
-    def net(self, latents, actions, t):
-        # latents: [B, T, P, L] (last frame noisy); actions: [B, T-1, A] or None; t: [B, T] -> raw output [B, T, P, L]
+    def net(self, latents, actions, t, alpha=None):
+        # latents: [B, T, P, L] (last frame noisy); actions: [B, T-1, A] or None; t, alpha: [B, T] -> raw output [B, T, P, L]
         B, T, P, L = latents.shape
         emb = self.latent_embed(latents.float()) + self.pos_spatial_dec.to(latents.device)  # [B, T, P, E]
-        out = self.transformer(emb, conditioning=self._conditioning(actions, t, T))  # [B, T, P, E]
+        out = self.transformer(emb, conditioning=self._conditioning(actions, t, T, alpha))  # [B, T, P, E]
         return self.output_mlp(out)  # [B, T, P, L]
 
     def velocity(self, latents, actions, t):
@@ -90,7 +101,7 @@ class FlowDynamicsModel(nn.Module):
         # DynamicsModel.forward returns (logits, mask, loss).
         B, T, P, L = latents.shape
         x1 = latents[:, -1].float()  # [B, P, L]
-        x0 = torch.randn_like(x1)  # [B, P, L]
+        x0 = self.source(latents[:, -2]) if self.fm_source == "copy" else torch.randn_like(x1)  # [B, P, L]
         s = shift_noise_level(torch.rand(B, device=latents.device), self.fm_shift)  # [B] noise level
         tt = 1 - s  # [B] flow time
         xt = tt[:, None, None] * x1 + s[:, None, None] * x0  # [B, P, L]
@@ -100,6 +111,15 @@ class FlowDynamicsModel(nn.Module):
         v_hat = self.velocity(noisy, conditioning, t)  # [B, P, L]
         loss = F.mse_loss(v_hat.float(), x1 - x0)
         return v_hat, None, loss
+
+    def source(self, prev, generator=None):
+        # FlowC2S source: previous frame's latents [B, P, L] + fm_source_noise * N(0, I)
+        prev = prev.float()
+        if self.fm_source_noise == 0:
+            return prev
+        # randn_like when unseeded: torch.randn(shape) fails under torch.compile(dynamic=True) (symbolic shape)
+        n = torch.randn_like(prev) if generator is None else torch.randn(prev.shape, device=prev.device, generator=generator)
+        return prev + self.fm_source_noise * n
 
     def round_to_grid(self, x):
         # continuous latents -> nearest FSQ grid value in [-1, 1] (same grid as FiniteScalarQuantizer)
@@ -112,7 +132,10 @@ class FlowDynamicsModel(nn.Module):
         # Euler integration from noise over the shifted grid; returns the rounded new frame [B, P, L]
         B, Tc, P, L = context_latents.shape
         dev = context_latents.device
-        x = torch.randn(B, P, L, device=dev, generator=generator)  # [B, P, L]
+        if self.fm_source == "copy":
+            x = self.source(context_latents[:, -1], generator)  # [B, P, L] FlowC2S: start from the last context frame
+        else:
+            x = torch.randn(B, P, L, device=dev, generator=generator)  # [B, P, L]
         s_grid = shift_noise_level(torch.linspace(1, 0, num_steps + 1, device=dev), self.fm_shift)  # [N+1], 1 -> 0
         t = torch.ones(B, Tc + 1, device=dev)  # [B, Tc+1]
         for k in range(num_steps):
@@ -134,6 +157,68 @@ class FlowDynamicsModel(nn.Module):
             new = self.sample_next(latents, cond, num_steps, generator=generator)  # [B, P, L]
             latents = torch.cat([latents, new[:, None].to(latents.dtype)], dim=1)
         return latents
+
+    @property
+    def model_type(self) -> str:
+        return ModelType.FlowDynamicsModel
+
+
+class BiFlowDynamicsModel(nn.Module):
+    """Video Bi-flow (Liu & Ritschel, ICCV 2025, arXiv 2503.06364), adapted to action-conditioned next-frame latents
+    (STA-61). The flow carries the previous frame z0 to the next frame z1 along a noised straight line (Eq. 4):
+    x_{t,alpha} = z0 + t (z1 - z0) + alpha n, t ~ U(0, 1), alpha ~ U(0, alpha_max), n ~ N(0, I). Two separate networks
+    (as the paper, Supp. A) share the FlowDynamicsModel backbone: `vel` regresses the velocity z1 - z0 and `den` the noise
+    n (Eq. 5); both see the clean context frames and are FiLM-conditioned on [action, emb(t), emb(alpha)].
+    Sampling (Eq. 8-9) starts at z_prev + eps n and walks the line (t, alpha): (0, eps) -> (1, 0),
+    dx/dk = v - eps * n_hat. eps (bf_eps) is an inference knob."""
+
+    def __init__(self, bf_alpha_max=1.0, bf_eps=0.1, **flow_kwargs):
+        super().__init__()
+        self.bf_alpha_max, self.bf_eps = float(bf_alpha_max), float(bf_eps)
+        flow_kwargs.update(fm_pred="v", fm_shift=1.0, fm_source="copy", fm_source_noise=0.0, noise_cond=True)
+        self.vel = FlowDynamicsModel(**flow_kwargs)
+        self.den = FlowDynamicsModel(**flow_kwargs)
+        self.round_latents = self.vel.round_latents
+
+    def _fields(self, ctx, x, conditioning, tt, alpha):
+        # ctx: [B, Tc, P, L] clean; x: [B, P, L] current point; tt, alpha: [B] -> velocity and noise [B, P, L] each
+        B, Tc = ctx.shape[:2]
+        inp = torch.cat([ctx.float(), x[:, None].float()], dim=1)  # [B, Tc+1, P, L]
+        t = torch.ones(B, Tc + 1, device=x.device)  # [B, Tc+1] context frames are clean data (t = 1, alpha = 0)
+        t[:, -1] = tt
+        a = torch.zeros(B, Tc + 1, device=x.device)  # [B, Tc+1]
+        a[:, -1] = alpha
+        v = self.vel.net(inp, conditioning, t, a)[:, -1]  # [B, P, L]
+        n = self.den.net(inp, conditioning, t, a)[:, -1]  # [B, P, L]
+        return v, n
+
+    def forward(self, latents, training=True, conditioning=None, targets=None):
+        # latents: [B, T, P, L] clean; conditioning: [B, T-1, A] -> (v_hat, None, loss) like FlowDynamicsModel
+        B = latents.shape[0]
+        z0, z1 = latents[:, -2].float(), latents[:, -1].float()  # [B, P, L]
+        t = torch.rand(B, device=latents.device)  # [B]
+        alpha = torch.rand(B, device=latents.device) * self.bf_alpha_max  # [B]
+        n = torch.randn_like(z1)  # [B, P, L]
+        x = z0 + t[:, None, None] * (z1 - z0) + alpha[:, None, None] * n  # [B, P, L]
+        v_hat, n_hat = self._fields(latents[:, :-1], x, conditioning, t, alpha)
+        loss = F.mse_loss(v_hat.float(), z1 - z0) + F.mse_loss(n_hat.float(), n)
+        return v_hat, None, loss
+
+    @torch.no_grad()
+    def sample_next(self, context_latents, conditioning, num_steps, generator=None):
+        # context_latents: [B, Tc, P, L]; conditioning: [B, Tc, A] or None -> new frame [B, P, L] (Euler, Eq. 8-9)
+        eps = self.bf_eps
+        z = context_latents[:, -1].float()  # [B, P, L]
+        x = z + eps * torch.randn(z.shape, device=z.device, generator=generator) if eps > 0 else z
+        B = z.shape[0]
+        ks = torch.linspace(0, 1, num_steps + 1, device=z.device)  # [N+1]
+        for i in range(num_steps):
+            k = ks[i]
+            v, n = self._fields(context_latents, x, conditioning, k.expand(B), (eps * (1 - k)).expand(B))
+            x = x + (ks[i + 1] - k) * (v.float() - eps * n.float())
+        return self.vel.round_to_grid(x) if self.round_latents else x
+
+    forward_inference = FlowDynamicsModel.forward_inference
 
     @property
     def model_type(self) -> str:

@@ -1,0 +1,30 @@
+# STA-61 FlowC2S final: sweep winner sigma 0.3 (33.95 dB @1 step at 8k), fine-tune 30k from the STA-62 FM.
+batch_size_per_gpu: 64
+gradient_accumulation_steps: 1
+n_updates: 30000
+learning_rate: 0.0001
+log_interval: 1000   # checkpoint + sampled-prediction PNG every 1000 steps
+
+use_actions: true
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 12
+
+dynamics_type: flow
+fm_pred: v
+fm_shift: 3.0
+fm_source: copy           # FlowC2S: x0 = x3 + fm_source_noise * N(0, I)
+fm_source_noise: 0.3
+init_weights: results/zelda_cont_final_tp/dynamics/checkpoints/dynamics_step_29000   # STA-62 noise FM (EMA), fresh optimizer
+qk_norm: true
+ema_decay: 0.999
+seed: 0
+
+video_tokenizer_path: results/zelda_cont_final_tp/video_tokenizer/checkpoints/video_tokenizer_step_29000   # frozen STA-62
+latent_actions_path: results/como_actions_v1_full   # CoMo IDM + train z stats, models/como.py CoMoActions
+action_file: data/zelda_train_como_z.npy             # raw z per train .h5 row
+
+# resume: set to a checkpoint dir (…/dynamics/checkpoints/dynamics_step_N)
+checkpoint:

@@ -301,6 +301,16 @@ class DynamicsConfig:
 	fm_shift: float = 1.0     # SD3 timestep shift toward noise, training and sampling (1.0 = uniform)
 	qk_norm: bool = True      # RMSNorm on queries/keys (flow only)
 	ema_decay: float = 0.0    # EMA of the weights, saved as ema_state_dict.pt and used for sampling (0 = off)
+	# Copy-last flow (STA-61). dynamics_type "flow" + fm_source "copy" = FlowC2S: the flow starts from the previous frame's
+	# latents + fm_source_noise * N(0, I) instead of N(0, I). dynamics_type "biflow" = Video Bi-flow (two nets, velocity +
+	# denoiser): training noise alpha ~ U(0, bf_alpha_max), sampling starts at prev + bf_eps * N(0, I).
+	fm_source: str = "noise"
+	fm_source_noise: float = 0.0
+	bf_alpha_max: float = 1.0
+	bf_eps: float = 0.1
+	# Fine-tune init (STA-61): a dynamics checkpoint dir whose weights (EMA if present) initialise the model and its EMA;
+	# optimizer, scheduler and step start fresh (unlike `checkpoint`, which resumes)
+	init_weights: Optional[str] = None
 	# set by train_dynamics.py from the tokenizer (STA-62): True = continuous latents, flow samples are not rounded to the grid
 	continuous_latents: bool = False
 	# Optimizer
