@@ -1,6 +1,6 @@
-% Master results table (STA-59). One table per dataset, one row per presented run.
+% Master results table. One table per dataset, one row per presented run.
 % To add a run: copy a row inside the right table, fill every cell, use -- for
-% "not relevant / not measured", and cite the PR in the notes. Only add runs we present.
+% "not relevant / not measured", and put the PR number(s) in the PR column. Only add runs we present.
 % Columns: Tokenizer (name, recon PSNR, SSIM) | Action model (name, NMI_adj) |
 %          Dynamics (name, PSNR, SSIM, LPIPS) | Notes
 \documentclass[10pt]{article}
@@ -8,15 +8,14 @@
 \usepackage{booktabs,multirow,xcolor,array,amsmath}
 \usepackage[hidelinks]{hyperref}
 \newcommand{\best}[1]{\textbf{#1}}
-\newcommand{\ub}{$^\dagger$}   % full-z actions: may leak the target, upper bound
 \newcommand{\pr}[1]{\href{https://github.com/stanmischler/tinyworlds/pull/#1}{\##1}}
 \newcommand{\head}{%
   \toprule
-  \multicolumn{3}{c}{Tokenizer} & \multicolumn{2}{c}{Action model} & \multicolumn{4}{c}{Dynamics} & \\
+  \multicolumn{3}{c}{Tokenizer} & \multicolumn{2}{c}{Action model} & \multicolumn{4}{c}{Dynamics} & & \\
   \cmidrule(lr){1-3}\cmidrule(lr){4-5}\cmidrule(lr){6-9}
-  & PSNR$\uparrow$ & SSIM$\uparrow$ & & NMI$_\text{adj}\uparrow$ & & PSNR$\uparrow$ & SSIM$\uparrow$ & LPIPS$\downarrow$ & Notes \\
+  & PSNR$\uparrow$ & SSIM$\uparrow$ & & NMI$_\text{adj}\uparrow$ & & PSNR$\uparrow$ & SSIM$\uparrow$ & LPIPS$\downarrow$ & PR & Notes \\
   \midrule}
-\newcolumntype{N}{>{\raggedright\arraybackslash}p{4.2cm}}
+\newcolumntype{N}{>{\raggedright\arraybackslash}p{3.6cm}}
 
 \begin{document}
 \small
@@ -25,77 +24,60 @@
 \paragraph{Metrics.}
 Tokenizer: reconstruction PSNR/SSIM on held-out frames.
 Action model: NMI$_\text{adj}$ between action codes and VLM-judged action groups, all groups, on the frozen
-action-group set (\pr{16}); same protocol for every model, random $\approx 0$.
+action-group set; same protocol for every model, random $\approx 0$.
 Dynamics: one-step next-frame prediction from real context on the held-out split (Push-T: NanoWM protocol, 3 autoregressive steps).
--- = not relevant or not measured. \ub{} = continuous CoMo action (full 128-d $z$): may leak the target, read as an upper bound.
+-- = not relevant or not measured.
 
 % ---------------------------------------------------------------------------
 \section*{Zelda (128 px)}
 Dynamics: 890 held-out windows, 3 context frames $\to$ next frame, decoded with context, 1 MaskGIT pass / 1 Euler step.
 Tokenizer recon: 220 held-out 7-frame windows. LPIPS marked $^*$ is at 4 Euler steps.
 
-\noindent\begin{tabular}{l c c l c l c c c N}
+\noindent\begin{tabular}{l c c l c l c c c l N}
 \head
--- & -- & -- & -- & -- & copy last frame & 27.43 & 0.681 & 0.098 & baseline \\
+-- & -- & -- & -- & -- & copy last frame & 27.43 & 0.681 & 0.098 & -- & baseline \\
 \midrule
-FSQ temporal & 32.42 & 0.933 & LAM (v3) & 0.110 & MaskGIT & 26.72 & 0.759 & -- & original Genie pipeline (\pr{4}, \pr{14}) \\
-FSQ temporal & 32.42 & 0.933 & warp LAM (WTA) & 0.471 & MaskGIT + copy prior & 27.80 & 0.801 & -- & first to beat copy-last (\pr{9}, \pr{14}) \\
-FSQ temporal & 32.42 & 0.933 & CoMo-ViT, 16 codes & 0.561 & MaskGIT & 28.02 & 0.817 & 0.096 & CoMo on MAE ViT-L features (\pr{20}) \\
-FSQ temporal & 32.42 & 0.933 & CoMo-ViT, 16 codes & 0.561 & flow matching & 28.34 & 0.816 & 0.099$^*$ & FM $>$ MaskGIT twin (\pr{19}) \\
-FSQ per-frame & 32.12 & 0.929 & CoMo-Tok, 16 codes & -- & MaskGIT & 27.39 & 0.789 & 0.109 & CoMo on our tokenizer features (\pr{21}) \\
-FSQ per-frame & 32.12 & 0.929 & CoMo-Tok, full $z$ & -- & MaskGIT & 29.06\ub & 0.865 & 0.085 & (\pr{21}) \\
-FSQ temporal & 32.42 & 0.933 & CoMo-ViT, full $z$ & 0.561 & flow matching & 29.81\ub & 0.884 & 0.086 & (\pr{19}) \\
+FSQ temporal & 32.42 & 0.933 & LAM (v3) & 0.110 & MaskGIT & 26.72 & 0.759 & -- & \pr{4}, \pr{14} & original Genie pipeline \\
+FSQ temporal & 32.42 & 0.933 & CoMo-ViT, 16 codes & 0.561 & MaskGIT & 28.02 & 0.817 & 0.096 & \pr{20} & CoMo on MAE ViT-L features \\
+FSQ temporal & 32.42 & 0.933 & CoMo-ViT, 16 codes & 0.561 & flow matching & 28.34 & 0.816 & 0.099$^*$ & \pr{19} & FM $>$ MaskGIT twin \\
+FSQ per-frame & 32.12 & 0.929 & CoMo-Tok, 16 codes & -- & MaskGIT & 27.39 & 0.789 & 0.109 & \pr{21} & CoMo on our tokenizer features \\
+FSQ per-frame & 32.12 & 0.929 & CoMo-Tok, full $z$ & -- & MaskGIT & 29.06 & 0.865 & 0.085 & \pr{21} &  \\
+FSQ temporal & 32.42 & 0.933 & CoMo-ViT, full $z$ & 0.561 & flow matching & 29.81 & 0.884 & 0.086 & \pr{19} &  \\
 \midrule
-continuous KL (16 ch) & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & flow matching & 33.78\ub & 0.937 & 0.036 & +4 dB from continuous tokens (\pr{24}) \\
-continuous KL (16 ch) & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & FlowC2S (copy-last flow) & \best{34.09}\ub & \best{0.940} & \best{0.034} & fine-tuned from row above (\pr{25}) \\
-continuous KL (16 ch) & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & Bi-flow & 33.72\ub & 0.933 & 0.038 & from scratch, 30k (\pr{25}) \\
+continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & flow matching & 33.78 & 0.937 & 0.036 & \pr{24} & +4 dB from continuous tokens \\
+continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & FlowC2S & \best{34.09} & \best{0.940} & \best{0.034} & \pr{25} & fine-tuned from row above \\
+continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & Bi-flow & 33.72 & 0.933 & 0.038 & \pr{25} & from scratch, 30k \\
 \midrule
--- & -- & -- & CoMo-ViT, full $z$ & 0.561 & CoMo decoder & 33.41\ub & 0.931 & 0.038 & CoMo decoder as dynamics (\pr{20}) \\
--- & -- & -- & CoMo-ViT, 16 codes & 0.561 & CoMo decoder & 30.15 & 0.844 & 0.050 & (\pr{20}) \\
+-- & -- & -- & CoMo-ViT, full $z$ & 0.561 & CoMo decoder & 33.41 & 0.931 & 0.038 & \pr{20} & CoMo decoder as dynamics \\
+-- & -- & -- & CoMo-ViT, 16 codes & 0.561 & CoMo decoder & 30.15 & 0.844 & 0.050 & \pr{20} &  \\
 \midrule
-\multicolumn{10}{l}{\textit{Merged training stages (STA-65) --- in progress}} \\
+\multicolumn{11}{l}{\textit{Merged training stages --- in progress}} \\
 \bottomrule
 \end{tabular}
 
-\smallskip
-\noindent NMI$_\text{adj}$ for CoMo-ViT is the 50k encoder clustered into 16 codes (10 k-means seeds: $0.550 \pm 0.010$); camera-shift oracle 0.485.
-CoMo-Tok was only scored on the older Zelda judge set (moves NMI$_\text{adj}$ 0.60 vs 0.74 for CoMo-ViT, \pr{18}).
 
 % ---------------------------------------------------------------------------
 \newpage
 \section*{Push-T (128 px, ground-truth actions)}
 NanoWM protocol: 21 val episodes, 256 clips, 1 real frame $\to$ 3 predicted autoregressively. NanoWM predictions re-scored with our scorer (validated against theirs).
 
-\noindent\begin{tabular}{l c c l c l c c c N}
+\noindent\begin{tabular}{l c c l c l c c c l N}
 \head
--- & -- & -- & -- & -- & copy last frame & 26.59 & 0.950 & 0.056 & baseline \\
--- & -- & -- & ground truth & -- & NanoWM-B/2 (100k) & \best{35.10} & \best{0.985} & \best{0.009} & external reference \\
-FSQ (4096 codes) & 42.84 & 0.996 & ground truth & -- & MaskGIT, 30k & 34.54 & 0.983 & 0.018 & FID 26.0 vs 9.0 (\pr{8}) \\
-\bottomrule
-\end{tabular}
-
-% ---------------------------------------------------------------------------
-\section*{Sonic (64 px)}
-Held-out split (10 blocks), 500 windows, 3 context frames $\to$ next frame, 10 MaskGIT passes. Tokenizer recon on the same windows.
-
-\noindent\begin{tabular}{l c c l c l c c c N}
-\head
--- & -- & -- & -- & -- & copy last frame & \best{23.98} & \best{0.629} & -- & baseline; no model beats it \\
-FSQ (author) & 17.23 & -- & LAM (author) & -- & MaskGIT (author) & 11.72 & 0.314 & -- & upstream's released weights \\
-FSQ temporal & 24.83 & 0.83 & LAM (v3, 8 codes) & 0.080 & MaskGIT, 20k & 18.57 & 0.583 & -- & (\pr{2}, \pr{3}) \\
-FSQ temporal & 24.83 & 0.83 & none (learned null) & -- & MaskGIT, 20k & 18.36 & 0.572 & -- & actions add almost nothing (\pr{3}) \\
+-- & -- & -- & -- & -- & copy last frame & 26.59 & 0.950 & 0.056 & -- & baseline \\
+-- & -- & -- & ground truth & -- & NanoWM-B/2 (100k) & \best{35.10} & \best{0.985} & \best{0.009} & -- & external reference \\
+FSQ temporal & 42.84 & 0.996 & ground truth & -- & MaskGIT, 30k & 34.54 & 0.983 & 0.018 & \pr{8} & FID 26.0 vs 9.0 \\
 \bottomrule
 \end{tabular}
 
 % ---------------------------------------------------------------------------
 \section*{Pong (64 px)}
-Held-out split (10 blocks), 1340 windows, 3 context frames $\to$ next frame, 10 MaskGIT passes. Final checkpoint.
+Held-out split, 1340 windows, 3 context frames $\to$ next frame, 10 MaskGIT passes. Final checkpoint.
 
-\noindent\begin{tabular}{l c c l c l c c c N}
+\noindent\begin{tabular}{l c c l c l c c c l N}
 \head
--- & -- & -- & -- & -- & copy last frame & 30.06 & 0.953 & -- & baseline \\
-FSQ temporal & 45.70 & 0.997 & LAM (16 codes) & 0.416 & MaskGIT, 39k & \best{42.39} & \best{0.993} & -- & (\pr{5}) \\
-FSQ temporal & 45.70 & 0.997 & random code & -- & MaskGIT, 39k & 35.95 & 0.978 & -- & same model, random action \\
+-- & -- & -- & -- & -- & copy last frame & 30.06 & 0.953 & -- & -- & baseline \\
+FSQ temporal & 45.70 & 0.997 & LAM (16 codes) & 0.416 & MaskGIT, 39k & \best{42.39} & \best{0.993} & -- & \pr{5} &  \\
+FSQ temporal & 45.70 & 0.997 & random code & -- & MaskGIT, 39k & 35.95 & 0.978 & -- & \pr{5} & same model, random action \\
 \bottomrule
 \end{tabular}
 
