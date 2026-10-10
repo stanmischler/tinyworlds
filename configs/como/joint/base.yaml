@@ -13,6 +13,7 @@ recon_weight: 1.0      # tokenizer smooth L1 (+ KL) next to CoMo's prediction MS
 stop_grad: false
 n_updates: 50000
 ckpt_interval: 5000
+grad_accum: 4         # 4 x 64: batch 256 does not fit an H100 in one pass (512 frames x 1024 tokens through the tokenizer)
 train_features: null
 test_features: null
 

@@ -205,16 +205,22 @@ def main():
         idx = torch.randint(0, len(starts), (cfg.batch_size,), generator=gen).numpy()
         b = batch(frames, feats, starts, idx, cfg.gap, cfg.jitter, gen, device)
         x_a, x_b = b[-2:] if len(b) == 5 else b[:2]
-        with amp():
-            out = fwd(*b)
         opt.zero_grad(set_to_none=True)
-        out['loss'].backward()
+        acc = cfg.get('grad_accum', 1)  # micro-batches: exact here (per-sample InfoNCE, mean losses over equal chunks)
+        logs = {}
+        for chunk in zip(*(t.chunk(acc) for t in b)):
+            with amp():
+                out = fwd(*chunk)
+            (out['loss'] / acc).backward()
+            for k in ('loss', 'recon', 'nce', 'tok_recon'):
+                if k in out:
+                    logs[k] = logs.get(k, 0.0) + out[k].item() / acc
         gn = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         opt.step()
         sched.step()
         if step % cfg.log_interval == 0:
-            rec = {'step': step, 'loss': out['loss'].item(), 'recon': out['recon'].item(), 'nce': out.get('nce', torch.zeros(())).item(),
-                   **({'tok_recon': out['tok_recon'].item()} if joint else {}),
+            rec = {'step': step, 'loss': logs['loss'], 'recon': logs['recon'], 'nce': logs.get('nce', 0.0),
+                   **({'tok_recon': logs['tok_recon']} if joint else {}),
                    'copy': F.mse_loss(x_a, x_b).item(), 'grad_norm': gn.item(), 'lr': sched.get_last_lr()[0],
                    'it_s': cfg.log_interval / max(time.time() - tl, 1e-6) if step > step0 else 0.0}
             tl = time.time()
