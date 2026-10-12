@@ -28,7 +28,7 @@ def smoke(steps: int = 200, log: int = 100, como_steps: int = 100, limit: int = 
     # real ones, and the data volume is shared
     work = "/tmp/bench"
     subprocess.run(["pip", "install", "-q", "uv==0.12.21"], check=True)  # NanoWM's re-scoring builds its venv with uv (no curl here)
-    subprocess.run(f"rm -rf {work} && mkdir -p {work} && cp -r {REPO_DIR}/. {work}/ 2>/dev/null; rm -rf {work}/results {work}/data && "
+    subprocess.run(f"rm -rf {work} && mkdir -p {work} && tar -C {REPO_DIR} --exclude=./data --exclude=./results -cf - . | tar -C {work} -xf - && "
                    f"mkdir -p {REPO_DIR}/results/smoke_results && ln -s {REPO_DIR}/results/smoke_results {work}/results && "
                    f"ln -s {REPO_DIR}/data {work}/data", shell=True, check=True)
     env = (f"PY=python STEPS={steps} LOG={log} COMO_STEPS={como_steps} LIMIT={limit} "
