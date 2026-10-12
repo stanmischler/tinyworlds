@@ -178,13 +178,16 @@ class PicoDoomDataset(VideoHDF5Dataset):
         super().__init__(video_path=video_path, transform=transform, save_path=save_path, train=train, num_frames=num_frames,
                          resize_to=resolution, fps=fps, preload_ratio=preload_ratio, load_start_index=300)
 
-class PushTDataset(Dataset):
-    """Push-T clips with their ground-truth actions, from scripts/data/convert_pusht.py's pusht_frames.h5.
-
-    The .h5 already holds every 5th env frame (NanoWM's frame_interval) and the 10-D action leading from each kept
-    frame to the next, so a clip is `num_frames` consecutive rows; clips never cross an episode boundary.
-    Returns (frames [T, C, H, W] in [-1, 1], actions [T - 1, A]): actions[t] drives frames[t] -> frames[t + 1].
+class EpisodeH5Dataset(Dataset):
+    """Clips of `num_frames` consecutive rows of an episode .h5 (frames uint8 [N, H, W, C] + episode_index [N], optional
+    actions [N, A]), never crossing an episode boundary. Written by scripts/data/convert_pusht.py, convert_dinowm.py
+    (rows = every 5th env frame, actions = the 10-D action leading from each kept frame to the next) and
+    convert_obj3d.py (every frame, no actions).
+    Returns (frames [T, C, H, W] in [-1, 1], actions [T - 1, A]): actions[t] drives frames[t] -> frames[t + 1]; A = 0 when
+    the .h5 has no actions (train_dynamics.py can replace self.actions with precomputed CoMo z, one row per frame).
     """
+    load_start_index = 0  # rows of an action_file line up with the .h5 rows from 0 (train_dynamics.py)
+
     def __init__(self, h5_path: str, num_frames: int = 4, preload_ratio: Optional[float] = None, load_chunk_size: int = 4096):
         self.num_frames = num_frames
         with h5py.File(h5_path, 'r') as f:
@@ -192,9 +195,9 @@ class PushTDataset(Dataset):
             n = total if preload_ratio is None else max(num_frames, min(total, int(total * preload_ratio)))
             # preallocate: building a list first would double the peak RAM (~23 GB at 128px)
             self.data = np.empty((n,) + f['frames'].shape[1:], dtype=np.uint8)  # [N, H, W, C]
-            for i in tqdm(range(0, n, load_chunk_size), desc=f"Loading {n} Push-T frames"):
+            for i in tqdm(range(0, n, load_chunk_size), desc=f"Loading {n} frames of {os.path.basename(h5_path)}"):
                 self.data[i:i + load_chunk_size] = f['frames'][i:min(i + load_chunk_size, n)]
-            self.actions = f['actions'][:n].astype(np.float32)  # [N, A]
+            self.actions = f['actions'][:n].astype(np.float32) if 'actions' in f else np.zeros((n, 0), np.float32)  # [N, A]
             episode = f['episode_index'][:n]  # [N]
         self.action_dim = self.actions.shape[1]
         # a clip may start at i when its last frame is in the same episode
@@ -207,8 +210,11 @@ class PushTDataset(Dataset):
     def __getitem__(self, index: int):
         s = self.starts[index]
         frames = torch.from_numpy(self.data[s:s + self.num_frames]).permute(0, 3, 1, 2).float() / 127.5 - 1.0  # [T, C, H, W]
-        actions = torch.from_numpy(self.actions[s:s + self.num_frames - 1])  # [T - 1, A]
+        actions = torch.from_numpy(np.asarray(self.actions[s:s + self.num_frames - 1], dtype=np.float32))  # [T - 1, A]
         return frames, actions
+
+
+PushTDataset = EpisodeH5Dataset  # STA-29 name
 
 
 class ZeldaDataset(VideoHDF5Dataset):

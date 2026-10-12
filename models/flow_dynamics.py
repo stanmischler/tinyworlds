@@ -34,8 +34,9 @@ class FlowDynamicsModel(nn.Module):
 
     def __init__(self, frame_size=(128, 128), patch_size=4, embed_dim=256, num_heads=8, hidden_dim=512, num_blocks=12,
                  latent_dim=6, num_bins=4, conditioning_dim=0, time_dim=64, fm_pred="v", fm_shift=1.0, qk_norm=True,
-                 t_eps=0.05, round_latents=True, fm_source="noise", fm_source_noise=0.0, noise_cond=False):
+                 t_eps=0.05, round_latents=True, fm_source="noise", fm_source_noise=0.0, noise_cond=False, random_context=False):
         super().__init__()
+        self.random_context = bool(random_context)  # train on the first Tc + 1 frames, Tc ~ U{1..T-1} per batch
         # fm_source (STA-61): "noise" = x0 ~ N(0, I) (original); "copy" = FlowC2S, x0 = the previous frame's latents
         # + fm_source_noise * N(0, I), so the flow carries frame t to frame t+1. noise_cond adds a second FiLM input, the
         # embedding of a per-frame noise level alpha (Bi-flow's denoising axis, see BiFlowDynamicsModel).
@@ -99,6 +100,10 @@ class FlowDynamicsModel(nn.Module):
     def forward(self, latents, training=True, conditioning=None, targets=None):
         # latents: [B, T, P, L] clean FSQ (or continuous) latents; conditioning: [B, T-1, A] actions. Returns (v_hat, None, loss) like
         # DynamicsModel.forward returns (logits, mask, loss).
+        if self.random_context and training and latents.shape[1] > 2:
+            Tc = int(torch.randint(1, latents.shape[1], ()))  # context frames, 1 .. T-1 (one draw per batch: static shapes per Tc)
+            latents = latents[:, :Tc + 1]  # [B, Tc+1, P, L]
+            conditioning = None if conditioning is None else conditioning[:, :Tc]  # [B, Tc, A]
         B, T, P, L = latents.shape
         x1 = latents[:, -1].float()  # [B, P, L]
         x0 = self.source(latents[:, -2]) if self.fm_source == "copy" else torch.randn_like(x1)  # [B, P, L]

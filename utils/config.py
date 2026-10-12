@@ -306,6 +306,9 @@ class DynamicsConfig:
 	# denoiser): training noise alpha ~ U(0, bf_alpha_max), sampling starts at prev + bf_eps * N(0, I).
 	fm_source: str = "noise"
 	fm_source_noise: float = 0.0
+	# Variable context (flow only): each training batch keeps its first Tc + 1 frames, Tc ~ U{1, ..., T - 1}, so
+	# the model also learns to predict from short histories (NanoWM's 1 context frame -> 3 rollout). False = always T - 1.
+	fm_random_context: bool = False
 	bf_alpha_max: float = 1.0
 	bf_eps: float = 0.1
 	# Fine-tune init (STA-61): a dynamics checkpoint dir whose weights (EMA if present) initialise the model and its EMA;

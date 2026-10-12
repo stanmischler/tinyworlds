@@ -144,7 +144,8 @@ def train(dataset: str = "ZELDA", overrides: list[str] | None = None, training_c
 
     # the .h5 fixes the resolution (zelda/picodoom are 128, sonic/pong are 64) and the models
     # are built from frame_size, so read it off the data rather than trusting the config default
-    h5_path = f"{REPO_DIR}/data/{dataset.lower()}_frames.h5"
+    from datasets.data_utils import EPISODE_H5
+    h5_path = REPO_DIR + EPISODE_H5.get(dataset, f"/data/{dataset.lower()}_frames.h5")
     if os.path.exists(h5_path):
         import h5py
 

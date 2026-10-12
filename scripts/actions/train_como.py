@@ -18,6 +18,10 @@ prediction PNG, and the held-out LAM judge (scripts/eval/lam_judge.py, k-means k
     python scripts/actions/train_como.py --config configs/como/zelda.yaml -- run_name=como_zelda n_updates=50000
     python scripts/actions/train_como.py --config configs/como/zelda.yaml -- fake_features=1500 device=cpu ...  # CPU code check
 
+features: tokenizer + live_features: true (configs/como/obj3d.yaml): no feature table; the frozen tokenizer
+(tokenizer_path) encodes each batch's frames on the GPU (a 150 GB table for OBJ3D otherwise). Same checkpoint format as
+the precomputed-table runs, so every eval adapter loads it unchanged.
+
 features: joint (STA-65, configs/como/joint/): no feature table; a per-frame video tokenizer (cfg.tokenizer) is trained from
 scratch with the IDM + decoder (models/como.py JointCoMo), and each checkpoint also exports it as a standard tokenizer
 checkpoint (results/<run>/video_tokenizer/checkpoints/video_tokenizer_step_N). Logged in addition: tokenizer recon loss,
@@ -41,9 +45,9 @@ from omegaconf import OmegaConf
 from PIL import Image
 
 from datasets.split import segments
-from models.como import CoMo, JointCoMo, MAE_TOKENS, MAE_DIM
+from models.como import CoMo, JointCoMo, TokenizerFeatures, MAE_TOKENS, MAE_DIM
 from models.video_tokenizer import VideoTokenizer
-from utils.utils import COMO_ARCH_KEYS, MODEL_CHECKPOINT, OPTIMIZER_CHECKPOINT, STATE, video_tokenizer_kwargs
+from utils.utils import COMO_ARCH_KEYS, MODEL_CHECKPOINT, OPTIMIZER_CHECKPOINT, STATE, load_videotokenizer_from_checkpoint, video_tokenizer_kwargs
 
 
 
@@ -153,15 +157,26 @@ def main():
     os.makedirs(viz_dir, exist_ok=True)
 
     joint = cfg.get('features') == 'joint'
+    live = cfg.get('features') == 'tokenizer' and cfg.get('live_features', False)  # encode frames per batch
+    pixels_only = joint or live
     t0 = time.time()
-    frames, feats, segs = load_split(cfg, cfg.train_h5, None if joint else cfg.train_features, device, cfg.fake_features, cfg.get('feat_device'))
+    frames, feats, segs = load_split(cfg, cfg.train_h5, None if pixels_only else cfg.train_features, device, cfg.fake_features, cfg.get('feat_device'))
     span = cfg.gap + cfg.jitter
     starts = valid_starts(segs, span, cfg.start_index if not cfg.fake_features else 0)
-    vframes, vfeats, vsegs = load_split(cfg, cfg.test_h5, None if joint else cfg.test_features, device, cfg.fake_features, 'cpu')  # only the val batch is used
+    vframes, vfeats, vsegs = load_split(cfg, cfg.test_h5, None if pixels_only else cfg.test_features, device, cfg.fake_features, 'cpu')  # only the val batch is used
     vstarts = valid_starts(vsegs, span)
     vgen = torch.Generator().manual_seed(1)
     vidx = torch.randperm(len(vstarts), generator=vgen)[:cfg.val_batch].numpy()
-    vb = batch(vframes, vfeats, vstarts, vidx, cfg.gap, cfg.jitter, vgen, device)
+    featurize = lambda b: b  # noqa: E731
+    if live:  # frozen tokenizer features of the 3 pixel batches (t, t+n, t+n+delta) -> the precomputed-table layout
+        tok_feats = TokenizerFeatures(load_videotokenizer_from_checkpoint(cfg.tokenizer_path, device)[0], cfg.tokenizer_feature, cfg.merge).to(device)
+        assert cfg.get('history', 0) == 0, 'live_features: per-frame features only'
+
+        @torch.no_grad()
+        def featurize(b):
+            # (x_t, x_b, x_j) float [B, C, H, W] -> (f_t, f_b, f_j [B, S, D], x_t, x_b)
+            return (*[torch.cat([tok_feats(x[i:i + 64, None]).float() for i in range(0, len(x), 64)]) for x in b], b[0], b[1])
+    vb = featurize(batch(vframes, vfeats, vstarts, vidx, cfg.gap, cfg.jitter, vgen, device))
     print(f'train: {len(frames)} frames, {len(segs)} segments, {len(starts)} transitions; held-out {len(vstarts)} '
           f'(batch {len(vidx)}); loaded in {time.time() - t0:.0f} s', flush=True)
 
@@ -169,6 +184,8 @@ def main():
         tokenizer = VideoTokenizer(**video_tokenizer_kwargs(cfg.tokenizer))
         hp = cfg.frame_size // cfg.tokenizer.patch_size
         cfg.feat_tokens, cfg.feat_dim = (hp // cfg.merge) ** 2, cfg.tokenizer.embed_dim * cfg.merge ** 2
+    elif live:
+        cfg.feat_tokens, cfg.feat_dim = vb[0].shape[1:]
     else:
         cfg.feat_tokens, cfg.feat_dim = feats.shape[1:]  # MAE [197, 1024] or tokenizer features (STA-43); saved in state.pt
     model = CoMo(**{k: cfg[k] for k in COMO_ARCH_KEYS if k in cfg})
@@ -203,7 +220,7 @@ def main():
     tl = time.time()
     for step in range(step0, cfg.n_updates + 1):
         idx = torch.randint(0, len(starts), (cfg.batch_size,), generator=gen).numpy()
-        b = batch(frames, feats, starts, idx, cfg.gap, cfg.jitter, gen, device)
+        b = featurize(batch(frames, feats, starts, idx, cfg.gap, cfg.jitter, gen, device))
         x_a, x_b = b[-2:] if len(b) == 5 else b[:2]
         opt.zero_grad(set_to_none=True)
         acc = cfg.get('grad_accum', 1)  # micro-batches: exact here (per-sample InfoNCE, mean losses over equal chunks)

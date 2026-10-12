@@ -309,7 +309,7 @@ def main():
             wandb.log(log_dict, step=i)
             log_system_metrics(i)
             log_learning_rate(optimizers[0], i)
-            if args.use_actions and not use_gt_actions:
+            if args.use_actions and not use_gt_actions and getattr(latent_action_model, 'centroids', torch.ones(1)).numel() > 0:
                 action_indices = latent_action_model.quantizer.get_indices_from_latents(quantized_actions)
                 log_action_distribution(action_indices, i, args.n_actions)
 
