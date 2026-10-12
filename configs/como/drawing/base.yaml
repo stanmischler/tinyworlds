@@ -1,0 +1,30 @@
+# STA-76 drawing model: encoder + CoMo IDM + ONE decoder (redraw with a NULL action = decoder, predict with the action =
+# dynamics), all trained from scratch (models/drawing.py, scripts/actions/train_como.py features: drawing).
+# Merged on top of the CoMo Zelda recipe (batch 256, lr 1e-4 linear decay, gap 4, jitter 1, IDM 768/4, z 8x16):
+#   python scripts/actions/train_como.py --config configs/como/zelda.yaml,configs/como/drawing/base.yaml,configs/como/drawing/<p|f1>.yaml
+# Full local recipe (data, both runs, evals): experiments/drawing/run_local.sh
+features: drawing
+train_features: null
+test_features: null
+n_updates: 50000
+ckpt_interval: 5000
+checkpoint: auto       # resume from this run's newest checkpoint if there is one (relaunch the same command after a crash)
+grad_accum: 4          # 4 x 64 = batch 256; raise it on smaller GPUs (table in experiments/drawing/README.md)
+use_wandb: false       # set true (and `wandb login`) to log to W&B
+
+# encoder (= J1 / STA-62 per-frame tokenizer encoder): 128 px, patch 4 -> 1024 tokens of 256, 8 blocks; LayerNorm, 2x2 merge
+# -> z = 256 tokens x 1024, read by both the IDM and the decoder
+enc_patch_size: 4
+enc_dim: 256
+enc_heads: 8
+enc_mlp: 512
+enc_depth: 8
+merge: 2
+
+# decoder: 768 wide, 12 blocks (~85M, CoMo's predictor size), 8 px output patches; QK-norm ST-transformer (spatial only)
+dec_dim: 768
+dec_depth: 12
+dec_heads: 12
+dec_mlp: 3072
+redraw_weight: 0.5     # = J1's tokenizer recon weight 1 in smooth-L1 units (smooth-L1 = 0.5 x MSE for errors < 1)
+contrastive_weight: 0.004

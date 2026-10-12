@@ -1,0 +1,7 @@
+# F1: flow-matching decoder, STA-28/62 FM recipe in pixel space: noise source, v-pred, shift 3, EMA 0.999, QK-norm;
+# frames scaled to unit RMS (pixel_scale, measured on the train frames)
+run_name: drawing_f1
+decoder_type: fm
+fm_shift: 3.0
+time_dim: 64
+ema_decay: 0.999

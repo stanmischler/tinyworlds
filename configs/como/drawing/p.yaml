@@ -1,0 +1,4 @@
+# P: plain decoder (one pass, pixel MSE)
+run_name: drawing_p
+decoder_type: plain
+ema_decay: 0
