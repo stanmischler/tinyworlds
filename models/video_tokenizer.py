@@ -118,7 +118,11 @@ class VideoTokenizer(nn.Module):
 
     def forward(self, frames):
         # encode frames to latent representations, quantize (or bottleneck), and decode back to frames
-        embeddings = self.encoder(frames)  # [B, T, P, L]
+        return self.reconstruct(frames, self.encoder(frames))
+
+    def reconstruct(self, frames, embeddings):
+        # frames [B, T, C, H, W], their encoder output [B, T, P, L or 2L] -> (recon loss, x_hat); split from forward so a joint
+        # model (models/como.py JointCoMo) can reuse the encoder pass
         z, z_det, kl = self._bottleneck(embeddings)  # [B, T, P, L]
         if self.continuous and self.training:
             with torch.no_grad():  # running RMS of encode()'s latents -> unit-RMS latents for the dynamics model

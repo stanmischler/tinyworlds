@@ -1,0 +1,30 @@
+# STA-65 J1: per-frame KL tokenizer trained from scratch jointly with the CoMo IDM + decoder (models/como.py JointCoMo).
+# Merged on top of configs/como/zelda.yaml (STA-38/43 recipe: batch 256, lr 1e-4, gap 4, jitter 1, IDM 768/4, decoder 768/12 p8):
+#   --config configs/como/zelda.yaml,configs/como/joint/base.yaml,configs/como/joint/<j1|j1_sg>.yaml
+# Comparator: como_tok_pf_h (configs/como/tok/pf_h.yaml), same IDM input layout (hidden 256-d, 2x2 merge) on a frozen tokenizer.
+#   TINYWORLDS_GPU=H100 modal run --detach scripts/infra/modal_train.py::train_como \
+#     --config configs/como/zelda.yaml,configs/como/joint/base.yaml,configs/como/joint/j1.yaml
+# Evals (held-out Zelda): lam_judge runs per checkpoint; next-frame and tokenizer recon:
+#   modal run --detach scripts/infra/modal_train.py::eval_como_pred --arms "j1_50k=como_joint_j1/como/checkpoints/como_step_50000"
+#   scripts/eval/tokenizer_frame_eval.py --run "j1=results/como_joint_j1/video_tokenizer/checkpoints/video_tokenizer_step_50000"
+features: joint
+merge: 2               # 1024 tokenizer tokens -> 256 IDM tokens of 1024-d (as STA-43)
+recon_weight: 1.0      # tokenizer smooth L1 (+ KL) next to CoMo's prediction MSE
+stop_grad: false
+n_updates: 50000
+ckpt_interval: 5000
+grad_accum: 4         # 4 x 64: batch 256 does not fit an H100 in one pass (512 frames x 1024 tokens through the tokenizer)
+train_features: null
+test_features: null
+
+# the tokenizer: configs/experiments/zelda_continuous/tokenizer_final_pf.yaml (STA-62 KL c16 per-frame, recon 44.12 dB at 30k)
+tokenizer:
+  patch_size: 4
+  embed_dim: 256
+  num_heads: 8
+  hidden_dim: 512
+  num_blocks: 8
+  latent_dim: 16
+  per_frame: true
+  bottleneck: kl
+  kl_weight: 1.0e-6

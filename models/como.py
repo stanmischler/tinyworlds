@@ -93,10 +93,14 @@ class TokenizerFeatures(nn.Module):
         enc = self.tok.encoder
         h = enc.transformer(enc.patch_embed(x))[:, -1]  # [N, P, E] (causal: the last frame sees the whole history)
         f = self.tok.quantizer(enc.latent_head(h)) if self.mode == 'quant' else enc.latent_head[0](h)  # [N, P, L or E]
-        N, P, D = f.shape
-        hp, m = self.hp, self.merge
-        f = f.view(N, hp // m, m, hp // m, m, D).permute(0, 1, 3, 2, 4, 5)  # [N, Hp/m, Wp/m, m, m, D]
-        return f.reshape(N, (hp // m) ** 2, m * m * D)
+        return merge_tokens(f, self.hp, self.merge)
+
+
+def merge_tokens(f, hp, m):
+    # f [N, P, D] on an hp x hp grid -> m x m space-to-depth [N, P/m^2, m^2 D]
+    N, P, D = f.shape
+    f = f.view(N, hp // m, m, hp // m, m, D).permute(0, 1, 3, 2, 4, 5)  # [N, Hp/m, Wp/m, m, m, D]
+    return f.reshape(N, (hp // m) ** 2, m * m * D)
 
 
 class MotionIDM(nn.Module):
@@ -190,6 +194,42 @@ class CoMo(nn.Module):
             out['nce'] = nce
             loss = loss + self.contrastive_weight * nce
         out['loss'] = loss
+        return out
+
+
+class JointCoMo(nn.Module):
+    """STA-65 J1: per-frame video tokenizer trained jointly with CoMo, from scratch. The tokenizer encoder replaces the frozen
+    feature extractor: its hidden state (after the latent head's LayerNorm, as TokenizerFeatures 'hidden') feeds the IDM, and
+    the tokenizer's own bottleneck + decoder reconstruct frames t and t+n. The FDM (CoMo decoder) still reads frame t pixels.
+    loss = CoMo (pred MSE + InfoNCE) + recon_weight * tokenizer recon (smooth L1 + KL).
+    stop_grad (J1-sg): IDM features detached, so only the reconstruction trains the encoder."""
+
+    def __init__(self, tokenizer, como, merge=2, recon_weight=1.0, stop_grad=False):
+        super().__init__()
+        self.tokenizer, self.como = tokenizer, como
+        self.merge, self.recon_weight, self.stop_grad = merge, recon_weight, stop_grad
+        self.hp = tokenizer.encoder.patch_embed.Hp
+
+    def features(self, x):
+        # x: [N, T, C, H, W] -> (IDM features [N, T, S, D], encoder output [N, T, P, L or 2L])
+        enc = self.tokenizer.encoder
+        h = enc.latent_head[0](enc.transformer(enc.patch_embed(x)))  # [N, T, P, E]
+        N, T = h.shape[:2]
+        return merge_tokens(h.flatten(0, 1), self.hp, self.merge).view(N, T, -1, h.shape[-1] * self.merge ** 2), enc.latent_head[1](h)
+
+    def forward(self, x_a, x_b, x_j):
+        # x_a, x_b, x_j: pixels [B, C, H, W] of frames t, t+n, t+n+delta
+        x = torch.stack([x_a, x_b], 1)  # [B, 2, C, H, W]; per-frame tokenizer: the two frames never attend to each other
+        f, emb = self.features(x)  # [B, 2, S, D], [B, 2, P, L or 2L]
+        tok_recon, x_hat = self.tokenizer.reconstruct(x, emb)
+        with torch.no_grad():  # only the no-grad InfoNCE positive branch reads it
+            f_j = self.features(x_j[:, None])[0][:, 0]
+        f_a, f_b = f[:, 0], f[:, 1]
+        if self.stop_grad:
+            f_a, f_b = f_a.detach(), f_b.detach()
+        out = self.como(f_a, f_b, f_j, x_a, x_b)
+        out['tok_recon'], out['x_hat'] = tok_recon, x_hat
+        out['loss'] = out['loss'] + self.recon_weight * tok_recon
         return out
 
 
