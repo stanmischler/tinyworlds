@@ -19,7 +19,7 @@
 
 \begin{document}
 \small
-\noindent{\Large\bfseries tinyworlds --- results so far}\hfill last updated 2026-10-10
+\noindent{\Large\bfseries tinyworlds --- results so far}\hfill last updated 2026-10-12
 
 \paragraph{Metrics.}
 Tokenizer: reconstruction PSNR/SSIM on held-out frames.
@@ -51,6 +51,7 @@ continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 
 -- & -- & -- & CoMo-ViT, 16 codes & 0.561 & CoMo decoder & 30.15 & 0.844 & 0.050 & \pr{20} &  \\
 \midrule
 \multicolumn{11}{l}{\textit{Merged training stages --- in progress}} \\
+continuous per-frame KL-VAE, joint & 45.01 & \best{0.995} & CoMo-Tok joint, full $z$ & 0.510 & CoMo decoder & 33.48 & 0.926 & 0.040 & \pr{30} & tokenizer + CoMo trained jointly, 50k \\
 \bottomrule
 \end{tabular}
 
