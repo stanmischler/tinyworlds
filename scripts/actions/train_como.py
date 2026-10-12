@@ -22,6 +22,13 @@ features: joint (STA-65, configs/como/joint/): no feature table; a per-frame vid
 scratch with the IDM + decoder (models/como.py JointCoMo), and each checkpoint also exports it as a standard tokenizer
 checkpoint (results/<run>/video_tokenizer/checkpoints/video_tokenizer_step_N). Logged in addition: tokenizer recon loss,
 and held-out tokenizer PSNR.
+
+features: drawing (STA-76, configs/como/drawing/): models/drawing.py DrawingModel, trained from scratch: encoder -> wide z ->
+IDM, and ONE decoder that redraws frames t and t+n from their z with a learned NULL action and predicts t+n from z(t) and
+the action (decoder_type plain or fm). Logged: predict / redraw losses, held-out PSNR of the prediction (FM: 1 Euler
+step), of copy-last, with shuffled actions, and of the redraw. FM keeps an EMA of all weights (ema_decay), used for the
+held-out batch and saved as ema_state_dict.pt (the evals load it). checkpoint: auto resumes from the newest checkpoint
+of this run_name, so relaunching the same command after a crash continues it.
 """
 
 import argparse
@@ -42,8 +49,9 @@ from PIL import Image
 
 from datasets.split import segments
 from models.como import CoMo, JointCoMo, MAE_TOKENS, MAE_DIM
+from models.drawing import DrawingModel
 from models.video_tokenizer import VideoTokenizer
-from utils.utils import COMO_ARCH_KEYS, MODEL_CHECKPOINT, OPTIMIZER_CHECKPOINT, STATE, video_tokenizer_kwargs
+from utils.utils import COMO_ARCH_KEYS, DRAWING_ARCH_KEYS, EMA_CHECKPOINT, MODEL_CHECKPOINT, OPTIMIZER_CHECKPOINT, STATE, video_tokenizer_kwargs
 
 
 
@@ -96,6 +104,40 @@ def batch(frames, feats, starts, idx, gap, jitter, gen, device):
 def save_png(path, x_a, x_b, pred, n=8):
     rows = torch.cat([torch.cat([x_a[i], x_b[i], pred[i].clamp(-1, 1)], 2) for i in range(min(n, len(x_a)))], 1)  # [C, nH, 3W]
     Image.fromarray(((rows + 1) * 127.5).round().byte().permute(1, 2, 0).cpu().numpy()).save(path)
+
+
+def unit_psnr(pred, tgt):
+    # pixels in [-1, 1] [B, C, H, W] -> mean PSNR (dB) of the per-sample PSNR in [0, 1] range
+    mse = ((pred.float().clamp(-1, 1) - tgt.float()) / 2).pow(2).flatten(1).mean(1)
+    return (-10 * torch.log10(mse.clamp_min(1e-10))).mean().item()
+
+
+@torch.no_grad()
+def held_out_drawing(model, vb, amp, chunk):
+    # DrawingModel (eval weights) on the fixed held-out batch, in chunks of `chunk` pairs -> (metrics, predictions)
+    model.eval()
+    gen = torch.Generator(device=vb[0].device).manual_seed(0)  # same FM noise at every evaluation
+    acc, preds = {}, []
+    for x_a, x_b, x_j in zip(*(t.split(chunk) for t in vb)):
+        with amp():
+            out = model(x_a, x_b, x_j)
+            f_a, f_b = model.encoder(x_a), model.encoder(x_b)
+            pred = model.draw(f_a, out['z'], 1, gen)
+            res = {'val/predict': out['predict'].item(), 'val/redraw': out['redraw'].item(), 'val/nce': out.get('nce', torch.zeros(())).item(),
+                   'val/pred_psnr': unit_psnr(pred, x_b), 'val/copy_psnr': unit_psnr(x_a, x_b),
+                   'val/shuffled_psnr': unit_psnr(model.draw(f_a, out['z'].roll(1, 0), 1, gen), x_b),
+                   'val/redraw_psnr': unit_psnr(model.draw(f_b, model.null(len(x_b)), 1, gen), x_b)}
+        for k, v in res.items():
+            acc[k] = acc.get(k, 0.0) + v * len(x_a) / len(vb[0])
+        preds.append(pred)
+        acc.setdefault('_z', []).append(out['z'].float().flatten(1))
+    model.train()
+    z = torch.cat(acc.pop('_z'))  # [B, A]
+    zn = F.normalize(z, dim=1)
+    acc['val/shuffle_gap_db'] = acc['val/pred_psnr'] - acc['val/shuffled_psnr']
+    acc['val/z_std'] = z.std(0).mean().item()
+    acc['val/z_cos'] = (zn @ zn.T)[~torch.eye(len(z), dtype=torch.bool, device=z.device)].mean().item()
+    return acc, torch.cat(preds)
 
 
 @torch.no_grad()
@@ -153,11 +195,13 @@ def main():
     os.makedirs(viz_dir, exist_ok=True)
 
     joint = cfg.get('features') == 'joint'
+    drawing = cfg.get('features') == 'drawing'
+    pixels_only = joint or drawing
     t0 = time.time()
-    frames, feats, segs = load_split(cfg, cfg.train_h5, None if joint else cfg.train_features, device, cfg.fake_features, cfg.get('feat_device'))
+    frames, feats, segs = load_split(cfg, cfg.train_h5, None if pixels_only else cfg.train_features, device, cfg.fake_features, cfg.get('feat_device'))
     span = cfg.gap + cfg.jitter
     starts = valid_starts(segs, span, cfg.start_index if not cfg.fake_features else 0)
-    vframes, vfeats, vsegs = load_split(cfg, cfg.test_h5, None if joint else cfg.test_features, device, cfg.fake_features, 'cpu')  # only the val batch is used
+    vframes, vfeats, vsegs = load_split(cfg, cfg.test_h5, None if pixels_only else cfg.test_features, device, cfg.fake_features, 'cpu')  # only the val batch is used
     vstarts = valid_starts(vsegs, span)
     vgen = torch.Generator().manual_seed(1)
     vidx = torch.randperm(len(vstarts), generator=vgen)[:cfg.val_batch].numpy()
@@ -169,26 +213,42 @@ def main():
         tokenizer = VideoTokenizer(**video_tokenizer_kwargs(cfg.tokenizer))
         hp = cfg.frame_size // cfg.tokenizer.patch_size
         cfg.feat_tokens, cfg.feat_dim = (hp // cfg.merge) ** 2, cfg.tokenizer.embed_dim * cfg.merge ** 2
-    else:
+    elif not drawing:
         cfg.feat_tokens, cfg.feat_dim = feats.shape[1:]  # MAE [197, 1024] or tokenizer features (STA-43); saved in state.pt
-    model = CoMo(**{k: cfg[k] for k in COMO_ARCH_KEYS if k in cfg})
+    if drawing:
+        model = DrawingModel(**{k: cfg[k] for k in DRAWING_ARCH_KEYS if k in cfg})
+    else:
+        model = CoMo(**{k: cfg[k] for k in COMO_ARCH_KEYS if k in cfg})
     if joint:
         model = JointCoMo(tokenizer, model, cfg.merge, cfg.recon_weight, cfg.stop_grad)
     model = model.to(device)
     como = model.como if joint else model
     n_idm = sum(p.numel() for p in como.idm.parameters())
     n_dec = sum(p.numel() for p in como.decoder.parameters())
-    n_tok = sum(p.numel() for p in model.tokenizer.parameters()) if joint else 0
-    print(f'params: IDM {n_idm / 1e6:.1f}M, decoder {n_dec / 1e6:.1f}M, tokenizer {n_tok / 1e6:.1f}M', flush=True)
+    n_tok = sum(p.numel() for p in (model.encoder if drawing else model.tokenizer).parameters()) if pixels_only else 0
+    print(f'params: IDM {n_idm / 1e6:.1f}M, decoder {n_dec / 1e6:.1f}M, encoder/tokenizer {n_tok / 1e6:.1f}M', flush=True)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate, betas=tuple(cfg.betas), eps=1e-8, weight_decay=cfg.weight_decay)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: max(cfg.lr_floor, 1 - s / cfg.n_updates))
     step0 = 0
+    if cfg.checkpoint == 'auto':  # newest checkpoint of this run, or a fresh start
+        done = [int(d.rsplit('_', 1)[1]) for d in os.listdir(ckpt_dir) if d.startswith('como_step_') and os.path.exists(f'{ckpt_dir}/{d}/{STATE}')]
+        cfg.checkpoint = f'{ckpt_dir}/como_step_{max(done)}' if done else None
+    if drawing and model.fm and not cfg.checkpoint:  # unit-RMS pixels for the flow (as the unit-RMS latents of STA-62)
+        idx = torch.randperm(len(frames), generator=torch.Generator().manual_seed(0))[:4096].to(frames.device)
+        model.pixel_scale.fill_(to_pixels(frames[idx]).pow(2).mean().sqrt().item())
+        print(f'pixel_scale (train RMS) {model.pixel_scale.item():.4f}', flush=True)
+    ema = None
+    if drawing and cfg.get('ema_decay', 0) > 0:  # FM recipe (STA-28): EMA of all weights, used for eval
+        import copy
+        ema = copy.deepcopy(model).eval().requires_grad_(False)
     if cfg.checkpoint:
         model.load_state_dict(torch.load(f'{cfg.checkpoint}/{MODEL_CHECKPOINT}', map_location=device, weights_only=True))
         st = torch.load(f'{cfg.checkpoint}/{STATE}', map_location='cpu', weights_only=False)
         opt.load_state_dict(torch.load(f'{cfg.checkpoint}/{OPTIMIZER_CHECKPOINT}', map_location=device, weights_only=False))
         sched.load_state_dict(st['scheduler'])
         step0 = st['step']
+        if ema is not None:
+            ema.load_state_dict(torch.load(f'{cfg.checkpoint}/{EMA_CHECKPOINT}', map_location=device, weights_only=True))
         gen.manual_seed(cfg.seed + step0)
         print(f'resumed from {cfg.checkpoint} at step {step0}', flush=True)
     amp = (lambda: torch.autocast('cuda', dtype=torch.bfloat16)) if cfg.amp and device.startswith('cuda') else contextlib.nullcontext
@@ -212,20 +272,30 @@ def main():
             with amp():
                 out = fwd(*chunk)
             (out['loss'] / acc).backward()
-            for k in ('loss', 'recon', 'nce', 'tok_recon'):
+            for k in ('loss', 'recon', 'nce', 'tok_recon', 'predict', 'redraw'):
                 if k in out:
                     logs[k] = logs.get(k, 0.0) + out[k].item() / acc
         gn = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         opt.step()
         sched.step()
+        if ema is not None:
+            with torch.no_grad():
+                torch._foreach_lerp_(list(ema.parameters()), [p.detach() for p in model.parameters()], 1 - cfg.ema_decay)
+                for b_e, b_m in zip(ema.buffers(), model.buffers()):
+                    b_e.copy_(b_m)
         if step % cfg.log_interval == 0:
-            rec = {'step': step, 'loss': logs['loss'], 'recon': logs['recon'], 'nce': logs.get('nce', 0.0),
-                   **({'tok_recon': logs['tok_recon']} if joint else {}),
+            rec = {'step': step, 'loss': logs['loss'], **({k: logs[k] for k in ('predict', 'redraw')} if drawing else {'recon': logs['recon']}),
+                   'nce': logs.get('nce', 0.0), **({'tok_recon': logs['tok_recon']} if joint else {}),
                    'copy': F.mse_loss(x_a, x_b).item(), 'grad_norm': gn.item(), 'lr': sched.get_last_lr()[0],
                    'it_s': cfg.log_interval / max(time.time() - tl, 1e-6) if step > step0 else 0.0}
+            if device.startswith('cuda'):
+                rec['mem_gb'] = torch.cuda.max_memory_allocated() / 2 ** 30  # peak since start (training + held-out)
             tl = time.time()
             if step % cfg.val_interval == 0:
-                v, pred = held_out(model, vb, amp)
+                if drawing:
+                    v, pred = held_out_drawing(ema if ema is not None else model, vb, amp, max(1, cfg.batch_size // cfg.get('grad_accum', 1)))
+                else:
+                    v, pred = held_out(model, vb, amp)
                 rec.update(v)
                 if step % cfg.ckpt_interval == 0:
                     save_png(f'{viz_dir}/pred_step_{step}.png', *(vb[-2:] if len(vb) == 5 else vb[:2]), pred)
@@ -239,6 +309,8 @@ def main():
             os.makedirs(ck, exist_ok=True)
             torch.save(model.state_dict(), f'{ck}/{MODEL_CHECKPOINT}')
             torch.save(opt.state_dict(), f'{ck}/{OPTIMIZER_CHECKPOINT}')
+            if ema is not None:
+                torch.save(ema.state_dict(), f'{ck}/{EMA_CHECKPOINT}')
             torch.save({'config': {**OmegaConf.to_container(cfg), 'model_type': 'como'}, 'scheduler': sched.state_dict(), 'step': step}, f'{ck}/{STATE}')
             if joint:  # the tokenizer alone, in the standard format (tokenizer_frame_eval, dynamics training)
                 tk = f'{run_dir}/video_tokenizer/checkpoints/video_tokenizer_step_{step}'

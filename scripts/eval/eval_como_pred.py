@@ -10,6 +10,9 @@ Per window (eval_next_frame.test_windows, context 3, frame_skip 4, stride 8 -> 8
                   model is conditioned on
   - `shuffled`  : z of another window (roll by 1): how much the prediction depends on the action
   - `copy`      : frame t (copy-last baseline)
+  - `redraw`    : STA-76 drawing model only: frame t+4 decoded from its own z with the NULL action (reconstruction ceiling)
+STA-76 drawing checkpoints (features: drawing) predict from z(t) instead of pixels; FM decoders sample with --fm-steps
+Euler steps from seeded noise.
 Metrics: PSNR, SSIM (eval_next_frame's implementations, pixels in [0, 1]), LPIPS if installed, mean over windows.
 
     python scripts/eval/eval_como_pred.py --ckpt results/como_zelda_v1/como/checkpoints/como_step_50000 --name como_v1_50k
@@ -39,6 +42,7 @@ def main():
     p.add_argument('--k', type=int, default=16)
     p.add_argument('--batch-size', type=int, default=32)
     p.add_argument('--action-dir', help='CoMo action dir (scripts/actions/como_actions.py): use its train-fit centroids for como_k<k>')
+    p.add_argument('--fm-steps', type=int, default=1, help='STA-76 FM decoder: Euler steps')
     p.add_argument('--device', default='cuda')
     p.add_argument('--out-dir', default='eval_results/como_pred')
     a = p.parse_args()
@@ -62,16 +66,23 @@ def main():
     else:
         c = kmeans(z, a.k)
     zk = c[torch.cdist(z, c).argmin(1)]
-    dec = lam.como.decoder
     shape = (-1, lam.como.idm.n_queries, lam.como.idm.down[-1].out_features)
+    drawing = hasattr(lam.como, 'draw')  # STA-76 DrawingModel: the decoder reads z(t), not pixels
+    if drawing:
+        gen = torch.Generator(device=a.device).manual_seed(0)
+        dec = lambda xx, zz: lam.como.predict(xx, zz, a.fm_steps, gen)
+    else:
+        dec = lam.como.decoder
     lpips_fn = try_lpips(a.device)
-    per = {m: {'psnr': [], 'ssim': [], 'lpips': []} for m in ('como', f'como_k{a.k}', 'shuffled', 'copy')}
+    per = {m: {'psnr': [], 'ssim': [], 'lpips': []} for m in ('como', f'como_k{a.k}', 'shuffled', 'copy') + (('redraw',) if drawing else ())}
     with torch.no_grad():
         for i in range(0, len(z), a.batch_size):
             sl = slice(i, i + a.batch_size)
             tgt = to_unit(y[sl])
             preds = {'como': dec(x[sl], z[sl].view(shape)), f'como_k{a.k}': dec(x[sl], zk[sl].view(shape)),
                      'shuffled': dec(x[sl], z.roll(1, 0)[sl].view(shape)), 'copy': x[sl]}
+            if drawing:
+                preds['redraw'] = lam.como.redraw(y[sl], a.fm_steps, gen)
             for m, pr in preds.items():
                 pu = to_unit(pr)
                 per[m]['psnr'] += psnr(pu, tgt).tolist()
@@ -80,7 +91,7 @@ def main():
                     per[m]['lpips'] += lpips_fn(pu * 2 - 1, tgt * 2 - 1).flatten().tolist()
     summary = {m: {k: round(float(np.mean(v)), 4) for k, v in d.items() if v} for m, d in per.items()}
     os.makedirs(a.out_dir, exist_ok=True)
-    json.dump({'name': a.name, 'ckpt': a.ckpt, 'action_dir': a.action_dir, 'n_windows': len(wins), 'k': a.k, 'summary': summary},
+    json.dump({'name': a.name, 'ckpt': a.ckpt, 'action_dir': a.action_dir, 'fm_steps': a.fm_steps, 'n_windows': len(wins), 'k': a.k, 'summary': summary},
               open(f'{a.out_dir}/{a.name}.json', 'w'), indent=1)
     print(a.name, len(wins), 'windows', json.dumps(summary))
 

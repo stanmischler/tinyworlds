@@ -367,6 +367,10 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, i
 COMO_ARCH_KEYS = ('frame_size', 'patch_size', 'idm_dim', 'idm_depth', 'idm_heads', 'idm_mlp', 'n_queries', 'latent_dim',
                   'dec_dim', 'dec_depth', 'dec_heads', 'dec_mlp', 'contrastive_weight', 'temperature', 'feat_dim', 'feat_tokens')
 
+DRAWING_ARCH_KEYS = ('frame_size', 'enc_patch_size', 'enc_dim', 'enc_heads', 'enc_mlp', 'enc_depth', 'merge', 'idm_dim', 'idm_depth',
+                     'idm_heads', 'idm_mlp', 'n_queries', 'latent_dim', 'dec_dim', 'dec_depth', 'dec_heads', 'dec_mlp', 'decoder_type',
+                     'redraw_weight', 'contrastive_weight', 'temperature', 'fm_shift', 'time_dim')
+
 
 def load_como_from_checkpoint(checkpoint_path, device):
     """CoMo checkpoint (scripts/actions/train_como.py) -> CoMoLAM eval adapter (frozen MAE or tokenizer features + trained IDM;
@@ -377,6 +381,12 @@ def load_como_from_checkpoint(checkpoint_path, device):
     cfg = state_cfg['config']
     from models.como import JointCoMo
     from models.video_tokenizer import VideoTokenizer
+    if cfg.get('features') == 'drawing':  # STA-76: encoder + IDM + one decoder (models/drawing.py); EMA weights when saved
+        from models.drawing import DrawingModel
+        model = DrawingModel(**{k: cfg[k] for k in DRAWING_ARCH_KEYS if k in cfg})
+        ema = Path(checkpoint_path) / EMA_CHECKPOINT
+        model.load_state_dict(torch.load(ema if ema.exists() else Path(checkpoint_path) / MODEL_CHECKPOINT, map_location='cpu', weights_only=True))
+        return CoMoLAM(model, n_clusters=cfg.get('n_actions', 16), features=model.encoder).to(device).eval(), state_cfg
     como = CoMo(**{k: cfg[k] for k in COMO_ARCH_KEYS if k in cfg})
     sd = torch.load(Path(checkpoint_path) / MODEL_CHECKPOINT, map_location='cpu', weights_only=True)
     features = None  # MAE
