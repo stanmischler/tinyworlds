@@ -75,7 +75,11 @@ def main():
         args.latent_dim = video_tokenizer.decoder.latent_embed.in_features
     assert args.action_source in ('lam', 'gt'), f"action_source must be 'lam' or 'gt', got {args.action_source}"
     use_gt_actions = args.action_source == 'gt'
-    if use_gt_actions:
+    if not args.use_actions:
+        # action-free dynamics (e.g. OBJ3D): no action model at all
+        latent_action_model, conditioning_dim = None, 0
+        args.latent_actions_path = None
+    elif use_gt_actions:
         # ground-truth actions from the dataset (Push-T): no latent action model
         from datasets.data_utils import dataset_action_dim
         conditioning_dim = dataset_action_dim(args.dataset)

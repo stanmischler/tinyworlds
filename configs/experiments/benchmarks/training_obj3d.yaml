@@ -1,0 +1,41 @@
+# "obj3d flow": KL tokenizer + action-free flow-matching dynamics on OBJ3D, scored with LPWM's protocol (6 real frames
+# -> 44 predicted on the 200 test episodes; scripts/eval/eval_lpwm.py). Commands: experiments/benchmarks/README.md
+dataset: OBJ3D            # data/obj3d_train_frames.h5 (scripts/data/convert_obj3d.py)
+video_tokenizer_config: configs/experiments/benchmarks/tokenizer.yaml
+dynamics_config: configs/experiments/benchmarks/dynamics_no_actions.yaml
+run_video_tokenizer: true
+run_dynamics: true
+use_wandb: true
+wandb_project: tinyworlds
+preload_ratio: 1.0
+
+patch_size: 4             # 1024 tokens per 128px frame
+frame_size: 128           # the .h5 is 128 px (the Modal launcher re-reads it from the .h5)
+latent_dim: 16            # KL tokenizer: 16 continuous channels per token
+num_bins: 4               # FSQ only (unused)
+n_actions: 16             # unused (no LAM); required by the schema
+
+amp: true
+tf32: true
+compile: true
+
+num_workers: 8
+pin_memory: true
+
+distributed:
+  use_ddp: false
+  use_fsdp: false
+  reshard_after_forward: false
+nproc_per_node: 1
+standalone: true
+
+latent_actions_config: configs/latent_actions.yaml   # not run
+run_latent_actions: false
+
+optimizer: adamw
+muon_momentum: 0.95
+muon_backend_steps: 5
+use_moe: false
+num_experts: 4
+top_k_experts: 2
+moe_aux_loss_coeff: 0.01

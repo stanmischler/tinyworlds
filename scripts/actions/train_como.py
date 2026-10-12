@@ -98,7 +98,8 @@ def to_pixels(fr):
 def batch(frames, feats, starts, idx, gap, jitter, gen, device):
     t = torch.as_tensor(starts[idx], device=device)  # [B]
     d = torch.randint(1, jitter + 1, (len(t),), generator=gen, device='cpu').to(device)
-    d = d * (torch.randint(0, 2, (len(t),), generator=gen, device='cpu').to(device) * 2 - 1)  # +-1..jitter
+    sign = torch.randint(0, 2, (len(t),), generator=gen, device='cpu').to(device) * 2 - 1
+    d = d * (sign if gap > jitter else 1)  # +-1..jitter; forward only when a backward jitter could reach frame t (gap 1)
     b, j = t + gap, t + gap + d
     if feats is None:  # joint: pixels of t, t+n, t+n+delta
         return tuple(to_pixels(frames[i]) for i in (t, b, j))
@@ -242,7 +243,7 @@ def main():
     como = model.como if joint else model
     n_idm = sum(p.numel() for p in como.idm.parameters())
     n_dec = sum(p.numel() for p in como.decoder.parameters())
-    n_tok = sum(p.numel() for p in (model.encoder if drawing else model.tokenizer).parameters()) if pixels_only else 0
+    n_tok = sum(p.numel() for p in (model.encoder if drawing else model.tokenizer).parameters()) if joint or drawing else 0
     print(f'params: IDM {n_idm / 1e6:.1f}M, decoder {n_dec / 1e6:.1f}M, encoder/tokenizer {n_tok / 1e6:.1f}M', flush=True)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate, betas=tuple(cfg.betas), eps=1e-8, weight_decay=cfg.weight_decay)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: max(cfg.lr_floor, 1 - s / cfg.n_updates))

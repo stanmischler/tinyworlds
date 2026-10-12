@@ -79,6 +79,7 @@ def main():
     p.add_argument('--batch', type=int, default=512)
     p.add_argument('--limit', type=int, default=0, help='only the first N rows of each split (smoke)')
     p.add_argument('--suffix', default='', help='output npy suffix (smoke)')
+    p.add_argument('--z-dir', default='data', help='where the <split>_como_z<suffix>.npy files go')
     p.add_argument('--feature-suffix', default='', help='MAE npy suffix, e.g. _smoke')
     p.add_argument('--feature-file', default='data/{split}_mae_large{feature_suffix}.npy',
                    help='feature npy per split (format keys split, feature_suffix), e.g. data/{split}_tok_pf_h.npy (STA-43 CoMo)')
@@ -100,8 +101,9 @@ def main():
             feats = np.load(a.feature_file.format(split=sp, feature_suffix=a.feature_suffix), mmap_mode='r')
             print(f'{sp}: {len(feats)} feature rows')
             zs[sp] = pair_z(idm, feats, a.gap, a.batch, a.device, a.limit)
-        np.save(f'data/{sp}_como_z{a.suffix}.npy', zs[sp])
-        print(f'wrote data/{sp}_como_z{a.suffix}.npy {zs[sp].shape}')
+        os.makedirs(a.z_dir, exist_ok=True)
+        np.save(f'{a.z_dir}/{sp}_como_z{a.suffix}.npy', zs[sp])
+        print(f'wrote {a.z_dir}/{sp}_como_z{a.suffix}.npy {zs[sp].shape}')
 
     fit = torch.from_numpy(zs[a.fit_split][a.start_index:len(zs[a.fit_split]) - a.gap])  # [M, A] valid pairs only
     mean, std = fit.mean(0), fit.std(0).clamp_min(1e-6)
