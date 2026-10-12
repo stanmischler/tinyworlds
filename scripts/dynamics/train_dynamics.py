@@ -5,7 +5,6 @@ import os
 from tqdm import tqdm
 from einops import rearrange
 from models.dynamics import DynamicsModel
-from models.flow_dynamics import FlowDynamicsModel
 import copy
 from datasets.data_utils import visualize_reconstruction, load_data_and_data_loaders
 from tqdm import tqdm
@@ -21,6 +20,7 @@ from utils.utils import (
     load_latent_actions_from_checkpoint,
     load_dynamics_from_checkpoint,
     maskgit_dynamics_kwargs,
+    build_flow_dynamics,
     prepare_pipeline_run_root,
     prepare_stage_dirs,
 )
@@ -96,27 +96,23 @@ def main():
         raise FileNotFoundError(f"Latent Action Model checkpoint not found at {args.latent_actions_path}")
 
     # init dynamics model and optional ckpt load
-    assert args.dynamics_type in ('maskgit', 'flow'), f"dynamics_type must be 'maskgit' or 'flow', got {args.dynamics_type}"
-    is_flow = args.dynamics_type == 'flow'
+    assert args.dynamics_type in ('maskgit', 'flow', 'biflow'), f"dynamics_type must be 'maskgit', 'flow' or 'biflow', got {args.dynamics_type}"
+    is_flow = args.dynamics_type in ('flow', 'biflow')
     assert is_flow or not args.continuous_latents, 'a continuous tokenizer needs dynamics_type flow (MaskGIT predicts codes)'
     if is_flow:
-        dynamics_model = FlowDynamicsModel(
-            frame_size=(args.frame_size, args.frame_size),
-            patch_size=args.patch_size,
-            embed_dim=args.embed_dim,
-            num_heads=args.num_heads,
-            hidden_dim=args.hidden_dim,
-            num_blocks=args.num_blocks,
-            latent_dim=args.latent_dim,
-            num_bins=args.num_bins,
-            conditioning_dim=conditioning_dim if args.use_actions else 0,
-            fm_pred=args.fm_pred,
-            fm_shift=args.fm_shift,
-            qk_norm=args.qk_norm,
-            round_latents=not args.continuous_latents,
-        ).to(args.device)
+        dynamics_model = build_flow_dynamics(vars(args), conditioning_dim if args.use_actions else 0).to(args.device)
     else:
         dynamics_model = DynamicsModel(**maskgit_dynamics_kwargs(vars(args), conditioning_dim)).to(args.device)
+    if args.init_weights:
+        # fine-tune (STA-61): start from another run's weights (EMA if saved), fresh optimizer/scheduler/step
+        from utils.utils import EMA_CHECKPOINT, MODEL_CHECKPOINT
+        src = os.path.join(args.init_weights, EMA_CHECKPOINT)
+        src = src if os.path.exists(src) else os.path.join(args.init_weights, MODEL_CHECKPOINT)
+        sd = torch.load(src, map_location=args.device, weights_only=True)
+        sd = {k.replace('_orig_mod.', '').replace('module.', ''): v for k, v in sd.items()}
+        missing, unexpected = dynamics_model.load_state_dict(sd, strict=False)
+        assert not unexpected and not missing, (missing, unexpected)
+        print(f"Initialised dynamics weights from {src}")
     if args.checkpoint:
         dynamics_model, _ = load_dynamics_from_checkpoint(
             checkpoint_path=args.checkpoint, 
@@ -139,7 +135,7 @@ def main():
                 ema_model.load_state_dict(torch.load(ema_ckpt, map_location=args.device, weights_only=True))
 
     # optional DDP, compile, param count, tf32
-    print_param_count_if_main(dynamics_model, "FlowDynamicsModel" if is_flow else "DynamicsModel", is_main)
+    print_param_count_if_main(dynamics_model, type(dynamics_model).__name__, is_main)
     if args.compile:
         # mode="default" rather than "reduce-overhead": CUDA-graph mode crashed the latent-actions stage on H100
         # (inductor: "storage data ptrs are not allocated in pool", torch 2.8); same model is compiled here

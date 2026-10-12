@@ -9,3 +9,4 @@ setup.sh
 .venv
 .venv/
 configs/dev/dev_training_cpu.yaml
+docs/*.pdf
