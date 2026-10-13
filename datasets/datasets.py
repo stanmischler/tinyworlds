@@ -214,7 +214,7 @@ class EpisodeH5Dataset(Dataset):
         return frames, actions
 
 
-PushTDataset = EpisodeH5Dataset  # STA-29 name
+PushTDataset = EpisodeH5Dataset  # old name, kept for imports
 
 
 class ZeldaDataset(VideoHDF5Dataset):

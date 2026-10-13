@@ -1,25 +1,41 @@
 #!/usr/bin/env bash
-# Benchmark runs on published datasets: data -> copy baselines -> NanoWM re-scoring -> 4 training runs -> evals -> one
+# Benchmark runs on published datasets: data -> copy baselines -> NanoWM re-scoring -> training -> evals -> one
 # tarball to send back. One local CUDA GPU, from the repo root after `git pull`. Every stage is resumable: if anything
 # stops, run the same command again; finished stages are skipped and training continues from the last checkpoint.
 #
-#   experiments/benchmarks/run_local.sh                       # everything, in order
-#   experiments/benchmarks/run_local.sh point_maze_flow       # one run only (point_maze_flow | wall_flow | obj3d_flow | obj3d_como_actions)
-#   SKIP_NANOWM=1 experiments/benchmarks/run_local.sh         # skip re-scoring NanoWM's checkpoints (needs uv + their deps)
-#   PY=/path/to/python experiments/benchmarks/run_local.sh
+#   experiments/benchmarks/run_local.sh point_maze            # one run
+#   experiments/benchmarks/run_local.sh point_maze wall       # several runs, in that order
+#   experiments/benchmarks/run_local.sh all                   # point_maze wall obj3d
+#   SKIP_NANOWM=1 experiments/benchmarks/run_local.sh wall    # skip re-scoring NanoWM's checkpoints
+#   PY=/path/to/python experiments/benchmarks/run_local.sh all
 #
 # Runs (configs/experiments/benchmarks/, details in experiments/benchmarks/README.md):
-#   point_maze_flow     KL tokenizer + flow-matching dynamics, real actions, 256 px     -> NanoWM protocol (1 -> 3 frames)
-#   wall_flow           same on Wall                                                     -> NanoWM protocol
-#   obj3d_flow          KL tokenizer + flow-matching dynamics, no actions, 128 px        -> LPWM protocol (6 -> 44 frames)
-#   obj3d_como_actions  obj3d_flow's tokenizer (frozen) + CoMo on its features + dynamics on CoMo's continuous z
+#   point_maze (point_maze_flow)    KL tokenizer + flow-matching dynamics, real actions, 256 px     -> NanoWM protocol (1 -> 3 frames)
+#   wall (wall_flow)                same on Wall                                                 -> NanoWM protocol
+#   obj3d (obj3d_como_actions)      KL tokenizer, then CoMo on its frozen features, then dynamics on CoMo's continuous z, 128 px
+#                                   -> LPWM protocol (6 -> 44 frames)
 # Outputs: results/<run>/ (checkpoints, PNGs), eval JSONs + PNGs in results/benchmark_evals/, and benchmark_results.tgz
 # (configs, logs, PNGs, scores; no weights) to send back.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 export PYTHONPATH="$PWD"
-PY=${PY:-python}
-RUNS=${1:-"point_maze_flow wall_flow obj3d_flow obj3d_como_actions"}
+usage() { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+[ $# -gt 0 ] || usage 1
+RUNS=""
+for a in "$@"; do
+  case $a in
+    -h|--help) usage ;;
+    all) RUNS="$RUNS point_maze_flow wall_flow obj3d_como_actions" ;;
+    point_maze|point_maze_flow) RUNS="$RUNS point_maze_flow" ;;
+    wall|wall_flow) RUNS="$RUNS wall_flow" ;;
+    obj3d|obj3d_como_actions) RUNS="$RUNS obj3d_como_actions" ;;
+    *) echo "unknown run '$a' (choose from: point_maze wall obj3d all)"; exit 1 ;;
+  esac
+done
+echo "runs:$RUNS"
+if [ -z "${PY:-}" ]; then  # the repo's .venv if there is one, else python3 / python on PATH
+  if [ -x .venv/bin/python ]; then PY=.venv/bin/python; elif command -v python3 >/dev/null; then PY=python3; else PY=python; fi
+fi
 STEPS=${STEPS:-30000}           # STEPS / COMO_STEPS / LOG / LIMIT / EXTRA are for the smoke test; leave them for real runs
 COMO_STEPS=${COMO_STEPS:-20000}
 LOG=${LOG:-1000}                # checkpoint every LOG steps; the last one is STEPS - LOG
@@ -44,7 +60,16 @@ if '$DEVICE' == 'cuda':
     p = torch.cuda.get_device_properties(0)
     print(f'GPU {p.name}, {p.total_memory / 2**30:.0f} GiB')
 EOF
-$PY -c "import omegaconf, h5py, einops, piqa, lpips, pytorch_fid, cv2" 2>/dev/null || $PY -m pip install -r requirements.txt
+# missing packages: install them, but never let pip replace an existing (CUDA) torch build
+if ! $PY -c "import omegaconf, h5py, einops, piqa, lpips, pytorch_fid, cv2, wandb, huggingface_hub, scipy, matplotlib, tqdm" 2>/dev/null; then
+  if $PY -c "import torch" 2>/dev/null; then
+    req=$(mktemp); grep -viE '^(torch|torchvision)([<>=!~ ]|$)' requirements.txt > "$req"
+    $PY -m pip install -r "$req"
+  else
+    $PY -m pip install -r requirements.txt
+  fi
+fi
+$PY -c "import torch; v = tuple(int(x) for x in torch.__version__.split('+')[0].split('.')[:2]); assert v >= (2, 8), f'torch >= 2.8 needed, found {torch.__version__}'"
 export WANDB_MODE=${WANDB_MODE:-offline}  # stage scripts log to W&B; offline unless you `wandb login` and set WANDB_MODE=online
 
 # 1. data (downloads: DINO-WM Point Maze 0.7 GB + Wall 1.7 GB from OSF, OBJ3D 7.4 GB from HuggingFace), only for the
@@ -76,8 +101,13 @@ if [ -z "$SKIP_NANOWM" ]; then
   done
 fi
 
-latest() {  # newest checkpoint dir of a stage, or nothing
-  ls -d results/$1/$2/checkpoints/$2_step_* 2>/dev/null | sort -V | tail -1 || true
+latest() {  # newest complete checkpoint dir of a stage (a save cut off midway has no state.pt / EMA), or nothing
+  local d need=state.pt
+  [ "$2" = dynamics ] && need=ema_state_dict.pt
+  for d in $(ls -d results/$1/$2/checkpoints/$2_step_* 2>/dev/null | sort -V -r); do
+    [ -f "$d/state.pt" ] && [ -f "$d/$need" ] && { echo "$d"; return; }
+  done
+  true
 }
 final_step=$((STEPS - LOG))
 
@@ -101,14 +131,15 @@ for run in $RUNS; do
   case $run in
     point_maze_flow) tok_and_dyn $run $CFG/training_point_maze.yaml $CFG/dynamics_real_actions.yaml ;;
     wall_flow)       tok_and_dyn $run $CFG/training_wall.yaml $CFG/dynamics_real_actions.yaml ;;
-    obj3d_flow)      tok_and_dyn $run $CFG/training_obj3d.yaml $CFG/dynamics_no_actions.yaml ;;
     obj3d_como_actions)
-      tok=$(latest obj3d_flow video_tokenizer)
-      [ -n "$tok" ] || { echo "obj3d_como_actions needs obj3d_flow's tokenizer: run obj3d_flow first"; exit 1; }
-      echo "=== train $run/como (tokenizer $tok)"
-      $PY scripts/actions/train_como.py --config configs/como/zelda.yaml,configs/como/obj3d.yaml -- \
-        tokenizer_path=$tok n_updates=$COMO_STEPS ckpt_interval=$((COMO_STEPS < 5000 ? COMO_STEPS : 5000)) checkpoint=auto device=$DEVICE $COMO_EXTRA
-      como=$(ls -d results/$run/como/checkpoints/como_step_* | sort -V | tail -1)
+      train_stage $run video_tokenizer scripts/tokenizer/train_video_tokenizer.py $CFG/training_obj3d_como.yaml $CFG/tokenizer.yaml
+      tok=$(latest $run video_tokenizer)
+      como=results/$run/como/checkpoints/como_step_$COMO_STEPS
+      if [ -f "$como/state.pt" ]; then echo "=== $run/como done ($como)"; else
+        echo "=== train $run/como (tokenizer $tok)"
+        $PY scripts/actions/train_como.py --config configs/como/zelda.yaml,configs/como/obj3d.yaml -- \
+          tokenizer_path=$tok n_updates=$COMO_STEPS ckpt_interval=$((COMO_STEPS < 5000 ? COMO_STEPS : 5000)) checkpoint=auto device=$DEVICE $COMO_EXTRA
+      fi
       if [ ! -f results/$run/como_z_full/state.pt ] || [ ! -f results/$run/obj3d_train_como_z.npy ]; then
         $PY scripts/actions/como_actions.py --como-ckpt "$como" --out-dir results/$run/como_z --z-dir results/$run --live --k 0 --gap 1 \
           --start-index 0 --splits obj3d_train,obj3d_test --fit-split obj3d_train --device $DEVICE ${ACTIONS_LIMIT:+--limit $ACTIONS_LIMIT}
@@ -127,11 +158,8 @@ for run in $RUNS; do
       npz=results/nanowm_${env}_rescore/predictions_f16.npz
       [ -f "$EVALS/$run.json" ] || $PY scripts/eval/eval_nanowm.py --env $env --run-dir results/$run --num-steps 1 \
         --device "$DEVICE" --out-dir "$EVALS" --name $run $([ -f "$npz" ] && echo "--nanowm-npz $npz") $(lim) ;;
-    obj3d_flow)
-      [ -f "$EVALS/$run.json" ] || $PY scripts/eval/eval_lpwm.py --run-dir results/$run --num-steps 1 --device "$DEVICE" \
-        --out-dir "$EVALS" --name $run $(lim_lpwm) ;;
     obj3d_como_actions)
-      [ -f "$EVALS/$run.json" ] || $PY scripts/eval/eval_lpwm.py --video-tokenizer-path "$(latest obj3d_flow video_tokenizer)" \
+      [ -f "$EVALS/$run.json" ] || $PY scripts/eval/eval_lpwm.py --video-tokenizer-path "$(latest $run video_tokenizer)" \
         --dynamics-path "$(latest $run dynamics)" --latent-actions-path results/$run/como_z_full --num-steps 1 \
         --device "$DEVICE" --out-dir "$EVALS" --name $run $(lim_lpwm) ;;
   esac

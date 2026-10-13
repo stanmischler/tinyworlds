@@ -1,7 +1,7 @@
 # Flow-matching dynamics on OBJ3D conditioned on CoMo's continuous z (8 queries x 16 = 128-D, standardized with the train
-# stats; no k-means). CoMo reads the frozen tokenizer of the "obj3d flow" run; z of transition t -> t+1 drives frame t+1.
-# Same recipe as dynamics_no_actions.yaml otherwise. At eval, z comes from the real frames (the future included), so this
-# run measures how much learned actions help; it is not comparable to LPWM's action-free table.
+# stats; no k-means). CoMo reads the frozen tokenizer trained first in this run; z of transition t -> t+1 drives frame t+1.
+# At eval, z comes from the real frames (the future included), so the score is optimistic next to LPWM's action-free
+# table: the model sees a summary of each future step.
 batch_size_per_gpu: 64
 gradient_accumulation_steps: 1
 n_updates: 30000
@@ -23,7 +23,7 @@ qk_norm: true
 ema_decay: 0.999
 seed: 0
 
-video_tokenizer_path: results/obj3d_flow/video_tokenizer/checkpoints/video_tokenizer_step_29000   # frozen, from "obj3d flow"
+video_tokenizer_path: results/obj3d_como_actions/video_tokenizer/checkpoints/video_tokenizer_step_29000   # frozen, trained first in this run
 latent_actions_path: results/obj3d_como_actions/como_z_full     # scripts/actions/como_actions.py --k 0: z mean/std
 action_file: results/obj3d_como_actions/obj3d_train_como_z.npy   # raw z per obj3d_train .h5 row (como_actions.py --z-dir)
 

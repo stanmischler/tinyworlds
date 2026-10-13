@@ -35,7 +35,7 @@ def smoke(steps: int = 200, log: int = 100, como_steps: int = 100, limit: int = 
            f"COMO_EXTRA='use_wandb=false' {'' if nanowm else 'SKIP_NANOWM=1'}")
     with committing():
         for attempt in (1, 2):  # the second call must skip every finished stage
-            r = subprocess.run(f"{env} bash experiments/benchmarks/run_local.sh", shell=True, cwd=work)
+            r = subprocess.run(f"{env} bash experiments/benchmarks/run_local.sh all", shell=True, cwd=work)
             print(f"SMOKE attempt {attempt}: exit {r.returncode}", flush=True)
             if r.returncode:
                 raise SystemExit(r.returncode)

@@ -1,5 +1,5 @@
-# CoMo motion IDM on OBJ3D for the "obj3d CoMo actions" run: reads the frozen per-frame KL tokenizer of the "obj3d flow"
-# run (encoder hidden state, 2x2 merged -> 256 tokens x 1024), computed live per batch (live_features: the precomputed
+# CoMo motion IDM on OBJ3D for the "obj3d CoMo actions" run: reads the frozen per-frame KL tokenizer trained first in
+# the same run (encoder hidden state, 2x2 merged -> 256 tokens x 1024), computed live per batch (live_features: the precomputed
 # table would be ~150 GB). Transitions t -> t+1 (gap 1), as the dynamics model consumes them.
 # Merged on top of configs/como/zelda.yaml (the CoMo recipe):
 #   python scripts/actions/train_como.py --config configs/como/zelda.yaml,configs/como/obj3d.yaml
@@ -15,7 +15,7 @@ jitter: 1              # InfoNCE positive end t+1+1 (forward only at gap 1)
 
 features: tokenizer
 live_features: true
-tokenizer_path: results/obj3d_flow/video_tokenizer/checkpoints/video_tokenizer_step_29000
+tokenizer_path: results/obj3d_como_actions/video_tokenizer/checkpoints/video_tokenizer_step_29000
 tokenizer_feature: hidden
 history: 0
 merge: 2

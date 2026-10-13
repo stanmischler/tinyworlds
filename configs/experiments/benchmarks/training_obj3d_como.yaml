@@ -1,9 +1,10 @@
-# "obj3d CoMo actions", dynamics stage only: reuses the frozen tokenizer of "obj3d flow" and the CoMo z exported by
-# scripts/actions/como_actions.py (configs/como/obj3d.yaml trains CoMo first). Commands: experiments/benchmarks/README.md
+# "obj3d CoMo actions": KL tokenizer on OBJ3D, then CoMo on its frozen features (configs/como/obj3d.yaml), then
+# flow-matching dynamics on the CoMo z exported by scripts/actions/como_actions.py. Scored with LPWM's protocol (6 real
+# frames -> 44 predicted on the 200 test episodes). Commands: experiments/benchmarks/README.md
 dataset: OBJ3D
-video_tokenizer_config: configs/experiments/benchmarks/tokenizer.yaml   # not run
+video_tokenizer_config: configs/experiments/benchmarks/tokenizer.yaml
 dynamics_config: configs/experiments/benchmarks/dynamics_como.yaml
-run_video_tokenizer: false
+run_video_tokenizer: true
 run_dynamics: true
 use_wandb: true
 wandb_project: tinyworlds
