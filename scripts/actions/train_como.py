@@ -18,6 +18,10 @@ prediction PNG, and the held-out LAM judge (scripts/eval/lam_judge.py, k-means k
     python scripts/actions/train_como.py --config configs/como/zelda.yaml -- run_name=como_zelda n_updates=50000
     python scripts/actions/train_como.py --config configs/como/zelda.yaml -- fake_features=1500 device=cpu ...  # CPU code check
 
+features: tokenizer + live_features: true (configs/como/obj3d.yaml): no feature table; the frozen tokenizer
+(tokenizer_path) encodes each batch's frames on the GPU (a 150 GB table for OBJ3D otherwise). Same checkpoint format as
+the precomputed-table runs, so every eval adapter loads it unchanged.
+
 features: joint (STA-65, configs/como/joint/): no feature table; a per-frame video tokenizer (cfg.tokenizer) is trained from
 scratch with the IDM + decoder (models/como.py JointCoMo), and each checkpoint also exports it as a standard tokenizer
 checkpoint (results/<run>/video_tokenizer/checkpoints/video_tokenizer_step_N). Logged in addition: tokenizer recon loss,
@@ -48,10 +52,11 @@ from omegaconf import OmegaConf
 from PIL import Image
 
 from datasets.split import segments
-from models.como import CoMo, JointCoMo, MAE_TOKENS, MAE_DIM
+from models.como import CoMo, JointCoMo, TokenizerFeatures, MAE_TOKENS, MAE_DIM
 from models.drawing import DrawingModel
 from models.video_tokenizer import VideoTokenizer
-from utils.utils import COMO_ARCH_KEYS, DRAWING_ARCH_KEYS, EMA_CHECKPOINT, MODEL_CHECKPOINT, OPTIMIZER_CHECKPOINT, STATE, video_tokenizer_kwargs
+from utils.utils import (COMO_ARCH_KEYS, DRAWING_ARCH_KEYS, EMA_CHECKPOINT, MODEL_CHECKPOINT, OPTIMIZER_CHECKPOINT, STATE,
+                         load_videotokenizer_from_checkpoint, video_tokenizer_kwargs)
 
 
 
@@ -93,7 +98,8 @@ def to_pixels(fr):
 def batch(frames, feats, starts, idx, gap, jitter, gen, device):
     t = torch.as_tensor(starts[idx], device=device)  # [B]
     d = torch.randint(1, jitter + 1, (len(t),), generator=gen, device='cpu').to(device)
-    d = d * (torch.randint(0, 2, (len(t),), generator=gen, device='cpu').to(device) * 2 - 1)  # +-1..jitter
+    sign = torch.randint(0, 2, (len(t),), generator=gen, device='cpu').to(device) * 2 - 1
+    d = d * (sign if gap > jitter else 1)  # +-1..jitter; forward only when a backward jitter could reach frame t (gap 1)
     b, j = t + gap, t + gap + d
     if feats is None:  # joint: pixels of t, t+n, t+n+delta
         return tuple(to_pixels(frames[i]) for i in (t, b, j))
@@ -196,7 +202,8 @@ def main():
 
     joint = cfg.get('features') == 'joint'
     drawing = cfg.get('features') == 'drawing'
-    pixels_only = joint or drawing
+    live = cfg.get('features') == 'tokenizer' and cfg.get('live_features', False)  # encode frames per batch
+    pixels_only = joint or drawing or live
     t0 = time.time()
     frames, feats, segs = load_split(cfg, cfg.train_h5, None if pixels_only else cfg.train_features, device, cfg.fake_features, cfg.get('feat_device'))
     span = cfg.gap + cfg.jitter
@@ -205,7 +212,16 @@ def main():
     vstarts = valid_starts(vsegs, span)
     vgen = torch.Generator().manual_seed(1)
     vidx = torch.randperm(len(vstarts), generator=vgen)[:cfg.val_batch].numpy()
-    vb = batch(vframes, vfeats, vstarts, vidx, cfg.gap, cfg.jitter, vgen, device)
+    featurize = lambda b: b  # noqa: E731
+    if live:  # frozen tokenizer features of the 3 pixel batches (t, t+n, t+n+delta) -> the precomputed-table layout
+        tok_feats = TokenizerFeatures(load_videotokenizer_from_checkpoint(cfg.tokenizer_path, device)[0], cfg.tokenizer_feature, cfg.merge).to(device)
+        assert cfg.get('history', 0) == 0, 'live_features: per-frame features only'
+
+        @torch.no_grad()
+        def featurize(b):
+            # (x_t, x_b, x_j) float [B, C, H, W] -> (f_t, f_b, f_j [B, S, D], x_t, x_b)
+            return (*[torch.cat([tok_feats(x[i:i + 64, None]).float() for i in range(0, len(x), 64)]) for x in b], b[0], b[1])
+    vb = featurize(batch(vframes, vfeats, vstarts, vidx, cfg.gap, cfg.jitter, vgen, device))
     print(f'train: {len(frames)} frames, {len(segs)} segments, {len(starts)} transitions; held-out {len(vstarts)} '
           f'(batch {len(vidx)}); loaded in {time.time() - t0:.0f} s', flush=True)
 
@@ -213,6 +229,8 @@ def main():
         tokenizer = VideoTokenizer(**video_tokenizer_kwargs(cfg.tokenizer))
         hp = cfg.frame_size // cfg.tokenizer.patch_size
         cfg.feat_tokens, cfg.feat_dim = (hp // cfg.merge) ** 2, cfg.tokenizer.embed_dim * cfg.merge ** 2
+    elif live:
+        cfg.feat_tokens, cfg.feat_dim = vb[0].shape[1:]
     elif not drawing:
         cfg.feat_tokens, cfg.feat_dim = feats.shape[1:]  # MAE [197, 1024] or tokenizer features (STA-43); saved in state.pt
     if drawing:
@@ -225,7 +243,7 @@ def main():
     como = model.como if joint else model
     n_idm = sum(p.numel() for p in como.idm.parameters())
     n_dec = sum(p.numel() for p in como.decoder.parameters())
-    n_tok = sum(p.numel() for p in (model.encoder if drawing else model.tokenizer).parameters()) if pixels_only else 0
+    n_tok = sum(p.numel() for p in (model.encoder if drawing else model.tokenizer).parameters()) if joint or drawing else 0
     print(f'params: IDM {n_idm / 1e6:.1f}M, decoder {n_dec / 1e6:.1f}M, encoder/tokenizer {n_tok / 1e6:.1f}M', flush=True)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate, betas=tuple(cfg.betas), eps=1e-8, weight_decay=cfg.weight_decay)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: max(cfg.lr_floor, 1 - s / cfg.n_updates))
@@ -263,7 +281,7 @@ def main():
     tl = time.time()
     for step in range(step0, cfg.n_updates + 1):
         idx = torch.randint(0, len(starts), (cfg.batch_size,), generator=gen).numpy()
-        b = batch(frames, feats, starts, idx, cfg.gap, cfg.jitter, gen, device)
+        b = featurize(batch(frames, feats, starts, idx, cfg.gap, cfg.jitter, gen, device))
         x_a, x_b = b[-2:] if len(b) == 5 else b[:2]
         opt.zero_grad(set_to_none=True)
         acc = cfg.get('grad_accum', 1)  # micro-batches: exact here (per-sample InfoNCE, mean losses over equal chunks)

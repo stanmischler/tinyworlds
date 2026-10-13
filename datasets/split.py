@@ -53,10 +53,15 @@ def write_subset(path: str, src: h5py.Dataset, indices: np.ndarray, attrs: dict,
 
 
 def segments(h5_path, n_frames):
-    """Contiguous [start, end) stretches of local indices: test_blocks_local for a test file, the cuts of
-    split_dataset.py for a train file, else the whole file."""
+    """Contiguous [start, end) stretches of local indices: the episodes of an episode .h5 (episode_index), test_blocks_local
+    for a test file, the cuts of split_dataset.py for a train file, else the whole file."""
     with h5py.File(h5_path, 'r') as f:
         attrs = dict(f.attrs)
+        episode = f['episode_index'][:n_frames] if 'episode_index' in f else None  # [N]
+    if episode is not None:
+        cuts = np.flatnonzero(np.diff(episode) != 0) + 1
+        bounds = [0, *cuts.tolist(), len(episode)]
+        return list(zip(bounds[:-1], bounds[1:]))
     if 'test_blocks_local' in attrs:
         return [tuple(b) for b in json.loads(attrs['test_blocks_local'])]
     if attrs.get('split') == 'train':

@@ -14,6 +14,9 @@ Outputs
     python scripts/actions/como_actions.py ... --check   # online encode (MAE on pixels) vs the npy rows on the first test pairs
     python scripts/actions/como_actions.py --como-ckpt results/como_tok_pf_h/como/checkpoints/como_step_20000 --out-dir results/como_actions_pf_h \
         --feature-file 'data/{split}_tok_pf_h.npy' --suffix _pf_h   # STA-46
+    python scripts/actions/como_actions.py --como-ckpt results/obj3d_como/como/checkpoints/como_step_20000 --out-dir results/obj3d_como_actions \
+        --splits obj3d_train,obj3d_test --fit-split obj3d_train --start-index 0 --gap 1 --k 0 --live   # features from the
+        # CoMo checkpoint's own frozen tokenizer, computed on the fly from data/<split>_frames.h5; --k 0: continuous z only
 """
 
 import argparse
@@ -45,6 +48,25 @@ def pair_z(idm, feats, gap, batch, device, limit=0):
     return z
 
 
+@torch.no_grad()
+def pair_z_live(lam, h5_path, gap, batch, device, limit=0):
+    # frames of the .h5 -> features with the CoMo checkpoint's frozen tokenizer (lam.features) -> raw z [N, A] float32
+    idm = lam.como.idm
+    with h5py.File(h5_path, 'r') as f:
+        frames = f['frames']
+        n = min(len(frames), limit) if limit else len(frames)
+        z = np.zeros((n, idm.n_queries * idm.down[-1].out_features), np.float32)
+        t0 = time.time()
+        for i in range(0, n - gap, batch):
+            j = min(i + batch, n - gap)
+            x = torch.from_numpy(frames[i:j + gap]).to(device).permute(0, 3, 1, 2).float() / 127.5 - 1  # [b + gap, C, H, W]
+            fx = lam.features(x[:, None]).float()  # [b + gap, S, D]
+            z[i:j] = idm(fx[:j - i], fx[gap:]).flatten(1).cpu().numpy()
+            if (i // batch) % 50 == 0:
+                print(f'  {j}/{n - gap} pairs, {time.time() - t0:.0f} s', flush=True)
+    return z
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--como-ckpt', required=True)
@@ -57,29 +79,38 @@ def main():
     p.add_argument('--batch', type=int, default=512)
     p.add_argument('--limit', type=int, default=0, help='only the first N rows of each split (smoke)')
     p.add_argument('--suffix', default='', help='output npy suffix (smoke)')
+    p.add_argument('--z-dir', default='data', help='where the <split>_como_z<suffix>.npy files go')
     p.add_argument('--feature-suffix', default='', help='MAE npy suffix, e.g. _smoke')
     p.add_argument('--feature-file', default='data/{split}_mae_large{feature_suffix}.npy',
                    help='feature npy per split (format keys split, feature_suffix), e.g. data/{split}_tok_pf_h.npy (STA-43 CoMo)')
     p.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     p.add_argument('--check', type=int, default=0, help='>0: also compare online encode with the npy on N test pairs')
+    p.add_argument('--live', action='store_true', help='features from data/<split>_frames.h5 through the CoMo checkpoint\'s own '
+                   'frozen tokenizer (per-frame) instead of a feature npy')
     a = p.parse_args()
 
     lam, _ = load_como_from_checkpoint(a.como_ckpt, a.device)  # CoMoLAM (loads the MAE / tokenizer too, used by --check)
     idm = lam.como.idm.eval()
     zs = {}
     for sp in [s for s in a.splits.split(',') if s]:
-        feats = np.load(a.feature_file.format(split=sp, feature_suffix=a.feature_suffix), mmap_mode='r')
-        print(f'{sp}: {len(feats)} feature rows')
-        zs[sp] = pair_z(idm, feats, a.gap, a.batch, a.device, a.limit)
-        np.save(f'data/{sp}_como_z{a.suffix}.npy', zs[sp])
-        print(f'wrote data/{sp}_como_z{a.suffix}.npy {zs[sp].shape}')
+        if a.live:
+            from models.como import MAEFeatures
+            assert not isinstance(lam.features, MAEFeatures) and lam.history == 0, '--live needs a per-frame tokenizer-feature CoMo'
+            zs[sp] = pair_z_live(lam, f'data/{sp}_frames.h5', a.gap, a.batch, a.device, a.limit)
+        else:
+            feats = np.load(a.feature_file.format(split=sp, feature_suffix=a.feature_suffix), mmap_mode='r')
+            print(f'{sp}: {len(feats)} feature rows')
+            zs[sp] = pair_z(idm, feats, a.gap, a.batch, a.device, a.limit)
+        os.makedirs(a.z_dir, exist_ok=True)
+        np.save(f'{a.z_dir}/{sp}_como_z{a.suffix}.npy', zs[sp])
+        print(f'wrote {a.z_dir}/{sp}_como_z{a.suffix}.npy {zs[sp].shape}')
 
     fit = torch.from_numpy(zs[a.fit_split][a.start_index:len(zs[a.fit_split]) - a.gap])  # [M, A] valid pairs only
     mean, std = fit.mean(0), fit.std(0).clamp_min(1e-6)
-    centroids = kmeans(fit, a.k, seed=0)  # [K, A]
+    centroids = kmeans(fit, a.k, seed=0) if a.k else torch.zeros(0, fit.shape[1])  # [K, A]; --k 0: continuous z only
     summary = {'como_ckpt': a.como_ckpt, 'feature_file': a.feature_file, 'gap': a.gap, 'k': a.k, 'fit_split': a.fit_split, 'fit_rows': len(fit),
                'z_std_mean': float(std.mean()), 'z_std_min': float(std.min()), 'z_std_max': float(std.max())}
-    for sp, z in zs.items():
+    for sp, z in (zs.items() if a.k else ()):
         zz = torch.from_numpy(z[:len(z) - a.gap])
         codes = torch.cdist(zz, centroids).argmin(1)
         summary[f'{sp}_code_hist'] = torch.bincount(codes, minlength=a.k).tolist()
@@ -99,7 +130,7 @@ def main():
         summary['check'] = {'split': sp, 'pairs': len(rows), 'code_agreement': same, 'rel_l2': rel}
         print(f'check on {len(rows)} {sp} pairs: k{a.k} code agreement {same:.4f}, mean relative L2 {rel:.4f}')
 
-    for mode in ('full', f'k{a.k}'):
+    for mode in ('full', f'k{a.k}') if a.k else ('full',):
         d = f'{a.out_dir}_{mode}'
         os.makedirs(d, exist_ok=True)
         torch.save({'model_type': 'como_actions', 'como_path': a.como_ckpt, 'mode': mode, 'mean': mean, 'std': std,

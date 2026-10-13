@@ -85,6 +85,25 @@ def main():
 
     # cosine scheduler for lr warmup
     schedulers = [create_cosine_scheduler(opt, args.n_updates) for opt in optimizers]
+
+    # resume: restore optimizer/scheduler state and continue from the saved step (weights were loaded above)
+    start_step = 0
+    if args.checkpoint:
+        from utils.utils import OPTIMIZER_CHECKPOINT, STATE
+        import pathlib
+        ckpt_dir = pathlib.Path(args.checkpoint)
+        optimizers[0].load_state_dict(torch.load(ckpt_dir / OPTIMIZER_CHECKPOINT, map_location=args.device, weights_only=False))
+        state = torch.load(ckpt_dir / STATE, map_location='cpu', weights_only=False)
+        if state.get('scheduler_state_dict') is not None:
+            schedulers[0].load_state_dict(state['scheduler_state_dict'])
+        if len(optimizers) > 1 and (ckpt_dir / 'all_optimizers.pt').exists():
+            all_opt = torch.load(ckpt_dir / 'all_optimizers.pt', map_location=args.device, weights_only=False)
+            all_sch = torch.load(ckpt_dir / 'all_schedulers.pt', map_location='cpu', weights_only=False)
+            for k, (o, sch) in enumerate(zip(optimizers, schedulers)):
+                o.load_state_dict(all_opt[f'optimizer_{k}'])
+                sch.load_state_dict(all_sch[f'scheduler_{k}'])
+        start_step = int(state.get('step') or 0) + 1
+        print(f"Resumed from {args.checkpoint}: continuing at step {start_step}/{args.n_updates}")
     train_ctx = torch.amp.autocast(args.device, enabled=True, dtype=torch.bfloat16) if args.amp and not args.distributed.use_fsdp else nullcontext()
 
     results = {
@@ -102,7 +121,7 @@ def main():
     unwrap_model(model).train()
 
     train_iter = iter(training_loader)
-    for i in tqdm(range(args.n_updates), disable=not is_main):
+    for i in tqdm(range(start_step, args.n_updates), initial=start_step, total=args.n_updates, disable=not is_main):
         for opt in optimizers:
             opt.zero_grad(set_to_none=True)
         if isinstance(model, FSDPModule):

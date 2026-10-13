@@ -1,0 +1,30 @@
+# Flow-matching dynamics with the dataset's real 10-D actions (Point Maze, Wall): NanoWM's 1 real frame -> 3 predicted.
+# Clips of 4 frames; each batch keeps its first 2-4 frames (fm_random_context), so the model learns to predict from 1, 2
+# and 3 context frames, as the rollout needs. Recipe otherwise = the Zelda flow-matching dynamics (zelda_continuous).
+batch_size_per_gpu: 64
+gradient_accumulation_steps: 1
+n_updates: 30000
+learning_rate: 0.0003
+log_interval: 1000
+context_length: 4
+
+use_actions: true
+action_source: gt
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 12
+
+dynamics_type: flow
+fm_pred: v
+fm_shift: 3.0
+fm_random_context: true
+qk_norm: true
+ema_decay: 0.999
+seed: 0
+
+video_tokenizer_path:     # this run's tokenizer (full_train.py)
+latent_actions_path:
+
+checkpoint:

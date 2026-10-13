@@ -8,7 +8,7 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from torchvision.utils import make_grid
-from datasets.datasets import PongDataset, SonicDataset, PolePositionDataset, PicoDoomDataset, ZeldaDataset, PushTDataset
+from datasets.datasets import PongDataset, SonicDataset, PolePositionDataset, PicoDoomDataset, ZeldaDataset, EpisodeH5Dataset
 
 DEFAULT_NUM_WORKERS = 2
 DEFAULT_PREFETCH_FACTOR = 2
@@ -55,22 +55,33 @@ VIDEO_GAMES = {
 }
 
 
-PUSHT_TRAIN_H5 = '/data/pusht_frames.h5'
+# episode .h5 datasets (datasets.EpisodeH5Dataset): fps is fixed by the .h5; the held-out evals read their own files
+# (eval_pusht.py / eval_nanowm.py: <env>_val_frames.h5, eval_lpwm.py: obj3d_test_frames.h5)
+EPISODE_H5 = {
+    'PUSHT': '/data/pusht_frames.h5',            # scripts/data/convert_pusht.py, 10-D actions
+    'POINTMAZE': '/data/point_maze_frames.h5',   # scripts/data/convert_dinowm.py --env point_maze, 10-D actions
+    'WALL': '/data/wall_frames.h5',              # scripts/data/convert_dinowm.py --env wall, 10-D actions
+    'OBJ3D': '/data/obj3d_train_frames.h5',      # scripts/data/convert_obj3d.py, no actions
+}
+PUSHT_TRAIN_H5 = EPISODE_H5['PUSHT']
 
 
-def load_pusht(num_frames=4, fps=None, preload_ratio=1):
-    """DINO-WM Push-T train split (scripts/data/convert_pusht.py), with ground-truth actions; fps is fixed by the .h5
-    (every 5th env step). Val is the same object (as every other game here); the held-out eval is eval_pusht.py."""
-    train = PushTDataset(os.getcwd() + PUSHT_TRAIN_H5, num_frames=num_frames, preload_ratio=preload_ratio)
+def load_episode_h5(dataset, num_frames=4, preload_ratio=1):
+    """Train split of an episode .h5 dataset. Val is the same object (as every other game here)."""
+    train = EpisodeH5Dataset(os.getcwd() + EPISODE_H5[dataset], num_frames=num_frames, preload_ratio=preload_ratio)
     return train, train
 
 
+def load_pusht(num_frames=4, fps=None, preload_ratio=1):
+    return load_episode_h5('PUSHT', num_frames=num_frames, preload_ratio=preload_ratio)
+
+
 def dataset_action_dim(dataset):
-    """Ground-truth action size of a dataset (None for the action-less video games)."""
-    if dataset == 'PUSHT':
+    """Ground-truth action size of a dataset (None for the action-less datasets)."""
+    if dataset in EPISODE_H5:
         import h5py
-        with h5py.File(os.getcwd() + PUSHT_TRAIN_H5, 'r') as f:
-            return int(f['actions'].shape[1])
+        with h5py.File(os.getcwd() + EPISODE_H5[dataset], 'r') as f:
+            return int(f['actions'].shape[1]) if 'actions' in f else None
     return None
 
 
@@ -109,8 +120,8 @@ def data_loaders(train_data, val_data, batch_size, distributed=False, rank=0, wo
 
 def load_data_and_data_loaders(dataset, batch_size, num_frames=1, distributed=False, rank=0, world_size=1, fps=15, preload_ratio=1,
                                num_workers=None, pin_memory=None, generator=None):
-    if dataset == 'PUSHT':
-        training_data, validation_data = load_pusht(num_frames=num_frames, preload_ratio=preload_ratio)
+    if dataset in EPISODE_H5:
+        training_data, validation_data = load_episode_h5(dataset, num_frames=num_frames, preload_ratio=preload_ratio)
     elif dataset in VIDEO_GAMES:
         dataset_cls, video_rel_path, h5_rel_path, game_fps = VIDEO_GAMES[dataset]
         training_data, validation_data = _load_video_dataset_pair(

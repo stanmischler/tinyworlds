@@ -327,7 +327,8 @@ def flow_dynamics_kwargs(cfg, action_dim):
         kwargs.update(bf_alpha_max=cfg.get('bf_alpha_max', 1.0), bf_eps=cfg.get('bf_eps', 0.1))
     else:
         kwargs.update(fm_pred=cfg.get('fm_pred', 'v'), fm_shift=cfg.get('fm_shift', 1.0),
-                      fm_source=cfg.get('fm_source', 'noise'), fm_source_noise=cfg.get('fm_source_noise', 0.0))
+                      fm_source=cfg.get('fm_source', 'noise'), fm_source_noise=cfg.get('fm_source_noise', 0.0),
+                      random_context=cfg.get('fm_random_context', False))
     return kwargs
 
 
