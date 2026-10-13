@@ -121,7 +121,6 @@ import numpy as _pnp
 import torch as _pt
 import utils.metrics as _pm
 import callbacks as _pc
-from pytorch_fid.fid_score import calculate_frechet_distance as _pfd
 
 _P_ORIG = _pm.Evaluator.evaluate_all
 _P = {"info": [], "acc": {}, "f16_pred": [], "f16_gt": [], "names": []}
@@ -186,10 +185,8 @@ def _p_epoch_end(self, trainer, pl_module):
     out = {}
     for name, a in _P["acc"].items():
         m = {k: float(_pnp.mean(_pnp.stack(v))) for k, v in a.items() if k not in ("real_stats", "fake_stats")}
-        if "real_stats" in a:
-            rs, fs = _pnp.concatenate(a["real_stats"]), _pnp.concatenate(a["fake_stats"])
-            m["fid"] = float(_pfd(rs.mean(0), _pnp.cov(rs, rowvar=False), fs.mean(0), _pnp.cov(fs, rowvar=False)))
-            m["fid_frames"] = int(rs.shape[0])
+        # no FID here: on Wall's near-constant frames the covariance is singular and scipy's sqrtm stalls the process
+        # for hours after their eval (their own FID is in the log; ours is computed from predictions_f16.npz)
         out[name] = m
     info = _P["info"]
     summary = {k: sorted({str(i[k]) for i in info}) for k in ("autocast_cuda", "autocast_dtype", "grad_enabled", "pred_dtype", "gt_dtype")}
