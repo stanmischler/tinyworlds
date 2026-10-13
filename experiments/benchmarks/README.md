@@ -41,7 +41,8 @@ experiments/benchmarks/run_local.sh            # data -> copy baselines -> NanoW
 - **Data:** downloaded and converted into `data/` on the first call: DINO-WM Point Maze (0.7 GB zip) and Wall (1.7 GB) from
   OSF, OBJ3D (7.4 GB) from HuggingFace. The unzipped DINO-WM folders are large (~80 GB): delete `data/dinowm_raw/` at the end.
 - **Order:** `obj3d_como_actions` needs `obj3d_flow`'s tokenizer, so keep `obj3d_flow` before it (the default order does).
-- **One run only:** `experiments/benchmarks/run_local.sh wall_flow`.
+- **One dataset only:** `experiments/benchmarks/run_local.sh point_maze_flow` downloads only that dataset and runs only its
+  copy baseline, NanoWM re-scoring, training and eval. Several runs: `run_local.sh "point_maze_flow wall_flow"`.
 - **Resumable:** run the same command again after any stop. Finished stages are skipped, training continues from the last
   checkpoint (every 1000 steps), finished evals are skipped.
 - **Memory:** OBJ3D's training set is 292k frames (14 GB in RAM at 128 px), and CoMo keeps all of them on the GPU

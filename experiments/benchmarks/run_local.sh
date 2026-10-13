@@ -47,22 +47,30 @@ EOF
 $PY -c "import omegaconf, h5py, einops, piqa, lpips, pytorch_fid, cv2" 2>/dev/null || $PY -m pip install -r requirements.txt
 export WANDB_MODE=${WANDB_MODE:-offline}  # stage scripts log to W&B; offline unless you `wandb login` and set WANDB_MODE=online
 
-# 1. data (downloads: DINO-WM Point Maze 0.7 GB + Wall 1.7 GB from OSF, OBJ3D 7.4 GB from HuggingFace)
-[ -f data/point_maze_frames.h5 ] && [ -f data/point_maze_val_frames.h5 ] || $PY scripts/data/convert_dinowm.py --env point_maze
-[ -f data/wall_frames.h5 ] && [ -f data/wall_val_frames.h5 ] || $PY scripts/data/convert_dinowm.py --env wall
-[ -f data/obj3d_train_frames.h5 ] && [ -f data/obj3d_val_frames.h5 ] && [ -f data/obj3d_test_frames.h5 ] || $PY scripts/data/convert_obj3d.py
+# 1. data (downloads: DINO-WM Point Maze 0.7 GB + Wall 1.7 GB from OSF, OBJ3D 7.4 GB from HuggingFace), only for the
+# requested runs
+envs=""
+for run in $RUNS; do case $run in point_maze_flow) envs="$envs point_maze" ;; wall_flow) envs="$envs wall" ;; obj3d_*) envs="$envs obj3d" ;; esac; done
+has() { [[ " $envs " == *" $1 "* ]]; }
+has point_maze && { [ -f data/point_maze_frames.h5 ] && [ -f data/point_maze_val_frames.h5 ] || $PY scripts/data/convert_dinowm.py --env point_maze; }
+has wall && { [ -f data/wall_frames.h5 ] && [ -f data/wall_val_frames.h5 ] || $PY scripts/data/convert_dinowm.py --env wall; }
+has obj3d && { [ -f data/obj3d_train_frames.h5 ] && [ -f data/obj3d_val_frames.h5 ] && [ -f data/obj3d_test_frames.h5 ] || $PY scripts/data/convert_obj3d.py; }
 
 # 2. copy-last baselines (no model)
 for env in point_maze wall; do
+  has $env || continue
   [ -f "$EVALS/copy_last_$env.json" ] || $PY scripts/eval/eval_nanowm.py --env $env --copy-only --device "$DEVICE" \
     --out-dir "$EVALS" --name "copy_last_$env" $(lim)
 done
-[ -f "$EVALS/copy_last_obj3d.json" ] || $PY scripts/eval/eval_lpwm.py --copy-only --device "$DEVICE" --out-dir "$EVALS" \
-  --name copy_last_obj3d $(lim_lpwm)
+if has obj3d; then
+  [ -f "$EVALS/copy_last_obj3d.json" ] || $PY scripts/eval/eval_lpwm.py --copy-only --device "$DEVICE" --out-dir "$EVALS" \
+    --name copy_last_obj3d $(lim_lpwm)
+fi
 
 # 3. NanoWM's released checkpoints on the same clips (their code, pinned commit, own venv; ~15-30 min each)
 if [ -z "$SKIP_NANOWM" ]; then
   for env in point_maze wall; do
+    has $env || continue
     [ -f "results/nanowm_${env}_rescore/predictions_f16.npz" ] || \
       DATASET_DIR="$PWD/data/dinowm_raw" bash experiments/pusht_nanowm/nanowm_rescore_local.sh $env "results/nanowm_${env}_rescore"
   done
