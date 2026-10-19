@@ -365,6 +365,27 @@ def eval_dynamics(run_dir: str, name: str, extra_args: str = "", num_steps: str 
         print(f"EVAL DONE {name}_s{steps} -> evals/next_frame/{name}_s{steps}.json")
 
 
+@app.function(gpu="L4", cpu=4, memory=16384, volumes=VOLUMES, timeout=60 * 60)
+def visualise_predictions(name: str, models: str = "configs/visualise/zelda_all.yaml", n: int = 30, extra_args: str = ""):
+    """Side-by-side one-step predictions of several models (scripts/eval/visualise_predictions.py) from the checkpoints on
+    the results volume -> evals/visualise/<name>.{png,json} there; fetch with
+    `modal volume get tinyworlds-results evals/visualise/<name>.png eval_results/visualise/` (and <name>.json).
+        modal run scripts/infra/modal_train.py::visualise_predictions --name zelda_all --n 30
+        modal run scripts/infra/modal_train.py::visualise_predictions --name c2s_vs_bridge --models "" \
+          --extra-args '--model "FlowC2S=results/zelda_copyflow_c2s_final/dynamics/checkpoints/dynamics_step_29000"'
+    """
+    import shlex
+    import subprocess
+
+    cmd = ["python", "scripts/eval/visualise_predictions.py", "--device", "cuda", "--n", str(n), "--name", name,
+           "--out-dir", "results/evals/visualise", *shlex.split(extra_args)]
+    if models:
+        cmd += ["--models", models]
+    subprocess.run(cmd, cwd=REPO_DIR, check=True)
+    results_volume.commit()
+    print(f"VISUALISE DONE -> evals/visualise/{name}.png")
+
+
 @app.local_entrypoint()
 def main(
     dataset: str = "ZELDA",
