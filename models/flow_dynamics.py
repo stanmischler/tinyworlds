@@ -104,8 +104,9 @@ class FlowDynamicsModel(nn.Module):
         return (out.float() - latents[:, -1].float()) / s  # (x1_hat - x_t) / (1 - t)
 
     def forward(self, latents, training=True, conditioning=None, targets=None):
-        # latents: [B, T, P, L] clean FSQ (or continuous) latents; conditioning: [B, T-1, A] actions. Returns (v_hat, None, loss) like
-        # DynamicsModel.forward returns (logits, mask, loss).
+        # latents: [B, T, P, L] clean FSQ (or continuous) latents; conditioning: [B, T-1, A] actions. Returns
+        # (v_hat, (x1_hat, s), loss) like DynamicsModel.forward returns (logits, mask, loss); x1_hat = x_t + s * v_hat [B, P, L]
+        # is the predicted clean last frame and s [B] its noise level.
         if self.random_context and training and latents.shape[1] > 2:
             Tc = int(torch.randint(1, latents.shape[1], ()))  # context frames, 1 .. T-1 (one draw per batch: static shapes per Tc)
             latents = latents[:, :Tc + 1]  # [B, Tc+1, P, L]
@@ -123,7 +124,8 @@ class FlowDynamicsModel(nn.Module):
         t[:, -1] = tt
         v_hat = self.velocity(noisy, conditioning, t)  # [B, P, L]
         loss = F.mse_loss(v_hat.float(), x1 - x0)
-        return v_hat, None, loss
+        x1_hat = xt + s[:, None, None] * v_hat.float()  # [B, P, L] predicted clean latents (for the frequency loss)
+        return v_hat, (x1_hat, s), loss
 
     def bridge_point(self, z0, z1):
         # Brownian bridge between the clean previous frame z0 and the next frame z1 ([B, P, L] each), ViBT Eq. 7-8:

@@ -2,6 +2,7 @@ from contextlib import nullcontext
 import torch
 import torch.nn.functional as F
 import os
+import json
 from tqdm import tqdm
 from einops import rearrange
 from models.dynamics import DynamicsModel
@@ -25,6 +26,7 @@ from utils.utils import (
     prepare_stage_dirs,
 )
 from utils.config import DynamicsConfig, load_stage_config_merged
+from models.frequency_loss import focal_log_frequency_loss, frequency_weight
 import wandb
 from dataclasses import asdict
 from utils.distributed import init_distributed_from_env, prepare_model_for_distributed, unwrap_model, print_param_count_if_main, cleanup_distributed
@@ -103,6 +105,9 @@ def main():
     assert args.dynamics_type in ('maskgit', 'flow', 'biflow'), f"dynamics_type must be 'maskgit', 'flow' or 'biflow', got {args.dynamics_type}"
     is_flow = args.dynamics_type in ('flow', 'biflow')
     assert is_flow or not args.continuous_latents, 'a continuous tokenizer needs dynamics_type flow (MaskGIT predicts codes)'
+    assert args.fm_loss in ('v', 'f', 'fv'), f"fm_loss must be 'v', 'f' or 'fv', got {args.fm_loss}"
+    assert args.fm_loss == 'v' or (args.dynamics_type == 'flow' and not args.fm_random_context and args.fm_source != 'bridge'), \
+        'the frequency loss needs dynamics_type flow, no fm_random_context (x1_hat is the last frame of the full window), no bridge'
     if is_flow:
         dynamics_model = build_flow_dynamics(vars(args), conditioning_dim if args.use_actions else 0).to(args.device)
     else:
@@ -241,8 +246,17 @@ def main():
         print(f"test curve: {len(test_curve.windows)} windows of {args.test_eval_h5} every {args.test_eval_interval} steps")
 
     use_moe = getattr(args, 'use_moe', False)
+    end_step = args.stop_step or args.n_updates  # stop_step: stop early on the lr schedule of n_updates
+    assert end_step <= args.n_updates, f'stop_step {end_step} > n_updates {args.n_updates}'
+    loss_terms = {'v_loss': [], 'f_loss': [], 'lambda': []}  # per-step scalars, averaged into train_log.jsonl
 
-    for i in tqdm(range(start_step, args.n_updates), initial=start_step, total=args.n_updates, disable=not is_main):
+    def append_jsonl(name, record):
+        # local log next to the checkpoints (read by experiments/focal_frequency/pick_switch.py)
+        if is_main:
+            with open(os.path.join(stage_dir, name), 'a') as f:
+                f.write(json.dumps(record) + '\n')
+
+    for i in tqdm(range(start_step, end_step), initial=start_step, total=end_step, disable=not is_main):
         for opt in optimizers:
             opt.zero_grad(set_to_none=True)
         if isinstance(dynamics_model, FSDPModule):
@@ -280,6 +294,25 @@ def main():
                     video_latents, training=True, conditioning=quantized_actions, targets=video_tokens
                 )
 
+                # frequency loss on the decoded frames: L = lambda * scale * f-loss + (1 - lambda) * v-loss
+                if args.fm_loss != 'v':
+                    lam = 1.0 if args.fm_loss == 'f' else frequency_weight(i, args.f_switch_step, args.f_switch_width)
+                    v_loss = loss
+                    loss_terms['v_loss'].append(v_loss.item()); loss_terms['lambda'].append(lam)
+                    loss = (1 - lam) * v_loss
+                    if lam >= 0.01:  # below, the f term is < 1% of the loss: skip the decoder
+                        # for a flow model the second output is (x1_hat [B, P, L] predicted clean last frame, s [B] its noise level)
+                        x1_hat, s = mask_positions
+                        pred_latents = torch.cat([video_latents[:, :-1].float(), x1_hat[:, None]], dim=1)  # [B, T, P, L]
+                        # decoded in fp32 (bf16 rounding, ~1e-3 per pixel, is the size of late high-frequency residuals)
+                        with torch.autocast(args.device, enabled=False):
+                            pred_frame = video_tokenizer.decode(pred_latents)[:, -1]  # [B, C, H, W], gradient flows into x1_hat
+                            with torch.no_grad():
+                                target_frame = video_tokenizer.decode(video_latents.float())[:, -1]  # [B, C, H, W] tokenizer reconstruction
+                        f_loss = focal_log_frequency_loss(pred_frame, target_frame, s)
+                        loss_terms['f_loss'].append(f_loss.item())
+                        loss = loss + lam * args.f_loss_scale * f_loss
+
                 # add MoE load-balancing auxiliary loss
                 moe_aux_scalar = 0.0
                 if use_moe:
@@ -311,6 +344,8 @@ def main():
         # wandb logging
         if args.use_wandb and is_main:
             log_dict = {'train/loss': loss.item() * args.gradient_accumulation_steps}  # undo the accumulation scaling
+            if args.fm_loss != 'v':
+                log_dict.update({f'train/{k}': v[-1] for k, v in loss_terms.items() if v})
             if use_moe:
                 log_dict['train/moe_aux_loss'] = moe_aux_scalar
                 # per-expert utilization across blocks
@@ -325,15 +360,21 @@ def main():
                 action_indices = latent_action_model.quantizer.get_indices_from_latents(quantized_actions)
                 log_action_distribution(action_indices, i, args.n_actions)
 
-        if test_curve is not None and (i % args.test_eval_interval == 0 or i == args.n_updates - 1):
+        if test_curve is not None and (i % args.test_eval_interval == 0 or i == end_step - 1):
             test_metrics = test_curve(ema_model if ema_model is not None else raw_dynamics, video_tokenizer,
                                       latent_action_model, args.device)
             print(f'\n Step {i} ' + '  '.join(f'{k} {v:.4f}' for k, v in test_metrics.items()))
             if args.use_wandb:
                 wandb.log(test_metrics, step=i)
+            append_jsonl('test_curve.jsonl', {'step': i, **test_metrics})
 
         # save model and visualize results
-        if i % args.log_interval == 0 or i == args.n_updates - 1:  # also save the final step
+        if i % args.log_interval == 0 or i == end_step - 1:  # also save the final step
+            if args.fm_loss != 'v':  # interval means of the loss terms (the f-loss is absent where the decoder was skipped)
+                peak_gb = torch.cuda.max_memory_allocated() / 2 ** 30 if torch.cuda.is_available() else 0.0
+                append_jsonl('train_log.jsonl', {'step': i, **{k: sum(v) / len(v) for k, v in loss_terms.items() if v},
+                                                 'peak_gpu_gb': round(peak_gb, 1)})
+                loss_terms = {k: [] for k in loss_terms}
             if is_flow:
                 # sample the last frame of 16 training windows from the model's source (10 Euler steps, EMA weights if on) and decode
                 sampler = ema_model if ema_model is not None else raw_dynamics
