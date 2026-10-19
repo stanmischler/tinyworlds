@@ -106,8 +106,8 @@ def main():
     is_flow = args.dynamics_type in ('flow', 'biflow')
     assert is_flow or not args.continuous_latents, 'a continuous tokenizer needs dynamics_type flow (MaskGIT predicts codes)'
     assert args.fm_loss in ('v', 'f', 'fv'), f"fm_loss must be 'v', 'f' or 'fv', got {args.fm_loss}"
-    assert args.fm_loss == 'v' or (args.dynamics_type == 'flow' and not args.fm_random_context), \
-        'the frequency loss needs dynamics_type flow without fm_random_context (x1_hat is the last frame of the full window)'
+    assert args.fm_loss == 'v' or (args.dynamics_type == 'flow' and not args.fm_random_context and args.fm_source != 'bridge'), \
+        'the frequency loss needs dynamics_type flow, no fm_random_context (x1_hat is the last frame of the full window), no bridge'
     if is_flow:
         dynamics_model = build_flow_dynamics(vars(args), conditioning_dim if args.use_actions else 0).to(args.device)
     else:
