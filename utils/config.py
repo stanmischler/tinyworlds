@@ -314,6 +314,10 @@ class DynamicsConfig:
 	# Fine-tune init (STA-61): a dynamics checkpoint dir whose weights (EMA if present) initialise the model and its EMA;
 	# optimizer, scheduler and step start fresh (unlike `checkpoint`, which resumes)
 	init_weights: Optional[str] = None
+	# held-out curve during training (evaluation/test_curve.py, flow only): test .h5 scored every test_eval_interval
+	# steps with the EMA weights, logged as test/*; for watching only (None = off)
+	test_eval_h5: Optional[str] = None
+	test_eval_interval: int = 2000
 	# set by train_dynamics.py from the tokenizer (STA-62): True = continuous latents, flow samples are not rounded to the grid
 	continuous_latents: bool = False
 	# Optimizer
