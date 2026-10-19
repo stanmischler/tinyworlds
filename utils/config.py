@@ -318,6 +318,16 @@ class DynamicsConfig:
 	# steps with the EMA weights, logged as test/*; for watching only (None = off)
 	test_eval_h5: Optional[str] = None
 	test_eval_interval: int = 2000
+	# Focal log-frequency loss (Degeorge et al. 2026, "Balancing Frequencies and Pixels in Flow Matching", flow only,
+	# models/frequency_loss.py): the predicted clean latent x1_hat is decoded by the frozen tokenizer and compared with
+	# the decoded target in the 2D Fourier domain. fm_loss "v" = velocity MSE only (original); "f" = f-loss only;
+	# "fv" = lambda * f_loss_scale * f-loss + (1 - lambda) * v-loss, lambda = sigmoid(-(step - f_switch_step) / f_switch_width)
+	fm_loss: str = "v"
+	f_loss_scale: float = 1.0
+	f_switch_step: int = 50000
+	f_switch_width: int = 5000
+	# stop training at this step but keep the lr schedule of n_updates (the f-loss-only run stops after the curves cross)
+	stop_step: Optional[int] = None
 	# set by train_dynamics.py from the tokenizer (STA-62): True = continuous latents, flow samples are not rounded to the grid
 	continuous_latents: bool = False
 	# Optimizer

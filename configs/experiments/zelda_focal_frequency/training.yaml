@@ -1,0 +1,48 @@
+# Focal log-frequency loss (Degeorge et al. 2026) on the "longer flow matching" run: same frozen KL c16 temporal tokenizer
+# (zelda_cont_final_tp step 29000), frozen CoMo full z actions, 13M dynamics (256/512/12), 100k-step lr schedule; only the
+# loss changes. Runs (experiments/focal_frequency/run_local.sh drives them, README there):
+#   frequency loss only    frequency_only.yaml    f-loss only, stopped at 60k, gives the f curve
+#   focal frequency loss   focal_frequency.yaml   f-loss -> v-loss sigmoid switch at the step where the f and v test
+#                                                 curves cross (f_switch_step, f_loss_scale filled in by pick_switch.py)
+# Baseline: longer flow matching (configs/experiments/zelda_dynamics_scale/longer.yaml), v-loss only, 34.36 dB.
+use_wandb: true
+wandb_project: tinyworlds
+
+dataset: ZELDA_TRAIN      # zelda_train_frames.h5: all frames minus the 10 held-out test blocks (scripts/data/split_dataset.py)
+preload_ratio: 1.0        # all ~65k train frames (ZeldaDataset defaults to 0.2)
+
+patch_size: 4             # 48 pixel values per token; 1024 tokens per 128px frame
+context_length: 4
+frame_size: 128
+latent_dim: 16            # KL c16 tokenizer (taken from the checkpoint anyway)
+num_bins: 4               # FSQ only
+n_actions: 16             # logging only (full CoMo z)
+
+amp: true
+tf32: true
+compile: true
+
+num_workers: 8
+pin_memory: true
+
+distributed:
+  use_ddp: false
+  use_fsdp: false
+  reshard_after_forward: false
+nproc_per_node: 1
+standalone: true
+
+video_tokenizer_config: configs/experiments/zelda_continuous/tokenizer_final_tp.yaml      # unused (run_video_tokenizer false)
+latent_actions_config: configs/experiments/lam_loop/i4_bal16_seed2.yaml                  # unused (run_latent_actions false)
+dynamics_config: configs/experiments/zelda_focal_frequency/focal_frequency.yaml   # unused: run_local.sh passes the stage yaml
+run_video_tokenizer: false   # frozen KL c16 temporal tokenizer: video_tokenizer_path in the dynamics yamls
+run_latent_actions: false    # CoMo actions: path in the dynamics yamls
+run_dynamics: true
+
+optimizer: adamw
+muon_momentum: 0.95
+muon_backend_steps: 5
+use_moe: false
+num_experts: 4
+top_k_experts: 2
+moe_aux_loss_coeff: 0.01

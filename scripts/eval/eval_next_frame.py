@@ -14,6 +14,8 @@ Protocol (fixed, deterministic):
     reconstruction of the target (the ceiling any token prediction can reach)
   - metrics per window, then mean / per-block mean: PSNR, SSIM, token accuracy, LPIPS if the
     `lpips` package is installed
+  - spectrum: radially averaged power of the predicted frames vs the tokenizer reconstruction (and of the
+    reconstruction vs the real frames), as % per frequency band; negative = fine detail lost
 
 Outputs: <out_dir>/<name>.json (all numbers + the source indices of every window) and
 <out_dir>/<name>.png (8 seed windows: context, target, prediction, copy baseline).
@@ -36,6 +38,7 @@ import numpy as np
 import torch
 
 from evaluation.image_metrics import psnr, ssim, try_lpips
+from evaluation.spectrum import radial_power_sum, band_deficits
 from evaluation.windows import test_windows, load_window_batch, to_model_range, to_unit
 from utils.inference_utils import load_models
 from utils.utils import find_latest_checkpoint
@@ -117,6 +120,7 @@ def main():
                            'copy_psnr', 'copy_ssim', 'copy_lpips', 'copy_token_acc',
                            'recon_psnr', 'recon_ssim', 'recon_lpips', 'action', 'lam_code')}
     seed_rows = []  # (context frames, target, prediction, copy) for the PNG
+    power = {'pred': 0, 'recon': 0, 'target': 0}  # radial power sums over all windows [H/2 - 1]
     seed_starts = {}
     for block_id, s in windows:
         seed_starts.setdefault(block_id, s)
@@ -175,6 +179,8 @@ def main():
             per['token_acc'] += token_acc(pred_lat[:, -1:], target_lat)
             per['copy_psnr'] += psnr(copy, tgt).tolist(); per['copy_ssim'] += ssim(copy, tgt).tolist(); per['copy_lpips'] += lp(copy, tgt).tolist()
             per['copy_token_acc'] += token_acc(ctx_lat[:, -1:], target_lat)
+            for k, frames in (('pred', pred), ('recon', recon), ('target', tgt)):
+                power[k] = power[k] + radial_power_sum(frames)
             per['recon_psnr'] += psnr(recon, tgt).tolist(); per['recon_ssim'] += ssim(recon, tgt).tolist(); per['recon_lpips'] += lp(recon, tgt).tolist()
 
             for j, w in enumerate(batch):
@@ -200,6 +206,8 @@ def main():
         'name': name, 'n_windows': len(windows), 'test_h5': args.test_h5,
         'config': {k: v for k, v in vars(args).items() if k not in ('out_dir', 'name')},
         'summary': summary, 'per_block': per_block,
+        'spectrum': {'pred_vs_recon': band_deficits(power['pred'], power['recon'], pred.shape[-1]),
+                     'recon_vs_target': band_deficits(power['recon'], power['target'], pred.shape[-1])},
         'windows': {k: per[k] for k in ('block', 'source_start', 'action', 'lam_code', 'psnr', 'ssim', 'token_acc',
                                         'copy_psnr', 'copy_ssim', 'copy_token_acc')},
     }
@@ -240,6 +248,8 @@ def main():
     print('\nsummary:')
     for g, vals in summary.items():
         print(f'  {g:16s} ' + '  '.join(f'{m} {v:.4f}' for m, v in vals.items() if v is not None))
+    for k, bands in result['spectrum'].items():
+        print(f'  power {k:15s} ' + '  '.join(f'{b} {v:+.1f}%' for b, v in bands.items()))
     print(f'saved {json_path}' + (f' and {png_path}' if png_path else ''))
 
 
