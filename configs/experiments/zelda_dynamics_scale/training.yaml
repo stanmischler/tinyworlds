@@ -1,0 +1,57 @@
+# Longer and bigger flow-matching dynamics on Zelda. Same recipe, tokenizer (frozen KL c16 temporal, zelda_cont_final_tp
+# step 29000) and actions (frozen CoMo full z) as the "flow matching" row (30k steps, 13M params, 33.78 dB); only the
+# dynamics model trains, from scratch. Rows:
+#   longer flow matching   longer.yaml          same 256/512/12 model, 100k steps
+#   bigger model lr sweep  bigger_lr{1e4,2e4,3e4}.yaml   512/1024/16 (60M), 10k steps, pick lr on mean train loss of steps 9000-9999
+#   bigger flow matching   bigger.yaml          512/1024/16, 100k steps, swept lr
+# Every run logs test/{psnr,ssim,flow_loss} on the 890 test windows every test_eval_interval steps (watching only).
+#   TINYWORLDS_GPU=H100 modal run --detach scripts/infra/modal_train.py --dataset ZELDA_TRAIN \
+#     --training-config configs/experiments/zelda_dynamics_scale/training.yaml \
+#     --overrides "dynamics_config=configs/experiments/zelda_dynamics_scale/<arm>.yaml" --run-name zelda_<arm>_fm
+# A Modal call stops after 24 h: resume with a copy of the arm yaml whose `checkpoint:` is the last saved step.
+# Eval (final step; the run dir holds no tokenizer):
+#   modal run --detach scripts/infra/modal_train.py::eval_dynamics --run-dir zelda_<arm>_fm --name zelda_<arm>_fm \
+#     --num-steps 1,4 --extra-args "--test-h5 data/zelda_test_frames.h5 --latent-actions-path results/como_actions_v1_full \
+#     --video-tokenizer-path results/zelda_cont_final_tp/video_tokenizer/checkpoints/video_tokenizer_step_29000 \
+#     --dynamics-path results/zelda_<arm>_fm/dynamics/checkpoints/dynamics_step_99999"
+use_wandb: true
+wandb_project: tinyworlds
+
+dataset: ZELDA_TRAIN      # zelda_train_frames.h5: all frames minus the 10 held-out test blocks (scripts/data/split_dataset.py)
+preload_ratio: 1.0        # all ~65k train frames (ZeldaDataset defaults to 0.2)
+
+patch_size: 4             # 48 pixel values per token; 1024 tokens per 128px frame
+context_length: 4
+frame_size: 128
+latent_dim: 16            # KL c16 tokenizer (taken from the checkpoint anyway)
+num_bins: 4               # FSQ only
+n_actions: 16             # logging only (full CoMo z)
+
+amp: true
+tf32: true
+compile: true
+
+num_workers: 8
+pin_memory: true
+
+distributed:
+  use_ddp: false
+  use_fsdp: false
+  reshard_after_forward: false
+nproc_per_node: 1
+standalone: true
+
+video_tokenizer_config: configs/experiments/zelda_continuous/tokenizer_final_tp.yaml      # unused (run_video_tokenizer false)
+latent_actions_config: configs/experiments/lam_loop/i4_bal16_seed2.yaml                  # unused (run_latent_actions false)
+dynamics_config: configs/experiments/zelda_dynamics_scale/longer.yaml                   # per arm via --overrides
+run_video_tokenizer: false   # frozen KL c16 temporal tokenizer: video_tokenizer_path in the dynamics yamls
+run_latent_actions: false    # CoMo actions: path in the dynamics yamls
+run_dynamics: true
+
+optimizer: adamw
+muon_momentum: 0.95
+muon_backend_steps: 5
+use_moe: false
+num_experts: 4
+top_k_experts: 2
+moe_aux_loss_coeff: 0.01
