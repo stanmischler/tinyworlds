@@ -1,0 +1,65 @@
+# Every Zelda model of docs/results_table.tex, for scripts/eval/visualise_predictions.py. Paths are relative to the repo
+# root as on Modal, where results/ is the tinyworlds-results volume (scripts/infra/modal_train.py::visualise_predictions).
+# Each spec is a tokenizer + actions + dynamics model (as scripts/eval/eval_next_frame.py) or a CoMo decoder (`como`, as
+# scripts/eval/eval_como_pred.py); steps = 1 everywhere, the results-table protocol. Labels are the table's rows.
+models:
+  # FSQ temporal tokenizer
+  - label: MaskGIT, LAM
+    tokenizer: results/2026_09_26_12_12_49/video_tokenizer/checkpoints/video_tokenizer_step_29000
+    actions: results/2026_09_26_12_12_49/latent_actions/checkpoints/latent_actions_step_5500
+    dynamics: results/2026_09_26_12_12_49/dynamics/checkpoints/dynamics_step_79000
+  - label: MaskGIT, CoMo 16 codes
+    tokenizer: results/2026_09_26_12_12_49/video_tokenizer/checkpoints/video_tokenizer_step_29000
+    actions: results/como_actions_v1_k16
+    dynamics: results/zelda_como_k16_v3/dynamics/checkpoints/dynamics_step_20000
+  - label: flow matching, 16 codes
+    tokenizer: results/2026_09_26_12_12_49/video_tokenizer/checkpoints/video_tokenizer_step_29000
+    actions: results/como_actions_v1_k16
+    dynamics: results/zelda_fm_k16/dynamics/checkpoints/dynamics_step_29000
+  # FSQ per-frame tokenizer, CoMo on tokenizer features
+  - label: CoMo-Tok, 16 codes
+    tokenizer: results/zelda_v5_frametok/video_tokenizer/checkpoints/video_tokenizer_step_29000
+    actions: results/como_actions_pf_h_k16
+    dynamics: results/zelda_pfcomo_k16/dynamics/checkpoints/dynamics_step_15000
+  - label: CoMo-Tok, full z
+    tokenizer: results/zelda_v5_frametok/video_tokenizer/checkpoints/video_tokenizer_step_29000
+    actions: results/como_actions_pf_h_full
+    dynamics: results/zelda_pfcomo_full/dynamics/checkpoints/dynamics_step_29000
+  - label: FSQ flow matching
+    tokenizer: results/2026_09_26_12_12_49/video_tokenizer/checkpoints/video_tokenizer_step_29000
+    actions: results/como_actions_v1_full
+    dynamics: results/zelda_fm_full/dynamics/checkpoints/dynamics_step_29000
+  # continuous temporal KL-VAE tokenizer, CoMo-ViT full z
+  - label: continuous flow matching
+    tokenizer: results/zelda_cont_final_tp/video_tokenizer/checkpoints/video_tokenizer_step_29000
+    actions: results/como_actions_v1_full
+    dynamics: results/zelda_cont_final_tp/dynamics/checkpoints/dynamics_step_29000
+  - label: FlowC2S
+    tokenizer: results/zelda_cont_final_tp/video_tokenizer/checkpoints/video_tokenizer_step_29000
+    actions: results/como_actions_v1_full
+    dynamics: results/zelda_copyflow_c2s_final/dynamics/checkpoints/dynamics_step_29000
+  - label: Bi-flow
+    tokenizer: results/zelda_cont_final_tp/video_tokenizer/checkpoints/video_tokenizer_step_29000
+    actions: results/como_actions_v1_full
+    dynamics: results/zelda_copyflow_bf_final/dynamics/checkpoints/dynamics_step_29000
+    bf_eps: 0.3
+  - label: Brownian bridge
+    tokenizer: results/zelda_cont_final_tp/video_tokenizer/checkpoints/video_tokenizer_step_29000
+    actions: results/como_actions_v1_full
+    dynamics: results/zelda_bridge_final/dynamics/checkpoints/dynamics_step_29000
+  - label: longer flow matching
+    tokenizer: results/zelda_cont_final_tp/video_tokenizer/checkpoints/video_tokenizer_step_29000
+    actions: results/como_actions_v1_full
+    dynamics: results/zelda_longer_fm/dynamics/checkpoints/dynamics_step_99999
+  - label: bigger flow matching
+    tokenizer: results/zelda_cont_final_tp/video_tokenizer/checkpoints/video_tokenizer_step_29000
+    actions: results/como_actions_v1_full
+    dynamics: results/zelda_bigger_fm/dynamics/checkpoints/dynamics_step_99999
+  # CoMo decoder as the world model (no tokenizer, no dynamics model)
+  - label: CoMo decoder
+    como: results/como_zelda_v1/como/checkpoints/como_step_50000
+  - label: CoMo decoder, 16 codes
+    como: results/como_zelda_v1/como/checkpoints/como_step_50000
+    centroids: results/como_actions_v1_full  # the train-fit centroids behind the table's 30.15 (eval_como_pred --action-dir)
+  - label: joint CoMo decoder
+    como: results/como_joint_j1/como/checkpoints/como_step_50000
