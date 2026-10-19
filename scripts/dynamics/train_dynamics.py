@@ -320,7 +320,7 @@ def main():
         # save model and visualize results
         if i % args.log_interval == 0:
             if is_flow:
-                # sample the last frame of 16 training windows from noise (10 Euler steps, EMA weights if on) and decode
+                # sample the last frame of 16 training windows from the model's source (10 Euler steps, EMA weights if on) and decode
                 sampler = ema_model if ema_model is not None else raw_dynamics
                 sampler.eval()
                 with torch.no_grad():

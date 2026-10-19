@@ -306,6 +306,12 @@ class DynamicsConfig:
 	# denoiser): training noise alpha ~ U(0, bf_alpha_max), sampling starts at prev + bf_eps * N(0, I).
 	fm_source: str = "noise"
 	fm_source_noise: float = 0.0
+	# Brownian bridge (fm_source "bridge", ViBT arXiv 2511.23199): starts from the clean previous frame, path noise
+	# fm_source_noise * sqrt(t (1 - t)), t ~ U(0, bridge_t_max), stochastic sampler; fm_shift only shapes the sampling grid.
+	# bridge_loss "stabilised" divides the velocity MSE by alpha^2 (bridge_delta guards static frame pairs), "plain" does not.
+	bridge_loss: str = "stabilised"
+	bridge_t_max: float = 0.999
+	bridge_delta: float = 1e-4
 	# Variable context (flow only): each training batch keeps its first Tc + 1 frames, Tc ~ U{1, ..., T - 1}, so
 	# the model also learns to predict from short histories (NanoWM's 1 context frame -> 3 rollout). False = always T - 1.
 	fm_random_context: bool = False

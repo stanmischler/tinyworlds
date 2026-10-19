@@ -19,7 +19,7 @@
 
 \begin{document}
 \small
-\noindent{\Large\bfseries tinyworlds --- results so far}\hfill last updated 2026-10-12
+\noindent{\Large\bfseries tinyworlds --- results so far}\hfill last updated 2026-10-19
 
 \paragraph{Metrics.}
 Tokenizer: reconstruction PSNR/SSIM on held-out frames.
@@ -46,6 +46,7 @@ FSQ temporal & 32.42 & 0.933 & CoMo-ViT, full $z$ & 0.561 & flow matching & 29.8
 continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & flow matching & 33.78 & 0.937 & 0.036 & \pr{24} & +4 dB from continuous tokens \\
 continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & FlowC2S & \best{34.09} & \best{0.940} & \best{0.034} & \pr{25} & fine-tuned from row above \\
 continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & Bi-flow & 33.72 & 0.933 & 0.038 & \pr{25} & from scratch, 30k \\
+continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & Brownian bridge & 34.00 & \best{0.940} & \best{0.034} & \pr{PRNUM} & fine-tuned from noise-start row, 30k, $s=1$; 8 steps 33.46 vs FlowC2S 33.33 \\
 \midrule
 -- & -- & -- & CoMo-ViT, full $z$ & 0.561 & CoMo decoder & 33.41 & 0.931 & 0.038 & \pr{20} & CoMo decoder as dynamics \\
 -- & -- & -- & CoMo-ViT, 16 codes & 0.561 & CoMo decoder & 30.15 & 0.844 & 0.050 & \pr{20} &  \\
