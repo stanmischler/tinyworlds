@@ -232,6 +232,14 @@ def main():
             print(f"actions from {args.action_file}: {acts.shape}")
     train_iter = iter(training_loader)
 
+    test_curve = None
+    if args.test_eval_h5 and is_main:
+        assert is_flow and latent_action_model is not None and not args.distributed.use_fsdp, \
+            'test_eval_h5 needs a flow dynamics model with an action model, without FSDP (it runs on rank 0 only)'
+        from evaluation.test_curve import TestCurve
+        test_curve = TestCurve(args.test_eval_h5)
+        print(f"test curve: {len(test_curve.windows)} windows of {args.test_eval_h5} every {args.test_eval_interval} steps")
+
     use_moe = getattr(args, 'use_moe', False)
 
     for i in tqdm(range(start_step, args.n_updates), initial=start_step, total=args.n_updates, disable=not is_main):
@@ -302,7 +310,7 @@ def main():
 
         # wandb logging
         if args.use_wandb and is_main:
-            log_dict = {'train/loss': loss.item()}
+            log_dict = {'train/loss': loss.item() * args.gradient_accumulation_steps}  # undo the accumulation scaling
             if use_moe:
                 log_dict['train/moe_aux_loss'] = moe_aux_scalar
                 # per-expert utilization across blocks
@@ -317,8 +325,15 @@ def main():
                 action_indices = latent_action_model.quantizer.get_indices_from_latents(quantized_actions)
                 log_action_distribution(action_indices, i, args.n_actions)
 
+        if test_curve is not None and (i % args.test_eval_interval == 0 or i == args.n_updates - 1):
+            test_metrics = test_curve(ema_model if ema_model is not None else raw_dynamics, video_tokenizer,
+                                      latent_action_model, args.device)
+            print(f'\n Step {i} ' + '  '.join(f'{k} {v:.4f}' for k, v in test_metrics.items()))
+            if args.use_wandb:
+                wandb.log(test_metrics, step=i)
+
         # save model and visualize results
-        if i % args.log_interval == 0:
+        if i % args.log_interval == 0 or i == args.n_updates - 1:  # also save the final step
             if is_flow:
                 # sample the last frame of 16 training windows from the model's source (10 Euler steps, EMA weights if on) and decode
                 sampler = ema_model if ema_model is not None else raw_dynamics

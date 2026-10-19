@@ -1,0 +1,30 @@
+# bigger model lr sweep: 512/1024/16 (60M params), 10k steps, lr 0.0002; the lowest mean train loss over steps 9000-9999 picks bigger.yaml's lr
+batch_size_per_gpu: 32          # 64 OOMs on an 80 GB H100 (60M model); 32 x 2 accumulation = same effective 64
+gradient_accumulation_steps: 2
+n_updates: 10000
+learning_rate: 0.0002
+log_interval: 1000   # checkpoint + sampled-prediction PNG
+
+use_actions: true
+
+embed_dim: 512
+num_heads: 8
+hidden_dim: 1024
+num_blocks: 16
+
+dynamics_type: flow
+fm_pred: v
+fm_shift: 3.0
+qk_norm: true
+ema_decay: 0.999
+seed: 0
+
+video_tokenizer_path: results/zelda_cont_final_tp/video_tokenizer/checkpoints/video_tokenizer_step_29000   # frozen KL c16 temporal
+latent_actions_path: results/como_actions_v1_full   # CoMo IDM + train z stats, models/como.py CoMoActions
+action_file: data/zelda_train_como_z.npy             # raw z per train .h5 row
+
+test_eval_h5: data/zelda_test_frames.h5   # test/* curve for watching; the reported number is eval_next_frame.py
+test_eval_interval: 2000
+
+# resume: set to a checkpoint dir (…/dynamics/checkpoints/dynamics_step_N)
+checkpoint:
