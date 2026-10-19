@@ -30,18 +30,24 @@ class FlowDynamicsModel(nn.Module):
     is [action a_{t-1} (zeros at frame 0), embedding of its flow time], so the backbone's per-frame adaptive norms act as
     adaLN for the noise level. fm_pred 'v' regresses the velocity, 'x' predicts x1 and derives the velocity; the loss is
     the velocity MSE in both cases. Samples are rounded to the FSQ grid at the very end (unless round_latents is False, for
-    the unit-RMS latents of a continuous tokenizer)."""
+    the unit-RMS latents of a continuous tokenizer). fm_source "copy" (FlowC2S) and "bridge" (Brownian bridge) start the
+    flow from the previous frame instead of noise."""
 
     def __init__(self, frame_size=(128, 128), patch_size=4, embed_dim=256, num_heads=8, hidden_dim=512, num_blocks=12,
                  latent_dim=6, num_bins=4, conditioning_dim=0, time_dim=64, fm_pred="v", fm_shift=1.0, qk_norm=True,
-                 t_eps=0.05, round_latents=True, fm_source="noise", fm_source_noise=0.0, noise_cond=False, random_context=False):
+                 t_eps=0.05, round_latents=True, fm_source="noise", fm_source_noise=0.0, noise_cond=False, random_context=False,
+                 bridge_loss="stabilised", bridge_t_max=0.999, bridge_delta=1e-4):
         super().__init__()
         self.random_context = bool(random_context)  # train on the first Tc + 1 frames, Tc ~ U{1..T-1} per batch
         # fm_source (STA-61): "noise" = x0 ~ N(0, I) (original); "copy" = FlowC2S, x0 = the previous frame's latents
         # + fm_source_noise * N(0, I), so the flow carries frame t to frame t+1. noise_cond adds a second FiLM input, the
         # embedding of a per-frame noise level alpha (Bi-flow's denoising axis, see BiFlowDynamicsModel).
-        assert fm_source in ("noise", "copy"), fm_source
+        # "bridge" = Brownian bridge from the clean previous frame (ViBT, arXiv 2511.23199), fm_source_noise = its scale s;
+        # see bridge_point / bridge_loss. Bridge training times are uniform: fm_shift only shapes the sampling grid.
+        assert fm_source in ("noise", "copy", "bridge"), fm_source
         self.fm_source, self.fm_source_noise, self.noise_cond = fm_source, float(fm_source_noise), bool(noise_cond)
+        assert bridge_loss in ("stabilised", "plain"), bridge_loss
+        self.bridge_objective, self.bridge_t_max, self.bridge_delta = bridge_loss, float(bridge_t_max), float(bridge_delta)
         self.round_latents = round_latents  # False for a continuous tokenizer (STA-62): samples are used as they are
         assert fm_pred in ("v", "x"), fm_pred
         self.fm_pred, self.fm_shift, self.t_eps = fm_pred, float(fm_shift), float(t_eps)
@@ -104,6 +110,8 @@ class FlowDynamicsModel(nn.Module):
             Tc = int(torch.randint(1, latents.shape[1], ()))  # context frames, 1 .. T-1 (one draw per batch: static shapes per Tc)
             latents = latents[:, :Tc + 1]  # [B, Tc+1, P, L]
             conditioning = None if conditioning is None else conditioning[:, :Tc]  # [B, Tc, A]
+        if self.fm_source == "bridge":
+            return self.bridge_forward(latents, conditioning)
         B, T, P, L = latents.shape
         x1 = latents[:, -1].float()  # [B, P, L]
         x0 = self.source(latents[:, -2]) if self.fm_source == "copy" else torch.randn_like(x1)  # [B, P, L]
@@ -117,6 +125,40 @@ class FlowDynamicsModel(nn.Module):
         loss = F.mse_loss(v_hat.float(), x1 - x0)
         return v_hat, None, loss
 
+    def bridge_point(self, z0, z1):
+        # Brownian bridge between the clean previous frame z0 and the next frame z1 ([B, P, L] each), ViBT Eq. 7-8:
+        # x_t = (1 - t) z0 + t z1 + s sqrt(t (1 - t)) eps,  target u_t = (z1 - x_t) / (1 - t) = (z1 - z0) - s sqrt(t / (1 - t)) eps
+        B = z0.shape[0]
+        t = torch.rand(B, device=z0.device) * self.bridge_t_max  # [B] t ~ U(0, t_max): u_t diverges at t = 1
+        tb = t[:, None, None]  # [B, 1, 1]
+        eps = torch.randn_like(z1)  # [B, P, L]
+        s = self.fm_source_noise
+        xt = (1 - tb) * z0 + tb * z1 + s * torch.sqrt(tb * (1 - tb)) * eps  # [B, P, L]
+        u = (z1 - z0) - s * torch.sqrt(tb / (1 - tb)) * eps  # [B, P, L]
+        return t, xt, u
+
+    def bridge_loss(self, v_hat, u, z0, z1, t):
+        # velocity MSE per sample, divided by alpha^2 = E||u_t||^2 / ||z1 - z0||^2 (ViBT Eq. 14-15, "stabilised") so, within
+        # a sample, every t weighs the same (across the batch a sample then weighs in proportion to its motion); written with means over the P*L latent values: alpha^2 = 1 + s^2 t / ((1 - t) mean((z1 - z0)^2)).
+        # bridge_delta keeps alpha finite on static frame pairs (z1 = z0).
+        err = ((v_hat.float() - u) ** 2).mean(dim=(1, 2))  # [B]
+        if self.bridge_objective == "plain":
+            return err.mean()
+        motion = ((z1 - z0) ** 2).mean(dim=(1, 2)) + self.bridge_delta  # [B]
+        alpha2 = 1 + self.fm_source_noise ** 2 * t / ((1 - t) * motion)  # [B]
+        return (err / alpha2).mean()
+
+    def bridge_forward(self, latents, conditioning):
+        # latents: [B, T, P, L] clean; conditioning: [B, T-1, A] -> (v_hat, None, loss)
+        B, T = latents.shape[:2]
+        z0, z1 = latents[:, -2].float(), latents[:, -1].float()  # [B, P, L]
+        tt, xt, u = self.bridge_point(z0, z1)
+        noisy = torch.cat([latents[:, :-1].float(), xt[:, None]], dim=1)  # [B, T, P, L]
+        t = torch.ones(B, T, device=latents.device)  # [B, T] context is clean (t = 1)
+        t[:, -1] = tt
+        v_hat = self.velocity(noisy, conditioning, t)  # [B, P, L]
+        return v_hat, None, self.bridge_loss(v_hat, u, z0, z1, tt)
+
     def source(self, prev, generator=None):
         # FlowC2S source: previous frame's latents [B, P, L] + fm_source_noise * N(0, I)
         prev = prev.float()
@@ -125,6 +167,14 @@ class FlowDynamicsModel(nn.Module):
         # randn_like when unseeded: torch.randn(shape) fails under torch.compile(dynamic=True) (symbolic shape)
         n = torch.randn_like(prev) if generator is None else torch.randn(prev.shape, device=prev.device, generator=generator)
         return prev + self.fm_source_noise * n
+
+    def bridge_noise(self, x, s_k, s_next, generator=None):
+        # variance-corrected Euler-Maruyama noise (ViBT Eq. 17): s sqrt(dt (1 - t_{k+1}) / (1 - t_k)) eps, with 1 - t = the
+        # grid's noise level s_grid; zero on the last step (t_{k+1} = 1). x: [B, P, L] -> [B, P, L]
+        dt = s_k - s_next
+        eta = self.fm_source_noise * torch.sqrt(dt * s_next / s_k)
+        n = torch.randn_like(x) if generator is None else torch.randn(x.shape, device=x.device, generator=generator)
+        return eta * n
 
     def round_to_grid(self, x):
         # continuous latents -> nearest FSQ grid value in [-1, 1] (same grid as FiniteScalarQuantizer)
@@ -139,6 +189,8 @@ class FlowDynamicsModel(nn.Module):
         dev = context_latents.device
         if self.fm_source == "copy":
             x = self.source(context_latents[:, -1], generator)  # [B, P, L] FlowC2S: start from the last context frame
+        elif self.fm_source == "bridge":
+            x = context_latents[:, -1].float()  # [B, P, L] bridge: start from the clean last context frame
         else:
             x = torch.randn(B, P, L, device=dev, generator=generator)  # [B, P, L]
         s_grid = shift_noise_level(torch.linspace(1, 0, num_steps + 1, device=dev), self.fm_shift)  # [N+1], 1 -> 0
@@ -148,6 +200,8 @@ class FlowDynamicsModel(nn.Module):
             inp = torch.cat([context_latents.float(), x[:, None]], dim=1)  # [B, Tc+1, P, L]
             v = self.velocity(inp, conditioning, t).float()  # [B, P, L]
             x = x + (s_grid[k] - s_grid[k + 1]) * v  # dt = t_{k+1} - t_k
+            if self.fm_source == "bridge":
+                x = x + self.bridge_noise(x, s_grid[k], s_grid[k + 1], generator)
         return self.round_to_grid(x) if self.round_latents else x
 
     @torch.no_grad()

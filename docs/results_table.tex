@@ -46,6 +46,7 @@ FSQ temporal & 32.42 & 0.933 & CoMo-ViT, full $z$ & 0.561 & flow matching & 29.8
 continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & flow matching & 33.78 & 0.937 & 0.036 & \pr{24} & +4 dB from continuous tokens \\
 continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & FlowC2S & 34.09 & 0.940 & 0.034 & \pr{25} & fine-tuned from row above \\
 continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & Bi-flow & 33.72 & 0.933 & 0.038 & \pr{25} & from scratch, 30k \\
+continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & Brownian bridge & 34.00 & 0.940 & 0.034 & \pr{34} & fine-tuned from noise-start row, 30k, $s=1$; 8 steps 33.46 vs FlowC2S 33.33 \\
 continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & longer flow matching & 34.36 & 0.944 & 0.028 & \pr{33} & flow-matching row, 100k steps (13M) \\
 continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & bigger flow matching & \best{34.84} & \best{0.945} & \best{0.025} & \pr{33} & 60M (512/1024/16), 100k steps, lr 2e-4 \\
 \midrule
