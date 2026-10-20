@@ -41,9 +41,14 @@ class TestCurve:
                 ssims += ssim(pred, tgt).tolist()
 
             torch.manual_seed(seed)  # fixed noise and flow times, so the loss curve is not noisy
+            token_loss = getattr(dyn, 'token_loss', None)
+            if token_loss is not None:
+                dyn.token_loss = 'mse'  # plain velocity MSE whatever the training loss, so runs compare
             for x in self.batches(device):
-                _, _, loss = dyn(tok.encode(x), training=True, conditioning=actions.encode(x))  # velocity MSE, as in training
+                _, _, loss = dyn(tok.encode(x), training=True, conditioning=actions.encode(x))  # plain velocity MSE
                 loss_sum += loss.item() * x.shape[0]
+            if token_loss is not None:
+                dyn.token_loss = token_loss
         torch.backends.cuda.matmul.allow_tf32 = tf32
         dyn.train(was_training)
         return {'test/psnr': float(np.mean(psnrs)), 'test/ssim': float(np.mean(ssims)),

@@ -49,3 +49,30 @@ def player_move(a, b):
     cam = global_shift(a, b)  # content shift
     scrolling = (cam.abs() > 1).any(1, keepdim=True)
     return torch.where(scrolling, -cam, local_shift(a, b))
+
+
+def moving_token_mask(last, target, patch_size, tol=1, thr=0.1):
+    # last, target: [B, C, H, W] in [0, 1] -> [B, P] bool, tokens (patch_size x patch_size) where a pixel changed beyond
+    # the camera scroll: |target - last shifted by the camera| > thr, taking the best match within +-tol px of the
+    # phase-correlation shift (absorbs sub-pixel scroll on edges); the strip revealed by the scroll is not counted.
+    # On a near-flat background the phase correlation can lock onto the sprite itself (rare on Zelda): its move is then missed
+    B, C, H, W = target.shape
+    cam = global_shift(last.mean(1).float(), target.mean(1).float())  # [B, 2] (dy, dx): target ~ roll(last, cam)
+    rows, cols = torch.arange(H, device=target.device), torch.arange(W, device=target.device)
+    b = torch.arange(B, device=target.device)[:, None, None]  # [B, 1, 1]
+    diffs = []
+    for a in range(-tol, tol + 1):
+        for c in range(-tol, tol + 1):
+            r = (rows[None] - cam[:, :1] - a) % H  # [B, H] roll: out[i] = in[i - shift]
+            k = (cols[None] - cam[:, 1:] - c) % W  # [B, W]
+            shifted = last.permute(0, 2, 3, 1)[b, r[:, :, None], k[:, None, :]]  # [B, H, W, C]
+            diffs.append((target.permute(0, 2, 3, 1) - shifted).abs().amax(-1))  # [B, H, W]
+    moved = torch.stack(diffs).amin(0) > thr  # [B, H, W]
+    # not counted: the strip revealed by the scroll (first dy rows if dy > 0, last |dy| if dy < 0, same for columns),
+    # widened by tol, plus a tol-px frame border where the +-tol rolls wrap around
+    dy, dx = cam[:, 0, None], cam[:, 1, None]  # [B, 1]
+    bad_r = (rows[None] < dy.clamp_min(0) + tol) | (rows[None] >= H + dy.clamp_max(0) - tol)  # [B, H]
+    bad_c = (cols[None] < dx.clamp_min(0) + tol) | (cols[None] >= W + dx.clamp_max(0) - tol)  # [B, W]
+    moved = moved & ~bad_r[:, :, None] & ~bad_c[:, None, :]
+    tokens = F.max_pool2d(moved[:, None].float(), patch_size)  # [B, 1, Hp, Wp]
+    return tokens.flatten(1) > 0  # [B, P], row-major patches as the tokenizer

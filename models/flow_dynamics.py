@@ -36,8 +36,20 @@ class FlowDynamicsModel(nn.Module):
     def __init__(self, frame_size=(128, 128), patch_size=4, embed_dim=256, num_heads=8, hidden_dim=512, num_blocks=12,
                  latent_dim=6, num_bins=4, conditioning_dim=0, time_dim=64, fm_pred="v", fm_shift=1.0, qk_norm=True,
                  t_eps=0.05, round_latents=True, fm_source="noise", fm_source_noise=0.0, noise_cond=False, random_context=False,
-                 bridge_loss="stabilised", bridge_t_max=0.999, bridge_delta=1e-4):
+                 bridge_loss="stabilised", bridge_t_max=0.999, bridge_delta=1e-4, token_loss="mse", token_loss_weight=1.0,
+                 topk_frac=0.05, focal_gamma=1.0, action_dropout_prob=0.0):
         super().__init__()
+        # token_loss: how the per-token velocity error e [B, P] is reduced (see token_weighted_loss); "mse" = plain mean
+        assert token_loss in ("mse", "motion", "topk", "focal"), token_loss
+        assert token_loss == "mse" or fm_source != "bridge", 'token_loss needs fm_source "noise" or "copy"'
+        self.token_loss, self.token_loss_weight = token_loss, float(token_loss_weight)
+        self.topk_frac, self.focal_gamma = float(topk_frac), float(focal_gamma)
+        # action dropout (training only): each action of the window is replaced by the learned null action with this
+        # probability, independently; sampling with guidance_scale != 1 then mixes the velocities with and without the
+        # last action (classifier-free guidance). The null action only exists when dropout is on (old checkpoints load).
+        self.action_dropout_prob = float(action_dropout_prob)
+        self.null_action = nn.Parameter(torch.zeros(1, 1, int(conditioning_dim or 0))) if action_dropout_prob > 0 else None
+        self.guidance_scale = 1.0  # set by the eval; 1 = no guidance
         self.random_context = bool(random_context)  # train on the first Tc + 1 frames, Tc ~ U{1..T-1} per batch
         # fm_source (STA-61): "noise" = x0 ~ N(0, I) (original); "copy" = FlowC2S, x0 = the previous frame's latents
         # + fm_source_noise * N(0, I), so the flow carries frame t to frame t+1. noise_cond adds a second FiLM input, the
@@ -103,10 +115,37 @@ class FlowDynamicsModel(nn.Module):
         s = (1 - t[:, -1]).clamp_min(self.t_eps)[:, None, None]  # [B, 1, 1] noise level of the target
         return (out.float() - latents[:, -1].float()) / s  # (x1_hat - x_t) / (1 - t)
 
-    def forward(self, latents, training=True, conditioning=None, targets=None):
+    def drop_actions(self, actions):
+        # actions: [B, T-1, A] -> same, each action replaced by the null action with prob. action_dropout_prob
+        drop = torch.rand(actions.shape[:2], device=actions.device) < self.action_dropout_prob  # [B, T-1]
+        return torch.where(drop[..., None], self.null_action.to(actions.dtype), actions)  # [B, T-1, A]
+
+    def token_weighted_loss(self, v_hat, v, token_mask=None):
+        # v_hat, v: [B, P, L] predicted and true velocity; token_mask: [B, P] moving tokens (token_loss "motion")
+        e = ((v_hat.float() - v) ** 2).mean(-1)  # [B, P] per-token velocity error
+        mse = e.mean()
+        if self.token_loss == "motion":
+            # extra term normalised by the moving area (as CGSReg, arXiv 2607.15142): mean error over the batch's moving tokens
+            if token_mask is None:  # e.g. the test curve: no frames to build the mask from
+                return mse
+            m = token_mask.float()  # [B, P]
+            return mse + self.token_loss_weight * (m * e).sum() / m.sum().clamp_min(1)
+        if self.token_loss == "topk":
+            # mean error of each sample's worst topk_frac tokens
+            k = max(1, round(self.topk_frac * e.shape[1]))
+            return mse + self.token_loss_weight * e.topk(k, dim=1).values.mean()
+        if self.token_loss == "focal":
+            # dynamic focal weight w = sg((e / e_mean)^gamma), e_mean per sample: tokens above the sample's mean error weigh more
+            w = (e / e.mean(1, keepdim=True).clamp_min(1e-8)).pow(self.focal_gamma).detach()  # [B, P]
+            return (w * e).mean()
+        return mse
+
+    def forward(self, latents, training=True, conditioning=None, targets=None, token_mask=None):
         # latents: [B, T, P, L] clean FSQ (or continuous) latents; conditioning: [B, T-1, A] actions. Returns
         # (v_hat, (x1_hat, s), loss) like DynamicsModel.forward returns (logits, mask, loss); x1_hat = x_t + s * v_hat [B, P, L]
-        # is the predicted clean last frame and s [B] its noise level.
+        # is the predicted clean last frame and s [B] its noise level. token_mask: [B, P] moving tokens (token_loss "motion").
+        if self.null_action is not None and self.training and conditioning is not None:
+            conditioning = self.drop_actions(conditioning)
         if self.random_context and training and latents.shape[1] > 2:
             Tc = int(torch.randint(1, latents.shape[1], ()))  # context frames, 1 .. T-1 (one draw per batch: static shapes per Tc)
             latents = latents[:, :Tc + 1]  # [B, Tc+1, P, L]
@@ -123,7 +162,7 @@ class FlowDynamicsModel(nn.Module):
         t = torch.ones(B, T, device=latents.device)  # [B, T] context is clean (t = 1)
         t[:, -1] = tt
         v_hat = self.velocity(noisy, conditioning, t)  # [B, P, L]
-        loss = F.mse_loss(v_hat.float(), x1 - x0)
+        loss = self.token_weighted_loss(v_hat, x1 - x0, token_mask)
         x1_hat = xt + s[:, None, None] * v_hat.float()  # [B, P, L] predicted clean latents (for the frequency loss)
         return v_hat, (x1_hat, s), loss
 
@@ -183,6 +222,17 @@ class FlowDynamicsModel(nn.Module):
         digits = torch.round((x + 1) * 0.5 * (self.num_bins - 1)).clamp(0, self.num_bins - 1)
         return 2 * digits / (self.num_bins - 1) - 1
 
+    def guided_velocity(self, inp, conditioning, t):
+        # inp: [B, Tc+1, P, L]; conditioning: [B, Tc, A] or None -> velocity [B, P, L], guided on the last action:
+        # v = v(null last action) + w * (v(a) - v(null last action)), w = guidance_scale (w = 1: plain v(a))
+        v = self.velocity(inp, conditioning, t).float()  # [B, P, L]
+        if self.guidance_scale == 1 or conditioning is None:
+            return v
+        assert self.null_action is not None, 'guidance needs a model trained with action_dropout_prob > 0'
+        null_last = torch.cat([conditioning[:, :-1], self.null_action.to(conditioning.dtype).expand(len(conditioning), 1, -1)], 1)
+        v_null = self.velocity(inp, null_last, t).float()  # [B, P, L]
+        return v_null + self.guidance_scale * (v - v_null)
+
     @torch.no_grad()
     def sample_next(self, context_latents, conditioning, num_steps, generator=None):
         # context_latents: [B, Tc, P, L]; conditioning: [B, Tc, A] (last = transition into the new frame) or None
@@ -200,7 +250,7 @@ class FlowDynamicsModel(nn.Module):
         for k in range(num_steps):
             t[:, -1] = 1 - s_grid[k]
             inp = torch.cat([context_latents.float(), x[:, None]], dim=1)  # [B, Tc+1, P, L]
-            v = self.velocity(inp, conditioning, t).float()  # [B, P, L]
+            v = self.guided_velocity(inp, conditioning, t)  # [B, P, L]
             x = x + (s_grid[k] - s_grid[k + 1]) * v  # dt = t_{k+1} - t_k
             if self.fm_source == "bridge":
                 x = x + self.bridge_noise(x, s_grid[k], s_grid[k + 1], generator)

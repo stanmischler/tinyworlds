@@ -330,7 +330,10 @@ def flow_dynamics_kwargs(cfg, action_dim):
                       fm_source=cfg.get('fm_source', 'noise'), fm_source_noise=cfg.get('fm_source_noise', 0.0),
                       random_context=cfg.get('fm_random_context', False),
                       bridge_loss=cfg.get('bridge_loss', 'stabilised'), bridge_t_max=cfg.get('bridge_t_max', 0.999),
-                      bridge_delta=cfg.get('bridge_delta', 1e-4))
+                      bridge_delta=cfg.get('bridge_delta', 1e-4),
+                      token_loss=cfg.get('token_loss', 'mse'), token_loss_weight=cfg.get('token_loss_weight', 1.0),
+                      topk_frac=cfg.get('topk_frac', 0.05), focal_gamma=cfg.get('focal_gamma', 1.0),
+                      action_dropout_prob=cfg.get('action_dropout_prob', 0.0))
     return kwargs
 
 
