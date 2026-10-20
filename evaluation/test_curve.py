@@ -50,11 +50,16 @@ class TestCurve:
                     psnrs_k0 += psnr(to_unit(tok.decode(pred_lat)[:, -1]), tgt).tolist()
 
             torch.manual_seed(seed)  # fixed noise and flow times, so the loss curve is not noisy
+            token_loss = getattr(dyn, 'token_loss', None)
+            if token_loss is not None:
+                dyn.token_loss = 'mse'  # plain velocity MSE whatever the training loss, so runs compare
             for x in self.batches(device):
-                _, aux, loss = dyn(tok.encode(x), training=True, conditioning=actions.encode(x))  # velocity MSE, as in training
+                _, aux, loss = dyn(tok.encode(x), training=True, conditioning=actions.encode(x))  # plain velocity MSE
                 if correction:  # aux = (x1_hat, s, loss terms)
                     loss, corr_sum = aux[2]['flow_loss'], corr_sum + aux[2]['corr_loss'].item() * x.shape[0]
                 loss_sum += loss.item() * x.shape[0]
+            if token_loss is not None:
+                dyn.token_loss = token_loss
         torch.backends.cuda.matmul.allow_tf32 = tf32
         dyn.train(was_training)
         out = {'test/psnr': float(np.mean(psnrs)), 'test/ssim': float(np.mean(ssims)), 'test/flow_loss': loss_sum / len(self.frames)}

@@ -64,6 +64,8 @@ def main():
     p.add_argument('--sample-stride', type=int, default=8, help='stored frames between window starts inside a block')
     p.add_argument('--num-steps', type=int, default=10, help='MaskGIT unmasking iterations, or Euler steps for a flow dynamics model')
     p.add_argument('--temperature', type=float, default=0.0)
+    p.add_argument('--guidance-scale', type=float, default=1.0,
+                   help='flow dynamics trained with action dropout: guidance w on the last action, v = v_null + w (v_a - v_null)')
     p.add_argument('--bf-eps', type=float, help='Bi-flow dynamics: starting noise eps (default: the training config bf_eps)')
     p.add_argument('--correction-k', type=int, help='corrected flow dynamics: corrections per Euler step (0 = off; default 1)')
     p.add_argument('--correction-interval', type=float,
@@ -93,6 +95,10 @@ def main():
     torch.manual_seed(args.seed)
     device = torch.device(args.device)
     tok, lam, dyn = load_models(args.video_tokenizer_path, args.latent_actions_path, args.dynamics_path, device, use_actions=True)
+    if args.guidance_scale != 1:
+        assert getattr(dyn, 'null_action', None) is not None and hasattr(dyn, 'guidance_scale'), \
+            '--guidance-scale needs a flow dynamics checkpoint trained with action_dropout_prob > 0'
+        dyn.guidance_scale = args.guidance_scale
     if args.bf_eps is not None:
         assert hasattr(dyn, 'bf_eps'), '--bf-eps needs a Bi-flow dynamics checkpoint'
         dyn.bf_eps = args.bf_eps

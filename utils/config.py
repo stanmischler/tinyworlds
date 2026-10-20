@@ -279,6 +279,7 @@ class DynamicsConfig:
 	full_last_frame_mask_prob: float = 0.0
 	# Action dropout: prob. that a sample's actions are replaced by a learned null action (0.0 = always LAM actions,
 	# 1.0 = unconditioned model). Stage-yaml only: a value in training.yaml would override every arm of an ablation.
+	# Flow dynamics: each action of the window is dropped independently (enables guidance, eval_next_frame --guidance-scale).
 	action_dropout_prob: float = 0.0
 	# Where the dynamics model's actions come from: "lam" = latent action model (Genie, action-less video),
 	# "gt" = the dataset's ground-truth actions (Push-T); gt needs no LAM checkpoint and sets conditioning_dim from the data
@@ -337,6 +338,14 @@ class DynamicsConfig:
 	f_loss_scale: float = 1.0
 	f_switch_step: int = 50000
 	f_switch_width: int = 5000
+	# Per-token velocity loss (flow only, models/flow_dynamics.py token_weighted_loss), e = per-token velocity error:
+	# "mse" = mean(e) (original); "motion" = mean(e) + token_loss_weight * mean of e over the moving tokens (camera-
+	# compensated pixel change, evaluation/motion.py moving_token_mask); "topk" = mean(e) + token_loss_weight * mean of each
+	# sample's worst topk_frac tokens; "focal" = mean(sg((e / per-sample mean e)^focal_gamma) * e)
+	token_loss: str = "mse"
+	token_loss_weight: float = 1.0
+	topk_frac: float = 0.05
+	focal_gamma: float = 1.0
 	# stop training at this step but keep the lr schedule of n_updates (the f-loss-only run stops after the curves cross)
 	stop_step: Optional[int] = None
 	# set by train_dynamics.py from the tokenizer (STA-62): True = continuous latents, flow samples are not rounded to the grid

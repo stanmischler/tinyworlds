@@ -27,6 +27,7 @@ from utils.utils import (
 )
 from utils.config import DynamicsConfig, load_stage_config_merged
 from models.frequency_loss import focal_log_frequency_loss, frequency_weight
+from evaluation.motion import moving_token_mask
 import wandb
 from dataclasses import asdict
 from utils.distributed import init_distributed_from_env, prepare_model_for_distributed, unwrap_model, print_param_count_if_main, cleanup_distributed
@@ -109,6 +110,9 @@ def main():
     assert not (args.correction and args.fm_loss != 'v'), 'correction is only wired for the velocity loss'
     assert args.fm_loss == 'v' or (args.dynamics_type == 'flow' and not args.fm_random_context and args.fm_source != 'bridge'), \
         'the frequency loss needs dynamics_type flow, no fm_random_context (x1_hat is the last frame of the full window), no bridge'
+    assert args.token_loss == 'mse' or (args.dynamics_type == 'flow' and not args.fm_random_context), \
+        'token_loss needs dynamics_type flow and no fm_random_context (the moving mask is for the last frame of the full window)'
+    assert args.dynamics_type != 'biflow' or args.action_dropout_prob == 0, 'Bi-flow has no action dropout'
     if is_flow:
         dynamics_model = build_flow_dynamics(vars(args), conditioning_dim if args.use_actions else 0).to(args.device)
     else:
@@ -293,10 +297,17 @@ def main():
             else:
                 quantized_actions = None
 
+            # moving tokens of the target frame for token_loss "motion": [B, P]
+            extra = {}
+            if args.token_loss == 'motion':
+                with torch.no_grad():
+                    unit = (x[:, -2:].float() + 1) / 2  # [B, 2, C, H, W] last context frame and target in [0, 1]
+                    extra['token_mask'] = moving_token_mask(unit[:, 0], unit[:, 1], args.patch_size)
+
             # predict masked frame latents with dynamics model (masking in dynamics model)
             with train_ctx:
                 predicted_next_logits, mask_positions, loss = dynamics_model(
-                    video_latents, training=True, conditioning=quantized_actions, targets=video_tokens
+                    video_latents, training=True, conditioning=quantized_actions, targets=video_tokens, **extra
                 )
                 if args.correction:
                     for k, v in mask_positions[2].items():
