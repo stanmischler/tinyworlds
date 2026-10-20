@@ -106,6 +106,7 @@ def main():
     is_flow = args.dynamics_type in ('flow', 'biflow')
     assert is_flow or not args.continuous_latents, 'a continuous tokenizer needs dynamics_type flow (MaskGIT predicts codes)'
     assert args.fm_loss in ('v', 'f', 'fv'), f"fm_loss must be 'v', 'f' or 'fv', got {args.fm_loss}"
+    assert not (args.correction and args.fm_loss != 'v'), 'correction is only wired for the velocity loss'
     assert args.fm_loss == 'v' or (args.dynamics_type == 'flow' and not args.fm_random_context and args.fm_source != 'bridge'), \
         'the frequency loss needs dynamics_type flow, no fm_random_context (x1_hat is the last frame of the full window), no bridge'
     if is_flow:
@@ -120,6 +121,10 @@ def main():
         sd = torch.load(src, map_location=args.device, weights_only=True)
         sd = {k.replace('_orig_mod.', '').replace('module.', ''): v for k, v in sd.items()}
         missing, unexpected = dynamics_model.load_state_dict(sd, strict=False)
+        if args.correction and not any(k.startswith('corrector.') for k in sd):
+            # correction fine-tune from a plain flow model: the corrector starts as a copy of it, the gate at 0
+            missing = [k for k in missing if not k.startswith('corrector.') and k != 'correction_gate']
+            dynamics_model.copy_dynamics_into_corrector()
         assert not unexpected and not missing, (missing, unexpected)
         print(f"Initialised dynamics weights from {src}")
     if args.checkpoint:
@@ -248,7 +253,7 @@ def main():
     use_moe = getattr(args, 'use_moe', False)
     end_step = args.stop_step or args.n_updates  # stop_step: stop early on the lr schedule of n_updates
     assert end_step <= args.n_updates, f'stop_step {end_step} > n_updates {args.n_updates}'
-    loss_terms = {'v_loss': [], 'f_loss': [], 'lambda': []}  # per-step scalars, averaged into train_log.jsonl
+    loss_terms = {'v_loss': [], 'f_loss': [], 'lambda': [], 'flow_loss': [], 'corr_loss': []}  # per-step scalars, averaged into train_log.jsonl
 
     def append_jsonl(name, record):
         # local log next to the checkpoints (read by experiments/focal_frequency/pick_switch.py)
@@ -293,6 +298,9 @@ def main():
                 predicted_next_logits, mask_positions, loss = dynamics_model(
                     video_latents, training=True, conditioning=quantized_actions, targets=video_tokens
                 )
+                if args.correction:
+                    for k, v in mask_positions[2].items():
+                        loss_terms[k].append(v.item())
 
                 # frequency loss on the decoded frames: L = lambda * scale * f-loss + (1 - lambda) * v-loss
                 if args.fm_loss != 'v':
@@ -302,7 +310,7 @@ def main():
                     loss = (1 - lam) * v_loss
                     if lam >= 0.01:  # below, the f term is < 1% of the loss: skip the decoder
                         # for a flow model the second output is (x1_hat [B, P, L] predicted clean last frame, s [B] its noise level)
-                        x1_hat, s = mask_positions
+                        x1_hat, s, _ = mask_positions
                         pred_latents = torch.cat([video_latents[:, :-1].float(), x1_hat[:, None]], dim=1)  # [B, T, P, L]
                         # decoded in fp32 (bf16 rounding, ~1e-3 per pixel, is the size of late high-frequency residuals)
                         with torch.autocast(args.device, enabled=False):
@@ -344,8 +352,12 @@ def main():
         # wandb logging
         if args.use_wandb and is_main:
             log_dict = {'train/loss': loss.item() * args.gradient_accumulation_steps}  # undo the accumulation scaling
-            if args.fm_loss != 'v':
+            if args.fm_loss != 'v' or args.correction:
                 log_dict.update({f'train/{k}': v[-1] for k, v in loss_terms.items() if v})
+            if args.correction:
+                gate = raw_dynamics.correction_gate.detach()  # [L]
+                log_dict.update({'train/gate_mean': gate.mean().item(), 'train/gate_min': gate.min().item(),
+                                 'train/gate_max': gate.max().item()})
             if use_moe:
                 log_dict['train/moe_aux_loss'] = moe_aux_scalar
                 # per-expert utilization across blocks
@@ -370,7 +382,7 @@ def main():
 
         # save model and visualize results
         if i % args.log_interval == 0 or i == end_step - 1:  # also save the final step
-            if args.fm_loss != 'v':  # interval means of the loss terms (the f-loss is absent where the decoder was skipped)
+            if args.fm_loss != 'v' or args.correction:  # interval means of the loss terms (the f-loss is absent where the decoder was skipped)
                 peak_gb = torch.cuda.max_memory_allocated() / 2 ** 30 if torch.cuda.is_available() else 0.0
                 append_jsonl('train_log.jsonl', {'step': i, **{k: sum(v) / len(v) for k, v in loss_terms.items() if v},
                                                  'peak_gpu_gb': round(peak_gb, 1)})

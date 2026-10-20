@@ -1,0 +1,55 @@
+# Correction training (Ahn et al. 2026, arXiv 2610.14136) on the Zelda flow-matching dynamics. Same frozen tokenizer
+# (KL c16 temporal, zelda_cont_final_tp step 29000) and actions (CoMo full z) as "longer flow matching" (13M, 100k, 34.36 dB),
+# from which the dynamics model is fine-tuned jointly with a corrector (a copy of it) for 30k steps. Rows:
+#   flow + correction   correction.yaml   fine-tune 30k, lr 1e-4, correction_weight 1
+# Launch:
+#   TINYWORLDS_GPU=H100 modal run --detach scripts/infra/modal_train.py --dataset ZELDA_TRAIN \
+#     --training-config configs/experiments/zelda_correction/training.yaml --run-name zelda_correction_fm
+# Eval (K corrections per Euler step; K 0 = the fine-tuned dynamics alone; add --correction-interval 0.5 to correct only
+# the first half of the Euler steps, counted from the noisiest):
+#   modal run --detach scripts/infra/modal_train.py::eval_dynamics --run-dir zelda_correction_fm --name zelda_correction_fm_k<K> \
+#     --num-steps 1,4,8 --extra-args "--correction-k <K> --test-h5 data/zelda_test_frames.h5 \
+#     --latent-actions-path results/como_actions_v1_full \
+#     --video-tokenizer-path results/zelda_cont_final_tp/video_tokenizer/checkpoints/video_tokenizer_step_29000 \
+#     --dynamics-path results/zelda_correction_fm/dynamics/checkpoints/dynamics_step_29999"
+use_wandb: true
+wandb_project: tinyworlds
+
+dataset: ZELDA_TRAIN      # zelda_train_frames.h5: all frames minus the 10 held-out test blocks (scripts/data/split_dataset.py)
+preload_ratio: 1.0        # all ~65k train frames (ZeldaDataset defaults to 0.2)
+
+patch_size: 4             # 48 pixel values per token; 1024 tokens per 128px frame
+context_length: 4
+frame_size: 128
+latent_dim: 16            # KL c16 tokenizer (taken from the checkpoint anyway)
+num_bins: 4               # FSQ only
+n_actions: 16             # logging only (full CoMo z)
+
+amp: true
+tf32: true
+compile: true
+
+num_workers: 8
+pin_memory: true
+
+distributed:
+  use_ddp: false
+  use_fsdp: false
+  reshard_after_forward: false
+nproc_per_node: 1
+standalone: true
+
+video_tokenizer_config: configs/experiments/zelda_continuous/tokenizer_final_tp.yaml      # unused (run_video_tokenizer false)
+latent_actions_config: configs/experiments/lam_loop/i4_bal16_seed2.yaml                  # unused (run_latent_actions false)
+dynamics_config: configs/experiments/zelda_correction/correction.yaml
+run_video_tokenizer: false   # frozen KL c16 temporal tokenizer: video_tokenizer_path in the dynamics yamls
+run_latent_actions: false    # CoMo actions: path in the dynamics yamls
+run_dynamics: true
+
+optimizer: adamw
+muon_momentum: 0.95
+muon_backend_steps: 5
+use_moe: false
+num_experts: 4
+top_k_experts: 2
+moe_aux_loss_coeff: 0.01

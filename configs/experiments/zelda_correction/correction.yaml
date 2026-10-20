@@ -1,0 +1,34 @@
+# flow + correction: "longer flow matching" (configs/experiments/zelda_dynamics_scale/longer.yaml, step 99999 EMA)
+# fine-tuned 30k steps jointly with a corrector initialised as a copy of it (gate 0), paper recipe (lr 1e-4, weight 1)
+batch_size_per_gpu: 32   # x accum 2 = 64; two 13M nets at 64 OOM on an 80 GB H100
+gradient_accumulation_steps: 2
+n_updates: 30000
+learning_rate: 0.0001
+log_interval: 1000   # checkpoint + sampled-prediction PNG
+
+use_actions: true
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 12
+
+dynamics_type: flow
+fm_pred: v
+fm_shift: 3.0
+qk_norm: true
+ema_decay: 0.999
+seed: 0
+correction: true
+correction_weight: 1.0
+init_weights: results/zelda_longer_fm/dynamics/checkpoints/dynamics_step_99999   # longer flow matching (EMA), fresh optimizer
+
+video_tokenizer_path: results/zelda_cont_final_tp/video_tokenizer/checkpoints/video_tokenizer_step_29000   # frozen KL c16 temporal
+latent_actions_path: results/como_actions_v1_full   # CoMo IDM + train z stats, models/como.py CoMoActions
+action_file: data/zelda_train_como_z.npy             # raw z per train .h5 row
+
+test_eval_h5: data/zelda_test_frames.h5   # test/* curve (1 Euler step, K 1) for watching; the reported number is eval_next_frame.py
+test_eval_interval: 2000
+
+# resume: set to a checkpoint dir (…/dynamics/checkpoints/dynamics_step_N)
+checkpoint:
