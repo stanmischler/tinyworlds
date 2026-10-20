@@ -24,11 +24,13 @@ class TestCurve:
     @torch.no_grad()
     def __call__(self, dyn, tok, actions, device, num_steps=1, seed=0):
         # dyn: flow dynamics (EMA copy); tok: frozen tokenizer; actions: action model with encode(frames) -> [B, T-1, A]
-        # -> {'test/psnr', 'test/ssim', 'test/flow_loss'}, means over all windows
+        # -> {'test/psnr', 'test/ssim', 'test/flow_loss'}, means over all windows; a corrected model also gets
+        # test/psnr_k0 (corrector off) and test/corr_loss, and test/flow_loss stays the dynamics net's own loss
         was_training, tf32 = dyn.training, torch.backends.cuda.matmul.allow_tf32
         dyn.eval()
         torch.backends.cuda.matmul.allow_tf32 = False  # full fp32, as the eval
-        psnrs, ssims, loss_sum = [], [], 0.0
+        correction = getattr(dyn, 'correction', False)
+        psnrs, ssims, psnrs_k0, loss_sum, corr_sum = [], [], [], 0.0, 0.0
         with torch.random.fork_rng(devices=[device] if torch.device(device).type == 'cuda' else []):
             torch.manual_seed(seed)  # the eval's seed: same sampling noise per window
             for x in self.batches(device):
@@ -39,17 +41,28 @@ class TestCurve:
                 tgt = to_unit(x[:, -1])  # [B, C, H, W]
                 psnrs += psnr(pred, tgt).tolist()
                 ssims += ssim(pred, tgt).tolist()
+                if correction:  # same windows with the corrector off: the fine-tuned dynamics alone
+                    k = dyn.correction_k
+                    dyn.correction_k = 0
+                    pred_lat = dyn.forward_inference(lat[:, :self.context], prediction_horizon=1, num_steps=num_steps,
+                                                     conditioning=actions.encode(x))  # [B, T, P, L]
+                    dyn.correction_k = k
+                    psnrs_k0 += psnr(to_unit(tok.decode(pred_lat)[:, -1]), tgt).tolist()
 
             torch.manual_seed(seed)  # fixed noise and flow times, so the loss curve is not noisy
             token_loss = getattr(dyn, 'token_loss', None)
             if token_loss is not None:
                 dyn.token_loss = 'mse'  # plain velocity MSE whatever the training loss, so runs compare
             for x in self.batches(device):
-                _, _, loss = dyn(tok.encode(x), training=True, conditioning=actions.encode(x))  # plain velocity MSE
+                _, aux, loss = dyn(tok.encode(x), training=True, conditioning=actions.encode(x))  # plain velocity MSE
+                if correction:  # aux = (x1_hat, s, loss terms)
+                    loss, corr_sum = aux[2]['flow_loss'], corr_sum + aux[2]['corr_loss'].item() * x.shape[0]
                 loss_sum += loss.item() * x.shape[0]
             if token_loss is not None:
                 dyn.token_loss = token_loss
         torch.backends.cuda.matmul.allow_tf32 = tf32
         dyn.train(was_training)
-        return {'test/psnr': float(np.mean(psnrs)), 'test/ssim': float(np.mean(ssims)),
-                'test/flow_loss': loss_sum / len(self.frames)}
+        out = {'test/psnr': float(np.mean(psnrs)), 'test/ssim': float(np.mean(ssims)), 'test/flow_loss': loss_sum / len(self.frames)}
+        if correction:
+            out.update({'test/psnr_k0': float(np.mean(psnrs_k0)), 'test/corr_loss': corr_sum / len(self.frames)})
+        return out

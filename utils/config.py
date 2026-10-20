@@ -316,6 +316,11 @@ class DynamicsConfig:
 	# Variable context (flow only): each training batch keeps its first Tc + 1 frames, Tc ~ U{1, ..., T - 1}, so
 	# the model also learns to predict from short histories (NanoWM's 1 context frame -> 3 rollout). False = always T - 1.
 	fm_random_context: bool = False
+	# Correction training (Ahn et al. 2026, arXiv 2610.14136, flow only, models/flow_dynamics.py): a corrector network (a copy of the
+	# dynamics net when fine-tuning from init_weights) refines the predicted clean frame; loss = flow loss +
+	# correction_weight * corrected-velocity loss. Corrections per sampling step are an eval knob (--correction-k).
+	correction: bool = False
+	correction_weight: float = 1.0
 	bf_alpha_max: float = 1.0
 	bf_eps: float = 0.1
 	# Fine-tune init (STA-61): a dynamics checkpoint dir whose weights (EMA if present) initialise the model and its EMA;

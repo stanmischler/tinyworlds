@@ -1,0 +1,170 @@
+<title>Zelda Action Space</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: a 3D plot that fills the width, with a sticky pair inspector on the right (stacked below on phones). */
+  :root {
+    --bg: #f5f6f1; --panel: #ffffff; --fg: #1b2019; --muted: #5a6355; --line: #dde1d6; --accent: #2e6a39;
+    --train: #b5b4ae;
+    --l-WALK_U: #2a78d6; --l-WALK_D: #eb6834; --l-WALK_L: #1baf7a; --l-WALK_R: #6250d6;
+    --l-STILL: #eda100; --l-NONCONTROL: #e34948; --l-OTHER: #0b0b0b;  /* light values = LABELS in figures.py */
+    --font-body: "Atkinson Hyperlegible", "Segoe UI", system-ui, sans-serif;
+    --font-data: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #131611; --panel: #1b1f18; --fg: #e8ece3; --muted: #a2ac9b; --line: #2d3329; --accent: #7fc28a;
+      --train: #5c5f57;
+      --l-WALK_U: #3987e5; --l-WALK_D: #d95926; --l-WALK_L: #199e70; --l-WALK_R: #9085e9;
+      --l-STILL: #c98500; --l-NONCONTROL: #e66767; --l-OTHER: #f0efec;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #131611; --panel: #1b1f18; --fg: #e8ece3; --muted: #a2ac9b; --line: #2d3329; --accent: #7fc28a;
+    --train: #5c5f57;
+    --l-WALK_U: #3987e5; --l-WALK_D: #d95926; --l-WALK_L: #199e70; --l-WALK_R: #9085e9;
+    --l-STILL: #c98500; --l-NONCONTROL: #e66767; --l-OTHER: #f0efec;
+    color-scheme: dark;
+  }
+  body {
+    background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.5;
+    padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 20px 32px;
+  }
+  .wrap { max-width: 1280px; margin: 0 auto; display: grid; gap: 16px; }
+  header { display: grid; gap: 6px; }
+  h1 { font-size: 1.6rem; margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
+  .lede { margin: 0; max-width: 72ch; color: var(--muted); }
+  .stats { display: flex; flex-wrap: wrap; gap: 8px 20px; font-family: var(--font-data); font-size: 0.8rem; color: var(--muted);
+           font-variant-numeric: tabular-nums; }
+  .stats b { color: var(--fg); font-weight: 500; }
+  .main { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 16px; align-items: start; }
+  #plot { min-width: 0; height: min(78vh, 760px); min-height: 420px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+  aside { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 12px); display: grid; gap: 12px; min-width: 0; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 14px; display: grid; gap: 10px; }
+  .eyebrow { font-family: var(--font-data); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 0; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .pair figure { margin: 0; display: grid; gap: 4px; min-width: 0; }
+  .pair figcaption { font-family: var(--font-data); font-size: 0.72rem; color: var(--muted); }
+  .frame { width: 100%; aspect-ratio: 1; image-rendering: pixelated; background-color: var(--line); background-repeat: no-repeat; border-radius: 3px; }
+  #info { font-family: var(--font-data); font-size: 0.8rem; margin: 0; overflow-wrap: anywhere; }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; }
+  .help { margin: 0; font-size: 0.85rem; color: var(--muted); }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; }
+  button { font: inherit; font-size: 0.85rem; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer; }
+  button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (max-width: 860px) { .main { grid-template-columns: minmax(0, 1fr); } aside { position: static; } #plot { height: 70vh; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Zelda action space</h1>
+    <p class="lede">Each point is one pair of frames four steps apart. Its position is the CoMo action model's continuous action
+      for that pair (128 numbers), projected onto its first three principal components. Coloured points are held-out test pairs
+      labelled by two vision-language judges; grey points are a random sample of training pairs. Hover a point to see its frames.</p>
+    <div class="stats" id="stats"></div>
+  </header>
+  <div class="main">
+    <div id="plot" role="img" aria-label="3D scatter of action vectors projected on three principal components"></div>
+    <aside>
+      <div class="card">
+        <p class="eyebrow">Hovered pair</p>
+        <div class="pair">
+          <figure><div class="frame" id="ft"></div><figcaption>frame t</figcaption></figure>
+          <figure><div class="frame" id="fn"></div><figcaption>frame t+4</figcaption></figure>
+        </div>
+        <p id="info">Hover or tap a point.</p>
+      </div>
+      <div class="card">
+        <p class="eyebrow">View</p>
+        <div class="controls">
+          <button id="toggle-train" aria-pressed="true">Train cloud shown</button>
+          <button id="reset-view">Reset camera</button>
+        </div>
+        <p class="help">Click a legend entry to hide a label, double-click to show only that label. Drag to rotate, scroll to zoom.</p>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
+<script>
+const DATA = __DATA__;
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const colourOf = (g) => css(g.key === 'TRAIN' ? '--train' : '--l-' + g.key);
+let showTrain = true, shown = null;
+
+document.getElementById('stats').innerHTML = [
+  ['checkpoint', DATA.ckpt_name], ['train pairs shown', DATA.n_train], ['labelled test pairs', DATA.n_labelled],
+  ['variance explained', DATA.var.map((v, i) => `PC${i + 1} ${(100 * v).toFixed(1)}%`).join(' · ')],
+].map(([k, v]) => `<span>${k} <b>${v}</b></span>`).join('');
+
+function traces() {
+  return DATA.groups.map((g) => {
+    const train = g.key === 'TRAIN';
+    return {
+      type: 'scatter3d', mode: 'markers', name: `${g.name} (${g.x.length})`, x: g.x, y: g.y, z: g.z,
+      visible: train && !showTrain ? 'legendonly' : true,
+      marker: { size: train ? 2.2 : 4.5, color: colourOf(g), symbol: g.symbol, opacity: train ? 0.45 : 0.95,
+                line: { width: train ? 0 : 0.5, color: css('--panel') } },
+      hoverinfo: 'name', hoverlabel: { font: { family: css('--font-data') } },
+    };
+  });
+}
+
+function layout() {
+  const axis = (i) => ({ title: { text: `PC${i + 1}` }, color: css('--muted'), gridcolor: css('--line'), zerolinecolor: css('--line'),
+                         showbackground: false });
+  return {
+    paper_bgcolor: css('--panel'), font: { family: css('--font-body'), color: css('--fg') }, margin: { l: 0, r: 0, t: 0, b: 0 },
+    legend: { x: 0.01, y: 0.99, bgcolor: 'rgba(0,0,0,0)', font: { size: 12 } },
+    scene: { xaxis: axis(0), yaxis: axis(1), zaxis: axis(2), aspectmode: 'cube', camera: { eye: { x: 1.5, y: 1.5, z: 1.0 } } },
+    uirevision: 'keep',
+  };
+}
+
+const plot = document.getElementById('plot');
+function draw() { Plotly.react(plot, traces(), layout(), { responsive: true, displaylogo: false }); }
+draw();
+
+function showPair(curve, point) {
+  shown = [curve, point];
+  const g = DATA.groups[curve];
+  const [sheet, k] = g.tiles[point];
+  const col = k % DATA.sheet_cols, row = Math.floor(k / DATA.sheet_cols);
+  ['ft', 'fn'].forEach((id, f) => {
+    const el = document.getElementById(id);
+    const w = el.clientWidth;  // one frame of the sheet is drawn w px wide
+    el.style.backgroundImage = `url(${sheet})`;
+    el.style.backgroundSize = `${DATA.sheet_cols * 2 * w}px auto`;
+    el.style.backgroundPosition = `${-(col * 2 + f) * w}px ${-row * w}px`;
+  });
+  document.getElementById('info').innerHTML =
+    `<span class="swatch" style="background:${colourOf(g)}"></span>${g.name}<br>${g.info[point]}<br>` +
+    `PC1 ${g.x[point].toFixed(2)} · PC2 ${g.y[point].toFixed(2)} · PC3 ${g.z[point].toFixed(2)}`;
+}
+plot.on('plotly_hover', (e) => showPair(e.points[0].curveNumber, e.points[0].pointNumber));
+plot.on('plotly_click', (e) => showPair(e.points[0].curveNumber, e.points[0].pointNumber));
+
+document.getElementById('toggle-train').addEventListener('click', (e) => {
+  showTrain = !showTrain;
+  e.currentTarget.setAttribute('aria-pressed', String(showTrain));
+  e.currentTarget.textContent = showTrain ? 'Train cloud shown' : 'Train cloud hidden';
+  Plotly.restyle(plot, { visible: showTrain ? true : 'legendonly' }, [0]);
+});
+document.getElementById('reset-view').addEventListener('click', () => {
+  Plotly.relayout(plot, { 'scene.camera': { eye: { x: 1.5, y: 1.5, z: 1.0 } } });
+});
+
+// the sprite offsets are in px of the frame width: redo them when the layout resizes
+window.addEventListener('resize', () => { if (shown) showPair(...shown); });
+// re-colour when the viewer's theme changes
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
+new MutationObserver(draw).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+// open on a labelled example so the inspector is never empty
+const first = DATA.groups.findIndex((g) => g.key === 'WALK_L');
+if (first >= 0) showPair(first, 0);
+</script>

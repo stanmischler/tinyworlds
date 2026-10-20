@@ -1,4 +1,5 @@
 from models.utils import ModelType
+import copy
 import math
 import torch
 import torch.nn as nn
@@ -36,8 +37,8 @@ class FlowDynamicsModel(nn.Module):
     def __init__(self, frame_size=(128, 128), patch_size=4, embed_dim=256, num_heads=8, hidden_dim=512, num_blocks=12,
                  latent_dim=6, num_bins=4, conditioning_dim=0, time_dim=64, fm_pred="v", fm_shift=1.0, qk_norm=True,
                  t_eps=0.05, round_latents=True, fm_source="noise", fm_source_noise=0.0, noise_cond=False, random_context=False,
-                 bridge_loss="stabilised", bridge_t_max=0.999, bridge_delta=1e-4, token_loss="mse", token_loss_weight=1.0,
-                 topk_frac=0.05, focal_gamma=1.0, action_dropout_prob=0.0):
+                 bridge_loss="stabilised", bridge_t_max=0.999, bridge_delta=1e-4, correction=False, correction_weight=1.0,
+                 token_loss="mse", token_loss_weight=1.0, topk_frac=0.05, focal_gamma=1.0, action_dropout_prob=0.0):
         super().__init__()
         # token_loss: how the per-token velocity error e [B, P] is reduced (see token_weighted_loss); "mse" = plain mean
         assert token_loss in ("mse", "motion", "topk", "focal"), token_loss
@@ -83,10 +84,32 @@ class FlowDynamicsModel(nn.Module):
         pe_spatial = build_spatial_only_pe((H, W), patch_size, embed_dim, device='cpu', dtype=torch.float32)  # [1,P,E]
         self.register_buffer("pos_spatial_dec", pe_spatial, persistent=False)
 
-    def _conditioning(self, actions, t, T, alpha=None):
-        # actions: [B, T-1, A] or None; t: [B, T] flow time per frame; alpha: [B, T] noise level (noise_cond only)
-        # -> [B, T, A + Dt (+ Dt)]
-        temb = self.time_mlp(timestep_embedding(t, self.time_dim))  # [B, T, Dt]
+        # Correction training (Ahn et al., arXiv 2610.14136, "gated native" corrector of their Eq. 8): a second network C,
+        # same architecture as the dynamics net D, reads the predicted clean frame x1_hat = x_t + s v (stop-gradient) in
+        # the noisy frame's slot and outputs a velocity c; the corrected velocity is v' = v + gate * (c - v), gate [L]
+        # starts at 0 so the corrected model starts as D. Trained jointly: loss = |v - u|^2 + correction_weight |v' - u|^2.
+        # At sampling the correction is applied correction_k times per Euler step, on the first correction_interval
+        # fraction of the steps, counted from the noisiest (inference knobs, set by the eval).
+        self.correction, self.correction_weight = bool(correction), float(correction_weight)
+        self.correction_k, self.correction_interval = 1, 1.0
+        if self.correction:
+            assert fm_pred == "v" and fm_source in ("noise", "copy") and not self.noise_cond, \
+                'correction needs a velocity head and a straight path (fm_source noise or copy, no noise_cond)'
+            self.corrector = nn.ModuleDict({name: copy.deepcopy(getattr(self, name)) for name in self.NET_MODULES})
+            self.correction_gate = nn.Parameter(torch.zeros(latent_dim))  # [L]
+
+    NET_MODULES = ("latent_embed", "time_mlp", "transformer", "output_mlp")  # the modules that make up one network
+
+    def copy_dynamics_into_corrector(self):
+        # corrector init (paper: C starts as a copy of the pretrained D); called after loading D's weights
+        for name in self.NET_MODULES:
+            self.corrector[name].load_state_dict(getattr(self, name).state_dict())
+
+    def _conditioning(self, actions, t, T, alpha=None, time_mlp=None):
+        # actions: [B, T-1, A] or None; t: [B, T] flow time per frame; alpha: [B, T] noise level (noise_cond only);
+        # time_mlp: the corrector's (None = the dynamics net's) -> [B, T, A + Dt (+ Dt)]
+        time_mlp = self.time_mlp if time_mlp is None else time_mlp
+        temb = time_mlp(timestep_embedding(t, self.time_dim))  # [B, T, Dt]
         if self.noise_cond:
             alpha = torch.zeros_like(t) if alpha is None else alpha
             temb = torch.cat([temb, self.alpha_mlp(timestep_embedding(alpha, self.time_dim))], dim=-1)  # [B, T, 2Dt]
@@ -100,12 +123,14 @@ class FlowDynamicsModel(nn.Module):
             a = torch.cat([torch.zeros_like(actions[:, :1]), actions[:, :T - 1]], dim=1).to(temb.dtype)  # [B, T, A]
         return torch.cat([a, temb], dim=-1)  # [B, T, A + Dt]
 
-    def net(self, latents, actions, t, alpha=None):
-        # latents: [B, T, P, L] (last frame noisy); actions: [B, T-1, A] or None; t, alpha: [B, T] -> raw output [B, T, P, L]
+    def net(self, latents, actions, t, alpha=None, modules=None):
+        # latents: [B, T, P, L] (last frame noisy); actions: [B, T-1, A] or None; t, alpha: [B, T]; modules: the corrector
+        # (None = the dynamics net) -> raw output [B, T, P, L]
+        m = self if modules is None else modules
         B, T, P, L = latents.shape
-        emb = self.latent_embed(latents.float()) + self.pos_spatial_dec.to(latents.device)  # [B, T, P, E]
-        out = self.transformer(emb, conditioning=self._conditioning(actions, t, T, alpha))  # [B, T, P, E]
-        return self.output_mlp(out)  # [B, T, P, L]
+        emb = m.latent_embed(latents.float()) + self.pos_spatial_dec.to(latents.device)  # [B, T, P, E]
+        out = m.transformer(emb, conditioning=self._conditioning(actions, t, T, alpha, m.time_mlp))  # [B, T, P, E]
+        return m.output_mlp(out)  # [B, T, P, L]
 
     def velocity(self, latents, actions, t):
         # velocity of the last frame: [B, P, L]
@@ -140,10 +165,21 @@ class FlowDynamicsModel(nn.Module):
             return (w * e).mean()
         return mse
 
+    def corrected_velocity(self, context, xt, v, actions, t):
+        # one correction: context [B, Tc, P, L] clean frames; xt [B, P, L] the noisy last frame; v [B, P, L] its current
+        # velocity; t [B, Tc+1] flow times (last = the noisy frame's) -> v' [B, P, L]. v enters detached (full stop-grad)
+        v = v.detach().float()
+        s = (1 - t[:, -1])[:, None, None]  # [B, 1, 1] noise level
+        x1_hat = xt + s * v  # [B, P, L] predicted clean frame
+        inp = torch.cat([context.float(), x1_hat[:, None]], dim=1)  # [B, Tc+1, P, L] x1_hat replaces x_t (not added)
+        c = self.net(inp, actions, t, modules=self.corrector)[:, -1].float()  # [B, P, L]
+        return v + self.correction_gate * (c - v)  # [B, P, L]
+
     def forward(self, latents, training=True, conditioning=None, targets=None, token_mask=None):
         # latents: [B, T, P, L] clean FSQ (or continuous) latents; conditioning: [B, T-1, A] actions. Returns
-        # (v_hat, (x1_hat, s), loss) like DynamicsModel.forward returns (logits, mask, loss); x1_hat = x_t + s * v_hat [B, P, L]
-        # is the predicted clean last frame and s [B] its noise level. token_mask: [B, P] moving tokens (token_loss "motion").
+        # (v_hat, (x1_hat, s, parts), loss) like DynamicsModel.forward returns (logits, mask, loss); x1_hat = x_t + s * v_hat [B, P, L]
+        # is the predicted clean last frame, s [B] its noise level and parts the loss terms to log ({} without correction).
+        # token_mask: [B, P] moving tokens (token_loss "motion").
         if self.null_action is not None and self.training and conditioning is not None:
             conditioning = self.drop_actions(conditioning)
         if self.random_context and training and latents.shape[1] > 2:
@@ -164,7 +200,13 @@ class FlowDynamicsModel(nn.Module):
         v_hat = self.velocity(noisy, conditioning, t)  # [B, P, L]
         loss = self.token_weighted_loss(v_hat, x1 - x0, token_mask)
         x1_hat = xt + s[:, None, None] * v_hat.float()  # [B, P, L] predicted clean latents (for the frequency loss)
-        return v_hat, (x1_hat, s), loss
+        parts = {}  # loss terms to log
+        if self.correction:
+            v_corr = self.corrected_velocity(latents[:, :-1], xt, v_hat, conditioning, t)  # [B, P, L]
+            corr_loss = F.mse_loss(v_corr, x1 - x0)
+            parts = {'flow_loss': loss.detach(), 'corr_loss': corr_loss.detach()}
+            loss = loss + self.correction_weight * corr_loss
+        return v_hat, (x1_hat, s, parts), loss
 
     def bridge_point(self, z0, z1):
         # Brownian bridge between the clean previous frame z0 and the next frame z1 ([B, P, L] each), ViBT Eq. 7-8:
@@ -251,6 +293,9 @@ class FlowDynamicsModel(nn.Module):
             t[:, -1] = 1 - s_grid[k]
             inp = torch.cat([context_latents.float(), x[:, None]], dim=1)  # [B, Tc+1, P, L]
             v = self.guided_velocity(inp, conditioning, t)  # [B, P, L]
+            if self.correction and k < math.ceil(self.correction_interval * num_steps):  # the first, noisiest steps
+                for _ in range(self.correction_k):
+                    v = self.corrected_velocity(context_latents, x, v, conditioning, t)
             x = x + (s_grid[k] - s_grid[k + 1]) * v  # dt = t_{k+1} - t_k
             if self.fm_source == "bridge":
                 x = x + self.bridge_noise(x, s_grid[k], s_grid[k + 1], generator)
