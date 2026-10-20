@@ -65,6 +65,10 @@ def main():
     p.add_argument('--num-steps', type=int, default=10, help='MaskGIT unmasking iterations, or Euler steps for a flow dynamics model')
     p.add_argument('--temperature', type=float, default=0.0)
     p.add_argument('--bf-eps', type=float, help='Bi-flow dynamics: starting noise eps (default: the training config bf_eps)')
+    p.add_argument('--correction-k', type=int, help='corrected flow dynamics: corrections per Euler step (0 = off; default 1)')
+    p.add_argument('--correction-interval', type=float,
+                   help='corrected flow dynamics: fraction of the Euler steps, counted from the noisiest, that are corrected '
+                        '(default 1 = all; a step count, not a noise range as in the paper)')
     p.add_argument('--decode', choices=['context', 'alone'], default='context',
                    help='context: tokenize/detokenize the target with its context frames, as in training (the tokenizer is '
                         'temporal); alone: the target frame on its own (protocol before 2026-10-02)')
@@ -92,6 +96,10 @@ def main():
     if args.bf_eps is not None:
         assert hasattr(dyn, 'bf_eps'), '--bf-eps needs a Bi-flow dynamics checkpoint'
         dyn.bf_eps = args.bf_eps
+    if args.correction_k is not None or args.correction_interval is not None:
+        assert getattr(dyn, 'correction', False), '--correction-k/-interval need a dynamics checkpoint trained with correction'
+        dyn.correction_k = dyn.correction_k if args.correction_k is None else args.correction_k
+        dyn.correction_interval = dyn.correction_interval if args.correction_interval is None else args.correction_interval
     lpips_fn = try_lpips(device)
     n_actions = lam.quantizer.codebook_size
     rng = torch.Generator(device='cpu').manual_seed(args.seed)
