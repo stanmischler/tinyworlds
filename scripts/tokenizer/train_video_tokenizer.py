@@ -1,8 +1,9 @@
 from contextlib import nullcontext
+import json
 import torch
 import os
 from models.video_tokenizer import VideoTokenizer
-from datasets.data_utils import visualize_reconstruction, load_data_and_data_loaders
+from datasets.data_utils import visualize_reconstruction, load_data_and_data_loaders, held_out_test_h5
 from utils.scheduler_utils import create_cosine_scheduler
 from tqdm import tqdm
 import wandb
@@ -106,6 +107,16 @@ def main():
         print(f"Resumed from {args.checkpoint}: continuing at step {start_step}/{args.n_updates}")
     train_ctx = torch.amp.autocast(args.device, enabled=True, dtype=torch.bfloat16) if args.amp and not args.distributed.use_fsdp else nullcontext()
 
+    # held-out reconstruction curve (rank 0, unwrapped model; FSDP shards the weights, so off there)
+    test_curve = None
+    test_h5 = held_out_test_h5(args.dataset, args.test_eval_h5) if args.test_eval_interval > 0 else None
+    if test_h5 and is_main and not args.distributed.use_fsdp:
+        assert hasattr(training_data, 'frame_skip'), 'test curve: block-split video datasets only (no episode .h5)'
+        from evaluation.test_curve import TokenizerTestCurve
+        test_curve = TokenizerTestCurve(test_h5, training_data, context=args.context_length - 1,
+                                        frame_skip=training_data.frame_skip, limit=args.test_eval_limit)
+        print(f"test curve: {len(test_curve.windows)} windows of {test_h5} every {args.test_eval_interval} steps")
+
     results = {
         'n_updates': 0,
         'loss_vals': [],
@@ -164,6 +175,16 @@ def main():
             log_training_metrics(i, metrics, prefix='train')
             log_system_metrics(i)
             log_learning_rate(optimizers[0], i)
+
+        if test_curve is not None and (i % args.test_eval_interval == 0 or i == args.n_updates - 1):
+            raw_model = unwrap_model(model)
+            test_metrics, test_image = test_curve(getattr(raw_model, '_orig_mod', raw_model), args.device)  # _orig_mod: compiled
+            print(f'\n Step {i} ' + '  '.join(f'{k} {v:.4f}' for k, v in test_metrics.items()))
+            test_image.save(os.path.join(visualizations_dir, f'test_step_{i}.png'))
+            if args.use_wandb:
+                wandb.log({**test_metrics, 'test/image': wandb.Image(test_image)}, step=i)
+            with open(os.path.join(stage_dir, 'test_curve.jsonl'), 'a') as f:
+                f.write(json.dumps({'step': i, **test_metrics}) + '\n')
 
         # save model and visualize results
         if i % args.log_interval == 0:

@@ -54,6 +54,23 @@ VIDEO_GAMES = {
     'ZELDA_TRAIN': (ZeldaDataset, '/data/Zelda oot2d 1 Cut.mp4', '/data/zelda_train_frames.h5', None),
 }
 
+# held-out test file of each *_TRAIN dataset (scripts/data/split_dataset.py): the trainers' test curves
+# (evaluation/test_curve.py) and scripts/eval/eval_next_frame.py read it
+TEST_H5 = {
+    'PONG_TRAIN': 'data/pong_test_frames.h5',
+    'SONIC_TRAIN': 'data/sonic_test_frames.h5',
+    'ZELDA_TRAIN': 'data/zelda_test_frames.h5',
+}
+
+
+def held_out_test_h5(dataset, explicit=None):
+    """Test .h5 of the trainers' held-out curves: `explicit` if set, else the dataset's TEST_H5 file if it is on disk,
+    else None (no curve)."""
+    if explicit:
+        return explicit
+    path = TEST_H5.get(dataset)
+    return path if path and os.path.exists(path) else None
+
 
 # episode .h5 datasets (datasets.EpisodeH5Dataset): fps is fixed by the .h5; the held-out evals read their own files
 # (eval_pusht.py / eval_nanowm.py: <env>_val_frames.h5, eval_lpwm.py: obj3d_test_frames.h5)
