@@ -44,7 +44,7 @@ Do not launch Modal GPU runs without being asked — they bill the user.
 
 After any local smoke run, **delete its `results/<timestamp>/` directory** (see checkpoint discovery below).
 
-## Repository layout (STA-58) — where things live and where new code goes
+## Repository layout — where things live and where new code goes
 
 - Packages = library: `models/`, `datasets/` (+ `datasets/split.py`), `evaluation/` (image metrics, held-out windows, motion proxies, action-code metrics, LAM decode, Zelda judge set), `utils/`.
 - `scripts/<stage>/` = entry points, in pipeline order: `data/` `tokenizer/` `actions/` (LAM, CoMo) `dynamics/` `pipeline/` (full_train) `inference/` `eval/` `infra/` (Modal, worktree, rc).
@@ -52,6 +52,11 @@ After any local smoke run, **delete its `results/<timestamp>/` directory** (see 
 - `configs/`: base stage yamls + `training.yaml`, `como/`, `dev/`; every past run's configs under `configs/experiments/<run>/`.
 - Rules: scripts import only from the packages, never from another script (no `sys.path` hacks); new metric = function in `evaluation/` + thin CLI in `scripts/eval/`; new game = dataset class + one row in `VIDEO_GAMES` (`datasets/data_utils.py`); new model kwargs go in the `*_kwargs(cfg)` helpers of `utils/utils.py` so training and checkpoint loading build the model identically; a study that graduates moves into the packages/`scripts/` and its folder is deleted.
 - Never move/rename `utils.config.{DeviceType, DistributedConfig, FSDPMixedPrecisionConfig}`: they are pickled into every `state.pt`.
+
+## Naming runs and references
+
+- **No Linear ticket IDs** (`STA-xx`) in anything committed or published: code, comments, docstrings, configs, file and folder names, run names, commit messages, PR titles and bodies, the results table. (Branch names made by the worktree tooling are the one exception.)
+- **No code names for runs** (`P`, `F1`, `J1`, `arm A`, `v3b`). Name each run in **4 words max**, in plain language that says what it is, like the rows of `docs/results_table.tex`: "copy last frame", "flow matching", "plain decoder", "continuous per-frame KL-VAE, joint". Use the same name in configs (`run_name`, as a slug), logs, chat, PRs and the table.
 
 ## Architecture — what you must read across files to understand
 

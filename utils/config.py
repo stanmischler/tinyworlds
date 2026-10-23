@@ -127,6 +127,11 @@ class VideoTokenizerConfig:
 	bottleneck: str = "fsq"
 	latent_noise: float = 0.8
 	kl_weight: float = 1e-6
+	# held-out curve during training (evaluation/test_curve.py): test windows reconstructed noise-free every
+	# test_eval_interval steps, logged as test/* and train_fixed/loss; same switches as DynamicsConfig
+	test_eval_h5: Optional[str] = None
+	test_eval_interval: int = 1000
+	test_eval_limit: Optional[int] = None
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)
@@ -326,10 +331,13 @@ class DynamicsConfig:
 	# Fine-tune init (STA-61): a dynamics checkpoint dir whose weights (EMA if present) initialise the model and its EMA;
 	# optimizer, scheduler and step start fresh (unlike `checkpoint`, which resumes)
 	init_weights: Optional[str] = None
-	# held-out curve during training (evaluation/test_curve.py, flow only): test .h5 scored every test_eval_interval
-	# steps with the EMA weights, logged as test/*; for watching only (None = off)
+	# held-out curve during training (evaluation/test_curve.py, flow dynamics with an action model): test windows scored
+	# every test_eval_interval steps with the EMA weights, logged as test/*; for watching only. test_eval_h5 None = the
+	# dataset's test file (datasets/data_utils.py TEST_H5, *_TRAIN datasets only); test_eval_interval 0 = off;
+	# test_eval_limit = first N windows only (smoke tests; None = all)
 	test_eval_h5: Optional[str] = None
-	test_eval_interval: int = 2000
+	test_eval_interval: int = 1000
+	test_eval_limit: Optional[int] = None
 	# Focal log-frequency loss (Degeorge et al. 2026, "Balancing Frequencies and Pixels in Flow Matching", flow only,
 	# models/frequency_loss.py): the predicted clean latent x1_hat is decoded by the frozen tokenizer and compared with
 	# the decoded target in the 2D Fourier domain. fm_loss "v" = velocity MSE only (original); "f" = f-loss only;

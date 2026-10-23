@@ -7,7 +7,7 @@ from tqdm import tqdm
 from einops import rearrange
 from models.dynamics import DynamicsModel
 import copy
-from datasets.data_utils import visualize_reconstruction, load_data_and_data_loaders
+from datasets.data_utils import visualize_reconstruction, load_data_and_data_loaders, held_out_test_h5
 from tqdm import tqdm
 from einops import rearrange
 from utils.wandb_utils import (
@@ -247,12 +247,19 @@ def main():
     train_iter = iter(training_loader)
 
     test_curve = None
-    if args.test_eval_h5 and is_main:
-        assert is_flow and latent_action_model is not None and not args.distributed.use_fsdp, \
+    test_h5 = held_out_test_h5(args.dataset, args.test_eval_h5) if args.test_eval_interval > 0 else None
+    if test_h5 and is_main:
+        supported = is_flow and latent_action_model is not None and not args.distributed.use_fsdp
+        assert supported or not args.test_eval_h5, \
             'test_eval_h5 needs a flow dynamics model with an action model, without FSDP (it runs on rank 0 only)'
-        from evaluation.test_curve import TestCurve
-        test_curve = TestCurve(args.test_eval_h5)
-        print(f"test curve: {len(test_curve.windows)} windows of {args.test_eval_h5} every {args.test_eval_interval} steps")
+        assert hasattr(training_loader.dataset, 'frame_skip'), 'test curve: block-split video datasets only (no episode .h5)'
+        if supported:
+            from evaluation.test_curve import TestCurve
+            test_curve = TestCurve(test_h5, context=args.context_length - 1, frame_skip=training_loader.dataset.frame_skip,
+                                   limit=args.test_eval_limit)
+            print(f"test curve: {len(test_curve.windows)} windows of {test_h5} every {args.test_eval_interval} steps")
+        else:
+            print("test curve skipped: it needs a flow dynamics model with an action model, without FSDP")
 
     use_moe = getattr(args, 'use_moe', False)
     end_step = args.stop_step or args.n_updates  # stop_step: stop early on the lr schedule of n_updates
@@ -384,11 +391,12 @@ def main():
                 log_action_distribution(action_indices, i, args.n_actions)
 
         if test_curve is not None and (i % args.test_eval_interval == 0 or i == end_step - 1):
-            test_metrics = test_curve(ema_model if ema_model is not None else raw_dynamics, video_tokenizer,
-                                      latent_action_model, args.device)
+            test_metrics, test_image = test_curve(ema_model if ema_model is not None else raw_dynamics, video_tokenizer,
+                                                  latent_action_model, args.device)
             print(f'\n Step {i} ' + '  '.join(f'{k} {v:.4f}' for k, v in test_metrics.items()))
+            test_image.save(os.path.join(visualizations_dir, f'test_step_{i}.png'))
             if args.use_wandb:
-                wandb.log(test_metrics, step=i)
+                wandb.log({**test_metrics, 'test/image': wandb.Image(test_image)}, step=i)
             append_jsonl('test_curve.jsonl', {'step': i, **test_metrics})
 
         # save model and visualize results
