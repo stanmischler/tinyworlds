@@ -19,12 +19,12 @@
 
 \begin{document}
 \small
-\noindent{\Large\bfseries tinyworlds --- results so far}\hfill last updated 2026-10-19
+\noindent{\Large\bfseries tinyworlds --- results so far}\hfill last updated 2026-10-23
 
 \paragraph{Metrics.}
 Tokenizer: reconstruction PSNR/SSIM on held-out frames.
 Action model: NMI$_\text{adj}$ of action codes vs.\ judged actions (random = 0).
-Dynamics: one-step next-frame prediction from real context on the held-out split (Push-T: NanoWM protocol, 3 autoregressive steps).
+Dynamics: one-step next-frame prediction from real context on the held-out split (Push-T, Point Maze, Wall: NanoWM protocol, 3 autoregressive steps; OBJ3D: LPWM protocol, 44 autoregressive steps).
 -- = not relevant or not measured.
 
 % ---------------------------------------------------------------------------
@@ -82,6 +82,42 @@ Held-out split, 1340 windows, 3 context frames $\to$ next frame, 10 MaskGIT pass
 -- & -- & -- & -- & -- & copy last frame & 30.06 & 0.953 & -- & -- & baseline \\
 FSQ temporal & 45.70 & 0.997 & LAM (16 codes) & 0.416 & MaskGIT, 39k & \best{42.39} & \best{0.993} & -- & \pr{5} &  \\
 FSQ temporal & 45.70 & 0.997 & random code & -- & MaskGIT, 39k & 35.95 & 0.978 & -- & \pr{5} & same model, random action \\
+\bottomrule
+\end{tabular}
+
+% ---------------------------------------------------------------------------
+\section*{Point Maze (256 px, ground-truth actions)}
+NanoWM protocol (Tab.~7): 256 val clips, 1 real frame $\to$ 3 predicted autoregressively, scored at 256 px, 1 Euler step. Run by a teammate with \pr{32}'s scripts (tokenizer lr 1e-4, Adam $\epsilon$ 1e-6); not re-scored by us. Tokenizer recon on the same clips.
+
+\noindent\begin{tabular}{l c c l c l c c c l N}
+\head
+-- & -- & -- & -- & -- & copy last frame & 38.44 & \best{0.996} & \best{0.012} & -- & baseline; FID 0.56 \\
+-- & -- & -- & ground truth & -- & NanoWM-B/2 (30k) & 36.93 & 0.984 & 0.018 & -- & external reference, re-scored (paper 36.74); FID 8.14 \\
+continuous per-frame KL-VAE & 51.80 & 0.998 & ground truth & -- & flow matching, 30k & \best{40.25} & 0.995 & 0.019 & \pr{32} & FID 17.35; ball often vanishes at the first step \\
+\bottomrule
+\end{tabular}
+
+% ---------------------------------------------------------------------------
+\section*{Wall (256 px, ground-truth actions)}
+Same protocol as Point Maze.
+
+\noindent\begin{tabular}{l c c l c l c c c l N}
+\head
+-- & -- & -- & -- & -- & copy last frame & 30.10 & 0.989 & 0.031 & -- & baseline; FID 1.05 \\
+-- & -- & -- & ground truth & -- & NanoWM-B/2 (15k) & 34.30 & 0.995 & 0.010 & -- & external reference, re-scored (paper 34.05); FID 2.84 \\
+continuous per-frame KL-VAE & 54.87 & 0.999 & ground truth & -- & flow matching, 30k & \best{44.37} & \best{0.998} & \best{0.004} & \pr{32} & FID 3.27 \\
+\bottomrule
+\end{tabular}
+
+% ---------------------------------------------------------------------------
+\section*{OBJ3D (128 px)}
+LPWM protocol (Tab.~8): 200 test episodes, 6 real frames $\to$ 44 predicted (sliding 6-frame window), metrics averaged over frames 6--49, 1 Euler step. Our actions are CoMo's $z$ computed from the real clip (future included), so optimistic next to LPWM's action-free row. Run by a teammate, not re-scored by us.
+
+\noindent\begin{tabular}{l c c l c l c c c l N}
+\head
+-- & -- & -- & -- & -- & copy last frame & 22.59 & 0.845 & 0.278 & -- & baseline \\
+-- & -- & -- & none & -- & LPWM & \best{31.45} & \best{0.926} & \best{0.081} & -- & external reference, paper number (no checkpoint) \\
+continuous per-frame KL-VAE & 46.70 & 0.993 & CoMo-Tok, full $z$ & -- & flow matching, 30k & 30.95 & 0.910 & 0.164 & \pr{32} & $z$ sees the future; objects smear after $\sim$20 frames \\
 \bottomrule
 \end{tabular}
 
