@@ -37,6 +37,7 @@ from evaluation.nanowm import (ENVS, NUM_FRAMES, RESOLUTIONS, Metrics, area_resi
                                to_chw01, upsample)
 from evaluation.rollout import rollout
 from utils.utils import find_latest_checkpoint, load_videotokenizer_from_checkpoint, load_dynamics_from_checkpoint
+from utils.inference_utils import default_num_steps
 
 
 def val_clips(h5, num_clips, seed):
@@ -74,7 +75,7 @@ def main():
     p.add_argument('--nanowm-npz', help="NanoWM's predictions (experiments/pusht_nanowm/nanowm_rescore_*) to score alongside")
     p.add_argument('--num-clips', type=int, default=256)
     p.add_argument('--seed', type=int, default=42, help="NanoWM's random_seed and validation_fixed_subset_seed")
-    p.add_argument('--num-steps', type=int, default=10, help='MaskGIT unmasking iterations or flow Euler steps per frame')
+    p.add_argument('--num-steps', type=int, help='Euler steps (flow, default 32) or unmasking iterations (MaskGIT, default 10) per frame')
     p.add_argument('--temperature', type=float, default=0.0)
     p.add_argument('--batch-size', type=int, default=16)
     p.add_argument('--device', default='cuda' if torch.cuda.is_available() else ('mps' if torch.backends.mps.is_available() else 'cpu'))
@@ -120,6 +121,7 @@ def main():
         print(f'checkpoints:\n  {args.video_tokenizer_path}\n  {args.dynamics_path}')
         tok, tok_state = load_videotokenizer_from_checkpoint(args.video_tokenizer_path, device)
         dyn, _ = load_dynamics_from_checkpoint(args.dynamics_path, device)  # flow: EMA weights when saved
+        args.num_steps = default_num_steps(dyn) if args.num_steps is None else args.num_steps
         tok.eval(); dyn.eval()
         size = int((tok_state.get('config') or {}).get('frame_size', 128))  # training resolution
         # model input = the training frames: 256 -> NanoWM's bilinear stretch (convert_dinowm.py default, uint8-rounded
