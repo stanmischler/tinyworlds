@@ -43,6 +43,7 @@ from evaluation.lpwm import HORIZON, N_CONTEXT, LPWMMetrics, load_clips, lpwm_cl
 from evaluation.rollout import rollout
 from utils.utils import (find_latest_checkpoint, load_dynamics_from_checkpoint, load_latent_actions_from_checkpoint,
                          load_videotokenizer_from_checkpoint)
+from utils.inference_utils import default_num_steps
 
 SHOW_STEPS = (6, 10, 20, 30, 40, 49)  # frame indices in the PNG (6 = first predicted)
 
@@ -92,7 +93,7 @@ def main():
     p.add_argument('--n-context', type=int, default=N_CONTEXT)
     p.add_argument('--horizon', type=int, default=HORIZON)
     p.add_argument('--max-context', type=int, default=N_CONTEXT, help='dynamics context window during the rollout')
-    p.add_argument('--num-steps', type=int, default=1, help='Euler steps (flow) or unmasking iterations (MaskGIT) per frame')
+    p.add_argument('--num-steps', type=int, help='Euler steps (flow, default 32) or unmasking iterations (MaskGIT, default 10) per frame')
     p.add_argument('--temperature', type=float, default=0.0)
     p.add_argument('--batch-size', type=int, default=16)
     p.add_argument('--seed', type=int, default=0)
@@ -131,6 +132,7 @@ def main():
         print(f'checkpoints:\n  {args.video_tokenizer_path}\n  {args.dynamics_path}')
         tok, _ = load_videotokenizer_from_checkpoint(args.video_tokenizer_path, device)
         dyn, _ = load_dynamics_from_checkpoint(args.dynamics_path, device)  # flow: EMA weights when saved
+        args.num_steps = default_num_steps(dyn) if args.num_steps is None else args.num_steps
         tok.eval(); dyn.eval()
         x = gt.to(device) * 2 - 1  # [B, T, C, H, W] in [-1, 1], the training transform
         actions = None

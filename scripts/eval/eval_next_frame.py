@@ -4,7 +4,8 @@ Protocol (fixed, deterministic):
   - windows of `context` real frames + 1 target, `frame_skip` stored frames apart (as in training),
     starting every `sample_stride` frames inside each test block of the test .h5
   - the dynamics model predicts the fully masked target frame from the real context (teacher forced),
-    greedy decoding (temperature 0) over `num_steps` MaskGIT iterations
+    greedy decoding (temperature 0) over `num_steps` MaskGIT iterations, or a flow sample over `num_steps` Euler steps
+    (default 32 for flow: a sample of the next frame, not the 1-step mean, which scores higher PSNR)
   - actions: `lam`   = latent action model run on context + target, so the true transition is given
              `random`= LAM actions for the context transitions, a seeded random action for the target
              `none`  = the dynamics model's learned null action on every transition (zeros if it has none);
@@ -40,7 +41,7 @@ import torch
 from evaluation.image_metrics import psnr, ssim, try_lpips
 from evaluation.spectrum import radial_power_sum, band_deficits
 from evaluation.windows import test_windows, load_window_batch, to_model_range, to_unit
-from utils.inference_utils import load_models
+from utils.inference_utils import load_models, default_num_steps
 from utils.utils import find_latest_checkpoint
 
 
@@ -62,7 +63,7 @@ def main():
     p.add_argument('--context', type=int, default=3, help='real context frames; training used sequences of context+1')
     p.add_argument('--frame-skip', type=int, default=4, help='stored frames between sequence frames (60 // fps in the loader)')
     p.add_argument('--sample-stride', type=int, default=8, help='stored frames between window starts inside a block')
-    p.add_argument('--num-steps', type=int, default=10, help='MaskGIT unmasking iterations, or Euler steps for a flow dynamics model')
+    p.add_argument('--num-steps', type=int, help='MaskGIT unmasking iterations (default 10), or Euler steps for a flow dynamics model (default 32)')
     p.add_argument('--temperature', type=float, default=0.0)
     p.add_argument('--guidance-scale', type=float, default=1.0,
                    help='flow dynamics trained with action dropout: guidance w on the last action, v = v_null + w (v_a - v_null)')
@@ -95,6 +96,7 @@ def main():
     torch.manual_seed(args.seed)
     device = torch.device(args.device)
     tok, lam, dyn = load_models(args.video_tokenizer_path, args.latent_actions_path, args.dynamics_path, device, use_actions=True)
+    args.num_steps = default_num_steps(dyn) if args.num_steps is None else args.num_steps
     if args.guidance_scale != 1:
         assert getattr(dyn, 'null_action', None) is not None and hasattr(dyn, 'guidance_scale'), \
             '--guidance-scale needs a flow dynamics checkpoint trained with action_dropout_prob > 0'

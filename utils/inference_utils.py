@@ -6,6 +6,16 @@ import cv2
 import numpy as np
 from utils.utils import load_videotokenizer_from_checkpoint, load_latent_actions_from_checkpoint, load_dynamics_from_checkpoint
 from einops import repeat
+from models.flow_dynamics import FlowDynamicsModel, BiFlowDynamicsModel
+
+FLOW_SAMPLE_STEPS = 32  # Euler steps on the checkpoint's fm_shift grid: real samples (fewer steps pull them toward the mean)
+MASKGIT_STEPS = 10
+
+
+def default_num_steps(dynamics_model):
+    # eval default when no step count is given: sampled frames for a flow model, the usual unmasking passes for MaskGIT
+    return FLOW_SAMPLE_STEPS if isinstance(dynamics_model, (FlowDynamicsModel, BiFlowDynamicsModel)) else MASKGIT_STEPS
+
 
 def load_models(video_tokenizer_path, latent_actions_path, dynamics_path, device, use_actions=True):
     # Load tokenizer and dynamics, and Latent Actions if using actions
