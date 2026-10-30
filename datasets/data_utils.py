@@ -4,11 +4,13 @@ import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
+import glob
 import os
+import sys
 import numpy as np
 import matplotlib.pyplot as plt
 from torchvision.utils import make_grid
-from datasets.datasets import PongDataset, SonicDataset, PolePositionDataset, PicoDoomDataset, ZeldaDataset, EpisodeH5Dataset
+from datasets.datasets import PongDataset, SonicDataset, PolePositionDataset, PicoDoomDataset, ZeldaDataset, EpisodeH5Dataset, MultiVideoH5Dataset
 
 DEFAULT_NUM_WORKERS = 2
 DEFAULT_PREFETCH_FACTOR = 2
@@ -60,6 +62,13 @@ TEST_H5 = {
     'PONG_TRAIN': 'data/pong_test_frames.h5',
     'SONIC_TRAIN': 'data/sonic_test_frames.h5',
     'ZELDA_TRAIN': 'data/zelda_test_frames.h5',
+    'ZELDA_MORE_TRAIN': 'data/zelda_test_frames.h5',
+}
+
+# multi-file video datasets (datasets.MultiVideoH5Dataset): base (h5, frame_skip, load_start_index) as the *_TRAIN game
+# + extra 15 fps .h5 files (scripts/data/build_video_h5.py), sampled by seconds of gameplay; val is the same object
+MULTI_VIDEO = {
+    'ZELDA_MORE_TRAIN': (('/data/zelda_train_frames.h5', 4, 1000), '/data/zelda_youtube/*.h5'),  # + YouTube runs
 }
 
 
@@ -86,6 +95,15 @@ PUSHT_TRAIN_H5 = EPISODE_H5['PUSHT']
 def load_episode_h5(dataset, num_frames=4, preload_ratio=1):
     """Train split of an episode .h5 dataset. Val is the same object (as every other game here)."""
     train = EpisodeH5Dataset(os.getcwd() + EPISODE_H5[dataset], num_frames=num_frames, preload_ratio=preload_ratio)
+    return train, train
+
+
+def load_multi_video(dataset, num_frames=4):
+    (base_path, skip, start), extras_glob = MULTI_VIDEO[dataset]
+    extras = sorted(glob.glob(os.getcwd() + extras_glob))
+    train = MultiVideoH5Dataset((os.getcwd() + base_path, skip, start), extras, num_frames=num_frames)
+    print(f"{dataset}: {train.seconds['base'] / 60:.0f} min base + {train.seconds['extras'] / 60:.0f} min from "
+          f"{len(extras)} extra files")
     return train, train
 
 
@@ -127,6 +145,8 @@ def data_loaders(train_data, val_data, batch_size, distributed=False, rank=0, wo
             persistent_workers=persistent_workers,
             prefetch_factor=prefetch_factor,
             drop_last=True,
+            # macOS defaults to spawn, which pickles the dataset (its whole in-memory array) into every worker
+            multiprocessing_context='fork' if num_workers > 0 and sys.platform == 'darwin' else None,
             **kw,
         )
 
@@ -139,6 +159,8 @@ def load_data_and_data_loaders(dataset, batch_size, num_frames=1, distributed=Fa
                                num_workers=None, pin_memory=None, generator=None):
     if dataset in EPISODE_H5:
         training_data, validation_data = load_episode_h5(dataset, num_frames=num_frames, preload_ratio=preload_ratio)
+    elif dataset in MULTI_VIDEO:
+        training_data, validation_data = load_multi_video(dataset, num_frames=num_frames)
     elif dataset in VIDEO_GAMES:
         dataset_cls, video_rel_path, h5_rel_path, game_fps = VIDEO_GAMES[dataset]
         training_data, validation_data = _load_video_dataset_pair(

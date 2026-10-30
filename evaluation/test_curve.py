@@ -64,7 +64,10 @@ class TokenizerTestCurve(HeldOutWindows):
         # evenly spaced over the start indices training samples from
         super().__init__(h5_path, context, frame_skip, sample_stride, batch_size, limit)
         starts = np.linspace(0, len(train_data) - 1, len(self.windows)).round().astype(int)  # [N]
-        idx = starts[:, None] + frame_skip * np.arange(context + 1)[None]  # [N, T]
+        if hasattr(train_data, 'window_rows'):  # MultiVideoH5Dataset: index != row, files at different frame rates
+            idx = np.stack([train_data.window_rows(i) for i in starts])  # [N, T]
+        else:
+            idx = starts[:, None] + frame_skip * np.arange(context + 1)[None]  # [N, T]
         self.train_frames = train_data.data[idx]  # uint8 [N, T, H, W, C]
 
     @torch.no_grad()
