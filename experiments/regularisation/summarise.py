@@ -29,6 +29,9 @@ def load_run(root):
     for f in glob.glob(f'{root}/next_frame/step_*.json'):
         m = json.load(open(f))['summary']['model']
         out.setdefault(step_of(f), {}).update(test_psnr=m['psnr'], test_ssim=m['ssim'], test_lpips=m['lpips'])
+        for k in ('judge_box_lpips', 'judge_box_fid', 'motion_box_lpips', 'motion_box_fid', 'motion_psnr'):
+            if k in m:  # Link metrics (evaluations run with --link-boxes)
+                out[step_of(f)][k] = m[k]
     for f in glob.glob(f'{root}/step_*/metrics.json'):
         s = json.load(open(f))['summary']
         row = out.setdefault(step_of(f), {})
@@ -47,7 +50,8 @@ def main():
     data = {name: load_run(f'{a.evals}/{run}') for run, name in RUNS if os.path.isdir(f'{a.evals}/{run}')}
     json.dump(data, open(f'{a.evals}/summary.json', 'w'), indent=1)
 
-    cols = [('test_psnr', 'test PSNR', '.2f'), ('test_lpips', 'test LPIPS', '.4f'), ('train_psnr', 'train PSNR', '.2f'),
+    cols = [('test_psnr', 'test PSNR', '.2f'), ('test_lpips', 'test LPIPS', '.4f'), ('judge_box_lpips', 'judge-box LPIPS', '.4f'),
+            ('judge_box_fid', 'judge-box FID', '.1f'), ('motion_psnr', 'motion PSNR', '.2f'), ('train_psnr', 'train PSNR', '.2f'),
             ('heldout_psnr', 'held-out PSNR', '.2f'), ('gap_psnr', 'gap', '+.2f'), ('train_box_psnr', 'train box', '.2f'),
             ('heldout_box_psnr', 'held-out box', '.2f'), ('gap_box_psnr', 'box gap', '+.2f')]
     lines = ['| run | step | ' + ' | '.join(c[1] for c in cols) + ' |', '|' + '---|' * (len(cols) + 2)]
@@ -57,10 +61,11 @@ def main():
             lines.append(f'| {name} | {step} | ' + ' | '.join(cells) + ' |')
     open(f'{a.evals}/summary.md', 'w').write('\n'.join(lines) + '\n')
 
-    panels = [('test_psnr', 'held-out test PSNR (890 windows)'), ('test_lpips', 'held-out test LPIPS'),
+    panels = [('test_psnr', 'held-out test PSNR (890 windows)'), ('judge_box_lpips', 'held-out judge-box LPIPS (Link)'),
+              ('judge_box_fid', 'held-out judge-box FID (Link)'), ('motion_psnr', 'held-out motion-weighted PSNR'),
               ('gap_psnr', 'matched windows: train - held-out PSNR'), ('heldout_box_psnr', 'matched held-out Link-box PSNR'),
               ('gap_box_psnr', 'matched windows: train - held-out box PSNR'), ('heldout_box_sharpness', 'held-out box sharpness')]
-    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+    fig, axes = plt.subplots(3, 3, figsize=(15, 12))
     for ax, (k, title) in zip(axes.flat, panels):
         for name, steps in data.items():
             xs = [s for s, r in steps.items() if k in r]
