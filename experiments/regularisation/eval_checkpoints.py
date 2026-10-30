@@ -1,6 +1,7 @@
 """Score every saved checkpoint of one dynamics run (EMA weights), skipping the ones already scored:
   1. matched_windows.py: train vs held-out matched windows, 1 Euler step (the memorisation gap, box crops for judging)
-  2. scripts/eval/eval_next_frame.py: the standard held-out eval (890 test windows, lam actions, default Euler steps)
+  2. scripts/eval/eval_next_frame.py: the standard held-out eval (890 test windows, lam actions, default Euler steps), with
+     the Link metrics: judge-box and motion-box LPIPS / FID, motion-weighted PSNR
 Outputs: results/evals/<run>/step_<N>/{metrics.json, box_crops.npz} and results/evals/<run>/next_frame/step_<N>.{json,png}.
 
     python experiments/regularisation/eval_checkpoints.py --run zelda_todays_recipe
@@ -34,7 +35,8 @@ def main():
         if not os.path.exists(f'{out_root}/next_frame/step_{step}.json'):
             subprocess.run([sys.executable, 'scripts/eval/eval_next_frame.py', '--test-h5', 'data/zelda_test_frames.h5',
                             '--video-tokenizer-path', TOKENIZER, '--latent-actions-path', ACTIONS, '--dynamics-path', ckpt,
-                            '--action-mode', 'lam', '--out-dir', f'{out_root}/next_frame', '--name', f'step_{step}'],
+                            '--action-mode', 'lam', '--link-boxes', 'evaluation/zelda_link_boxes.json',
+                            '--out-dir', f'{out_root}/next_frame', '--name', f'step_{step}'],
                            check=True)
         print(f'{a.run} step {step} scored', flush=True)
 
