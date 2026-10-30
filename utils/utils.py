@@ -325,6 +325,10 @@ def flow_dynamics_kwargs(cfg, action_dim):
     }
     if cfg.get('dynamics_type') == 'biflow':
         kwargs.update(bf_alpha_max=cfg.get('bf_alpha_max', 1.0), bf_eps=cfg.get('bf_eps', 0.1))
+    elif cfg.get('dynamics_type') == 'edm':
+        kwargs.update(edm_p_mean=cfg.get('edm_p_mean', -0.4), edm_p_std=cfg.get('edm_p_std', 1.2),
+                      edm_sigma_data=cfg.get('edm_sigma_data', 0.5), edm_sigma_min=cfg.get('edm_sigma_min', 0.002),
+                      edm_sigma_max=cfg.get('edm_sigma_max', 5.0), edm_rho=cfg.get('edm_rho', 7.0))
     else:
         kwargs.update(fm_pred=cfg.get('fm_pred', 'v'), fm_shift=cfg.get('fm_shift', 1.0),
                       fm_source=cfg.get('fm_source', 'noise'), fm_source_noise=cfg.get('fm_source_noise', 0.0),
@@ -339,9 +343,16 @@ def flow_dynamics_kwargs(cfg, action_dim):
 
 
 def build_flow_dynamics(cfg, action_dim):
-    from models.flow_dynamics import FlowDynamicsModel, BiFlowDynamicsModel
-    cls = BiFlowDynamicsModel if cfg.get('dynamics_type') == 'biflow' else FlowDynamicsModel
+    from models.flow_dynamics import FlowDynamicsModel, BiFlowDynamicsModel, EDMDynamicsModel
+    cls = {'biflow': BiFlowDynamicsModel, 'edm': EDMDynamicsModel}.get(cfg.get('dynamics_type'), FlowDynamicsModel)
     return cls(**flow_dynamics_kwargs(cfg, action_dim))
+
+
+def dynamics_config(checkpoint_path):
+    # the training config saved in a dynamics checkpoint's state.pt
+    import torch
+    state_cfg = torch.load(Path(checkpoint_path) / STATE, map_location='cpu', weights_only=False)
+    return state_cfg.get('config', {}) or {}
 
 
 def load_videotokenizer_from_checkpoint(checkpoint_path, device, model = None, is_distributed = False):
@@ -435,7 +446,7 @@ def load_dynamics_from_checkpoint(checkpoint_path, device, model = None, is_dist
                 break
         conditioning_dim = cond_inferred if cond_inferred is not None else 3
     kwargs = maskgit_dynamics_kwargs(cfg, conditioning_dim)
-    if cfg.get('dynamics_type', 'maskgit') in ('flow', 'biflow'):
+    if cfg.get('dynamics_type', 'maskgit') in ('flow', 'biflow', 'edm'):
         # flow-matching dynamics (STA-28) or Bi-flow (STA-61); prefer the EMA weights when the checkpoint has them.
         # FiLM input = [action, 64-d time embedding (+ 64-d noise-level embedding for Bi-flow)]
         n_time = 2 if cfg.get('dynamics_type') == 'biflow' else 1

@@ -66,7 +66,9 @@ def main():
 
     video_tokenizer_checkpoint = latent_actions_checkpoint = None
     if train_config.run_dynamics:
-        video_tokenizer_checkpoint = stage_checkpoint("video_tokenizer", train_config.run_video_tokenizer)
+        # pixel-space dynamics needs no tokenizer
+        video_tokenizer_checkpoint = None if dyn_yaml.get("pixel_space") else \
+            stage_checkpoint("video_tokenizer", train_config.run_video_tokenizer)
         try:
             latent_actions_checkpoint = stage_checkpoint("latent_actions", train_config.run_latent_actions)
         except Exception:
@@ -76,8 +78,9 @@ def main():
             "scripts/dynamics/train_dynamics.py",
             "--config", train_config.dynamics_config,
             "--training_config", training_cfg_path,
-            f"video_tokenizer_path={video_tokenizer_checkpoint}",
         ]
+        if video_tokenizer_checkpoint is not None:
+            dyn_cmd.append(f"video_tokenizer_path={video_tokenizer_checkpoint}")
         if latent_actions_checkpoint is not None:
             dyn_cmd.append(f"latent_actions_path={latent_actions_checkpoint}")
         if not run_command(dyn_cmd, "Dynamics Model Training"):

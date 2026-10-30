@@ -19,7 +19,7 @@
 
 \begin{document}
 \small
-\noindent{\Large\bfseries tinyworlds --- results so far}\hfill last updated 2026-10-23
+\noindent{\Large\bfseries tinyworlds --- results so far}\hfill last updated 2026-10-30
 
 \paragraph{Metrics.}
 Tokenizer: reconstruction PSNR/SSIM on held-out frames.
@@ -53,6 +53,10 @@ continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 
 \midrule
 -- & -- & -- & CoMo-ViT, full $z$ & 0.561 & CoMo decoder & 33.41 & 0.931 & 0.038 & \pr{20} & CoMo decoder as dynamics \\
 -- & -- & -- & CoMo-ViT, 16 codes & 0.561 & CoMo decoder & 30.15 & 0.844 & 0.050 & \pr{20} &  \\
+\midrule
+\multicolumn{11}{l}{\textit{Pixel space: no tokenizer, 4$\times$4 pixel patches; 13M, 30k, same recipe as the flow-matching row}} \\
+none (pixels) & -- & -- & CoMo-ViT, full $z$ & 0.561 & pixel flow matching & 32.08 & 0.880 & 0.087 & \pr{44} & $v$-prediction, shift 3; 32 steps 31.21 vs latent 32.78 \\
+none (pixels) & -- & -- & CoMo-ViT, full $z$ & 0.561 & pixel EDM & 33.73 & 0.926 & 0.045 & \pr{44} & EDM, $P_\text{mean}$ +0.4; 32 steps 28.93 (speckled samples) \\
 \midrule
 \multicolumn{11}{l}{\textit{Merged training stages --- in progress}} \\
 continuous per-frame KL-VAE, joint & 45.01 & \best{0.995} & CoMo-Tok joint, full $z$ & 0.510 & CoMo decoder & 33.48 & 0.926 & 0.040 & \pr{30} & tokenizer + CoMo trained jointly, 50k \\

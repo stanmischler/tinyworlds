@@ -56,7 +56,7 @@ from evaluation.motion import motion_box, MIN_MOVING_PX
 from evaluation.spectrum import radial_power_sum, band_deficits
 from evaluation.windows import test_windows, load_window_batch, to_model_range, to_unit
 from utils.inference_utils import load_models, default_num_steps
-from utils.utils import find_latest_checkpoint
+from utils.utils import find_latest_checkpoint, dynamics_config
 
 
 # ----------------------------------------------------------------------------- metrics
@@ -102,11 +102,17 @@ def main():
     p.add_argument('--name', help='output file stem; default <run-dir basename>_<action-mode>')
     args = p.parse_args()
 
-    if args.run_dir:  # explicit paths win (a dynamics-only run dir holds no tokenizer / LAM)
-        for stage in ('video_tokenizer', 'latent_actions', 'dynamics'):
+    if args.run_dir and not args.dynamics_path:  # explicit paths win (a dynamics-only run dir holds no tokenizer / LAM)
+        args.dynamics_path = find_latest_checkpoint('.', 'dynamics', run_root_dir=args.run_dir)
+    assert args.dynamics_path and os.path.exists(args.dynamics_path), f'dynamics_path missing: {args.dynamics_path}'
+    pixel_space = dynamics_config(args.dynamics_path).get('pixel_space', False)  # pixel-space dynamics: no tokenizer
+    required = ('latent_actions',) + (() if pixel_space else ('video_tokenizer',))
+    if args.run_dir:
+        for stage in required:
             if not getattr(args, f'{stage}_path'):
                 setattr(args, f'{stage}_path', find_latest_checkpoint('.', stage, run_root_dir=args.run_dir))
-    for k in ('video_tokenizer_path', 'latent_actions_path', 'dynamics_path'):
+    for stage in required:
+        k = f'{stage}_path'
         assert getattr(args, k) and os.path.exists(getattr(args, k)), f'{k} missing: {getattr(args, k)}'
     name = args.name or f"{os.path.basename(os.path.normpath(args.run_dir or os.path.dirname(args.dynamics_path)))}_{args.action_mode}"
     os.makedirs(args.out_dir, exist_ok=True)
@@ -210,6 +216,8 @@ def main():
                 pred = to_unit(tok.decode(pred_lat[:, -1:])[:, 0])  # [B, C, H, W]
                 recon = to_unit(tok.decode(target_lat)[:, 0])  # tokenizer ceiling
             tgt = to_unit(target[:, 0])
+            # pixel space: recon = target exactly, no tokenizer ceiling to report (and the spectrum's "recon" is the target)
+            recon_scores = not pixel_space
             copy = to_unit(context[:, -1])
 
             def lp(a, b):
@@ -224,7 +232,11 @@ def main():
             per['copy_token_acc'] += token_acc(ctx_lat[:, -1:], target_lat)
             for k, frames in (('pred', pred), ('recon', recon), ('target', tgt)):
                 power[k] = power[k] + radial_power_sum(frames)
-            per['recon_psnr'] += psnr(recon, tgt).tolist(); per['recon_ssim'] += ssim(recon, tgt).tolist(); per['recon_lpips'] += lp(recon, tgt).tolist()
+            if recon_scores:
+                per['recon_psnr'] += psnr(recon, tgt).tolist(); per['recon_ssim'] += ssim(recon, tgt).tolist(); per['recon_lpips'] += lp(recon, tgt).tolist()
+            else:
+                for k in ('recon_psnr', 'recon_ssim', 'recon_lpips'):
+                    per[k] += [float('nan')] * B
 
             if args.save_predictions:
                 pred_u8.append((pred * 255).round().byte().permute(0, 2, 3, 1).cpu().numpy())
@@ -318,7 +330,8 @@ def main():
         s = summary
         acc_txt = '' if s['model']['token_acc'] is None else \
             f"  token acc {s['model']['token_acc']:.3f} (copy {s['copy_baseline']['token_acc']:.3f})"  # None: continuous tokenizer
-        fig.suptitle(f"{name}: PSNR {s['model']['psnr']:.2f} (copy {s['copy_baseline']['psnr']:.2f}, recon {s['tokenizer_recon']['psnr']:.2f})"
+        recon_txt = '' if s['tokenizer_recon']['psnr'] is None else f", recon {s['tokenizer_recon']['psnr']:.2f}"  # None: pixel space
+        fig.suptitle(f"{name}: PSNR {s['model']['psnr']:.2f} (copy {s['copy_baseline']['psnr']:.2f}{recon_txt})"
                      + acc_txt, fontsize=9)
         plt.tight_layout()
         png_path = os.path.join(args.out_dir, f'{name}.png')

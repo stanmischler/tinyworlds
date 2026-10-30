@@ -60,7 +60,13 @@ def main():
         loader_generator = torch.Generator().manual_seed(args.seed)
 
     # load video tokenizer and latent action model
-    if os.path.isdir(args.video_tokenizer_path):
+    if args.pixel_space:
+        # no tokenizer: the dynamics model predicts patches of pixels (models/pixel_patches.py)
+        from models.pixel_patches import PixelPatches
+        video_tokenizer = PixelPatches(args.patch_size).to(args.device)
+        args.video_tokenizer_path = None  # keep the saved config honest
+        args.latent_dim = video_tokenizer.latent_dim
+    elif os.path.isdir(args.video_tokenizer_path):
         video_tokenizer, vq_ckpt = load_videotokenizer_from_checkpoint(
             checkpoint_path=args.video_tokenizer_path, 
             device=args.device, 
@@ -73,7 +79,7 @@ def main():
         raise FileNotFoundError(f"Video tokenizer checkpoint not found at {args.video_tokenizer_path}")
     # the dynamics latents are the tokenizer's: take their width and kind from the checkpoint, not the yaml
     args.continuous_latents = video_tokenizer.continuous
-    if args.latent_dim != video_tokenizer.decoder.latent_embed.in_features:
+    if not args.pixel_space and args.latent_dim != video_tokenizer.decoder.latent_embed.in_features:
         print(f"latent_dim {args.latent_dim} -> {video_tokenizer.decoder.latent_embed.in_features} (from the tokenizer)")
         args.latent_dim = video_tokenizer.decoder.latent_embed.in_features
     assert args.action_source in ('lam', 'gt'), f"action_source must be 'lam' or 'gt', got {args.action_source}"
@@ -103,8 +109,13 @@ def main():
         raise FileNotFoundError(f"Latent Action Model checkpoint not found at {args.latent_actions_path}")
 
     # init dynamics model and optional ckpt load
-    assert args.dynamics_type in ('maskgit', 'flow', 'biflow'), f"dynamics_type must be 'maskgit', 'flow' or 'biflow', got {args.dynamics_type}"
-    is_flow = args.dynamics_type in ('flow', 'biflow')
+    assert args.dynamics_type in ('maskgit', 'flow', 'biflow', 'edm'), \
+        f"dynamics_type must be 'maskgit', 'flow', 'biflow' or 'edm', got {args.dynamics_type}"
+    is_flow = args.dynamics_type in ('flow', 'biflow', 'edm')  # continuous generators: EMA, test curve, sampled previews
+    assert args.dynamics_type != 'edm' or args.continuous_latents, 'edm samples are not rounded: needs continuous latents or pixel_space'
+    assert args.dynamics_type != 'edm' or (args.fm_loss == 'v' and args.token_loss == 'mse' and not args.correction
+                                           and not args.fm_random_context and args.action_dropout_prob == 0), \
+        'edm: plain denoiser loss only (no fm_loss / token_loss / correction / fm_random_context / action dropout)'
     assert is_flow or not args.continuous_latents, 'a continuous tokenizer needs dynamics_type flow (MaskGIT predicts codes)'
     assert args.fm_loss in ('v', 'f', 'fv'), f"fm_loss must be 'v', 'f' or 'fv', got {args.fm_loss}"
     assert not (args.correction and args.fm_loss != 'v'), 'correction is only wired for the velocity loss'
@@ -157,7 +168,8 @@ def main():
     if args.compile:
         # mode="default" rather than "reduce-overhead": CUDA-graph mode crashed the latent-actions stage on H100
         # (inductor: "storage data ptrs are not allocated in pool", torch 2.8); same model is compiled here
-        video_tokenizer = torch.compile(video_tokenizer, mode="default", fullgraph=False, dynamic=True)
+        if not args.pixel_space:  # PixelPatches is a reshape
+            video_tokenizer = torch.compile(video_tokenizer, mode="default", fullgraph=False, dynamic=True)
         if latent_action_model is not None and not args.action_file:
             latent_action_model = torch.compile(latent_action_model, mode="default", fullgraph=False, dynamic=True)
         dynamics_model = torch.compile(dynamics_model, mode="default", fullgraph=False, dynamic=True)
