@@ -1,0 +1,33 @@
+# pixel EDM final: the P_mean +0.4 sweep run resumed from its 10k checkpoint to 30k
+batch_size_per_gpu: 64
+gradient_accumulation_steps: 1
+n_updates: 30000     # lr schedule of the 30k latent baseline (configs/experiments/zelda_continuous/dynamics_final.yaml)
+stop_step:           # full 30k schedule
+learning_rate: 0.0003
+log_interval: 1000   # checkpoint + sampled-prediction PNG
+
+use_actions: true
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 12
+
+pixel_space: true    # no tokenizer: the model predicts patch_size x patch_size pixel patches (patch_size from training.yaml)
+dynamics_type: edm
+edm_p_mean: 0.4
+edm_p_std: 1.2
+edm_sigma_data: 0.5
+qk_norm: true
+ema_decay: 0.999
+seed: 0
+
+video_tokenizer_path:   # unused in pixel space
+latent_actions_path: results/como_actions_v1_full   # CoMo IDM + train z stats, models/como.py CoMoActions
+action_file: data/zelda_train_como_z.npy             # raw z per train .h5 row
+
+test_eval_h5: data/zelda_test_frames.h5   # test/* curve for watching; the reported number is eval_next_frame.py
+test_eval_interval: 2000
+
+# resume: set to a checkpoint dir (…/dynamics/checkpoints/dynamics_step_N)
+checkpoint: results/zelda_pixel_edm_pp04_p4/dynamics/checkpoints/dynamics_step_9999

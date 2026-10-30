@@ -4,7 +4,8 @@ import os
 import matplotlib.pyplot as plt
 import cv2
 import numpy as np
-from utils.utils import load_videotokenizer_from_checkpoint, load_latent_actions_from_checkpoint, load_dynamics_from_checkpoint
+from utils.utils import load_videotokenizer_from_checkpoint, load_latent_actions_from_checkpoint, load_dynamics_from_checkpoint, dynamics_config
+from models.pixel_patches import PixelPatches
 from einops import repeat
 from models.flow_dynamics import FlowDynamicsModel, BiFlowDynamicsModel
 
@@ -18,8 +19,13 @@ def default_num_steps(dynamics_model):
 
 
 def load_models(video_tokenizer_path, latent_actions_path, dynamics_path, device, use_actions=True):
-    # Load tokenizer and dynamics, and Latent Actions if using actions
-    video_tokenizer, _vt_ckpt = load_videotokenizer_from_checkpoint(video_tokenizer_path, device)
+    # Load tokenizer and dynamics, and Latent Actions if using actions; a pixel-space dynamics model gets PixelPatches
+    # (its patch size) as tokenizer, and video_tokenizer_path is ignored
+    dyn_cfg = dynamics_config(dynamics_path)
+    if dyn_cfg.get('pixel_space', False):
+        video_tokenizer = PixelPatches(dyn_cfg['patch_size']).to(device)
+    else:
+        video_tokenizer, _vt_ckpt = load_videotokenizer_from_checkpoint(video_tokenizer_path, device)
     video_tokenizer.eval()
     latent_action_model = None
     if use_actions:

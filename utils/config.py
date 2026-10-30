@@ -300,8 +300,8 @@ class DynamicsConfig:
 	# Seed for init, masking and batch order (None = unseeded, as before)
 	seed: Optional[int] = None
 	# Generator (STA-28): "maskgit" (default, models/dynamics.py) or "flow" (flow matching on the continuous FSQ latents
-	# of the last frame, rounded to the grid at the end, models/flow_dynamics.py). The fm_* / qk_norm / ema knobs below
-	# only apply to "flow".
+	# of the last frame, rounded to the grid at the end, models/flow_dynamics.py) or "edm" (EDM diffusion, same backbone).
+	# The fm_* knobs below only apply to "flow"; qk_norm / ema apply to flow, biflow and edm.
 	dynamics_type: str = "maskgit"
 	fm_pred: str = "v"        # network output: "v" velocity, "x" clean latents (velocity derived); loss is velocity MSE
 	fm_shift: float = 1.0     # SD3 timestep shift toward noise, training and sampling (1.0 = uniform)
@@ -358,6 +358,17 @@ class DynamicsConfig:
 	stop_step: Optional[int] = None
 	# set by train_dynamics.py from the tokenizer (STA-62): True = continuous latents, flow samples are not rounded to the grid
 	continuous_latents: bool = False
+	# Pixel space: no tokenizer; frames are cut into patch_size x patch_size patches of 3 p^2 pixel values (models/pixel_patches.py)
+	# and the flow / EDM model predicts those directly (latent_dim is set to 3 p^2, video_tokenizer_path is unused)
+	pixel_space: bool = False
+	# EDM diffusion (dynamics_type "edm", models/flow_dynamics.py EDMDynamicsModel; defaults = DIAMOND): training noise
+	# log sigma ~ N(edm_p_mean, edm_p_std^2), preconditioning sigma_data, sampling grid sigma_max -> sigma_min with rho
+	edm_p_mean: float = -0.4
+	edm_p_std: float = 1.2
+	edm_sigma_data: float = 0.5
+	edm_sigma_min: float = 0.002
+	edm_sigma_max: float = 5.0
+	edm_rho: float = 7.0
 	# Optimizer
 	optimizer: str = "adamw"
 	muon_momentum: float = 0.95

@@ -379,3 +379,73 @@ class BiFlowDynamicsModel(nn.Module):
     @property
     def model_type(self) -> str:
         return ModelType.FlowDynamicsModel
+
+
+class EDMDynamicsModel(FlowDynamicsModel):
+    """EDM diffusion dynamics (Karras et al. 2022, as DIAMOND's pixel world model, arXiv 2405.12399): same causal
+    ST-transformer as FlowDynamicsModel (`net`), but the last frame is noised as x_sigma = x + sigma * eps and the network
+    output F is preconditioned into a denoiser D(x_sigma) = c_skip x_sigma + c_out F(c_in x_sigma, c_noise), with
+    c_in = 1 / sqrt(sigma^2 + sd^2), c_skip = sd^2 / (sigma^2 + sd^2), c_out = sigma sd / sqrt(sigma^2 + sd^2),
+    c_noise = log(sigma) / 4 (sd = sigma_data). Training: log sigma ~ N(p_mean, p_std^2), loss = MSE(F, (x - c_skip x_sigma) / c_out),
+    which is EDM's lambda(sigma)-weighted denoiser loss. The clean context frames are treated as noised at sigma_min
+    (input scaled by c_in(sigma_min), c_noise(sigma_min) as their time input). Sampling: Euler on the Karras grid
+    sigma_max -> sigma_min (rho), then 0; 1 step returns D(sigma_max noise), the conditional mean. Only the backbone is
+    inherited: the fm_* / correction / guidance options of FlowDynamicsModel are unused (train_dynamics.py asserts them off)."""
+
+    def __init__(self, edm_p_mean=-0.4, edm_p_std=1.2, edm_sigma_data=0.5, edm_sigma_min=0.002, edm_sigma_max=5.0,
+                 edm_rho=7.0, **flow_kwargs):
+        super().__init__(**flow_kwargs)
+        self.p_mean, self.p_std, self.sigma_data = float(edm_p_mean), float(edm_p_std), float(edm_sigma_data)
+        self.sigma_min, self.sigma_max, self.rho = float(edm_sigma_min), float(edm_sigma_max), float(edm_rho)
+
+    def preconditioning(self, sigma):
+        # sigma: [B] -> c_in, c_skip, c_out, c_noise, each [B]
+        sd2 = self.sigma_data ** 2
+        c_in = 1 / torch.sqrt(sigma ** 2 + sd2)
+        c_skip = sd2 / (sigma ** 2 + sd2)
+        c_out = sigma * self.sigma_data / torch.sqrt(sigma ** 2 + sd2)
+        c_noise = torch.log(sigma) / 4
+        return c_in, c_skip, c_out, c_noise
+
+    def denoise(self, context, x_noisy, sigma, conditioning):
+        # context: [B, Tc, P, L] clean frames; x_noisy: [B, P, L]; sigma: [B] -> (D [B, P, L] denoised frame, F [B, P, L] raw output)
+        B, Tc = context.shape[:2]
+        c_in, c_skip, c_out, c_noise = self.preconditioning(sigma)
+        ctx_sigma = torch.full_like(sigma, self.sigma_min)  # [B] the context's nominal noise level
+        ctx_in, _, _, ctx_noise = self.preconditioning(ctx_sigma)
+        inp = torch.cat([ctx_in[:, None, None, None] * context.float(), (c_in[:, None, None] * x_noisy)[:, None]], dim=1)  # [B, Tc+1, P, L]
+        t = torch.cat([ctx_noise[:, None].expand(B, Tc), c_noise[:, None]], dim=1)  # [B, Tc+1] time input per frame
+        F_out = self.net(inp, conditioning, t)[:, -1].float()  # [B, P, L]
+        D = c_skip[:, None, None] * x_noisy + c_out[:, None, None] * F_out  # [B, P, L]
+        return D, F_out
+
+    def forward(self, latents, training=True, conditioning=None, targets=None, token_mask=None):
+        # latents: [B, T, P, L] clean; conditioning: [B, T-1, A] -> (D, (D, sigma, {}), loss) like FlowDynamicsModel.forward
+        x = latents[:, -1].float()  # [B, P, L]
+        sigma = torch.exp(self.p_mean + self.p_std * torch.randn_like(x[:, 0, 0]))  # [B]
+        x_noisy = x + sigma[:, None, None] * torch.randn_like(x)  # [B, P, L]
+        D, F_out = self.denoise(latents[:, :-1], x_noisy, sigma, conditioning)
+        _, c_skip, c_out, _ = self.preconditioning(sigma)
+        F_target = (x - c_skip[:, None, None] * x_noisy) / c_out[:, None, None]  # [B, P, L]
+        loss = F.mse_loss(F_out, F_target)
+        return D, (D, sigma, {}), loss
+
+    def karras_sigmas(self, num_steps, device):
+        # [N + 1]: sigma_max -> sigma_min on the rho grid, then 0 (N = 1: [sigma_max, 0])
+        ramp = torch.linspace(0, 1, num_steps, device=device) if num_steps > 1 else torch.zeros(1, device=device)
+        lo, hi = self.sigma_min ** (1 / self.rho), self.sigma_max ** (1 / self.rho)
+        sigmas = (hi + ramp * (lo - hi)) ** self.rho  # [N]
+        return torch.cat([sigmas, torch.zeros(1, device=device)])
+
+    @torch.no_grad()
+    def sample_next(self, context_latents, conditioning, num_steps, generator=None):
+        # context_latents: [B, Tc, P, L]; conditioning: [B, Tc, A] or None -> new frame [B, P, L] (Euler on the Karras grid)
+        B, Tc, P, L = context_latents.shape
+        dev = context_latents.device
+        sigmas = self.karras_sigmas(num_steps, dev)  # [N+1]
+        x = sigmas[0] * torch.randn(B, P, L, device=dev, generator=generator)  # [B, P, L]
+        for k in range(num_steps):
+            D, _ = self.denoise(context_latents, x, sigmas[k].expand(B), conditioning)
+            d = (x - D) / sigmas[k]  # [B, P, L] dx/dsigma
+            x = x + (sigmas[k + 1] - sigmas[k]) * d  # the last step (sigma -> 0) lands on D
+        return x

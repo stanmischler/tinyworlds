@@ -105,7 +105,7 @@ class TestCurve(HeldOutWindows):
     def __call__(self, dyn, tok, actions, device, num_steps=1, seed=0):
         # dyn: flow dynamics (EMA copy); tok: frozen tokenizer; actions: action model with encode(frames) -> [B, T-1, A]
         # -> ({'test/psnr', 'test/ssim', 'test/flow_loss', 'test/copy_psnr'}, PIL image: one row per window), means over all
-        # windows; a corrected model also gets test/psnr_k0 (corrector off) and test/corr_loss, and test/flow_loss stays
+        # windows; for an EDM model test/flow_loss is its preconditioned denoiser loss, not comparable with a flow model's; a corrected model also gets test/psnr_k0 (corrector off) and test/corr_loss, and test/flow_loss stays
         # the dynamics net's own loss
         was_training = dyn.training
         dyn.eval()
