@@ -217,6 +217,79 @@ class EpisodeH5Dataset(Dataset):
 PushTDataset = EpisodeH5Dataset  # old name, kept for imports
 
 
+class MultiVideoH5Dataset(Dataset):
+    """Windows from one base video .h5 plus extra 15 fps video .h5 files, each window inside one file and one segment,
+    with every second of gameplay equally likely whatever the file's frame rate.
+
+    base: (h5 path, frame_skip, load_start_index), e.g. data/zelda_train_frames.h5 at 60 fps, skip 4, from row 1000.
+      One segment, as ZeldaDataset reads it. Its windows are indexed by 15 fps slot (start // frame_skip): __getitem__
+      draws the phase inside the slot at random, so a slot weighs as much as one extra-file window.
+    extras: 15 fps .h5 files of scripts/data/build_video_h5.py (frame_skip 1), non-gameplay already removed by
+      scripts/data/flag_video_frames.py --apply; their `segment` [N] (id of the contiguous run each frame came from)
+      keeps every window inside one run.
+    All files are concatenated into self.data [N, H, W, C] (one RAM copy; val is the same object).
+    Returns (frames [T, C, H, W] in [-1, 1], 0), the same item format as ZeldaDataset.
+    """
+
+    def __init__(self, base, extras, num_frames=4, load_chunk_size=4096):
+        base_path, base_skip, base_start = base
+        self.num_frames = num_frames
+        self.frame_skip = base_skip            # the base file's skip: the test curve scores the base video's test split
+        self.load_start_index = base_start     # action_file rows would line up with the base .h5 from here (base only)
+
+        sizes, segments = [], []
+        with h5py.File(base_path, 'r') as f:
+            sizes.append(len(f['frames']) - base_start)
+            segments.append(np.zeros(sizes[0], dtype=np.int64))
+            shape = f['frames'].shape[1:]
+        for path in extras:
+            with h5py.File(path, 'r') as f:
+                assert f.attrs['fps'] == 15 and f['frames'].shape[1:] == shape, (path, f.attrs['fps'], f['frames'].shape)
+                assert 'segment' in f, f'{path}: run scripts/data/flag_video_frames.py --apply first'
+                sizes.append(len(f['frames']))
+                segments.append(f['segment'][:])
+
+        # preallocate: building a list first would double the peak RAM
+        self.data = np.empty((sum(sizes),) + shape, dtype=np.uint8)   # [N, H, W, C]
+        offsets = np.cumsum([0] + sizes)
+        for path, offset, size, start in zip([base_path] + list(extras), offsets, sizes, [base_start] + [0] * len(extras)):
+            with h5py.File(path, 'r') as f:
+                for i in tqdm(range(0, size, load_chunk_size), desc=f"Loading {size} frames of {os.path.basename(path)}"):
+                    n = min(load_chunk_size, size - i)
+                    self.data[offset + i:offset + i + n] = f['frames'][start + i:start + i + n]
+
+        # valid window starts (global rows) per file: first and last frame in the same kept segment of the same file
+        base_starts = self._window_starts(segments[0], base_skip)
+        self.base_slots = np.unique(base_starts // base_skip)          # [S] 15 fps slots of the base file
+        self.base_starts = set(base_starts.tolist())
+        self.extra_starts = np.concatenate([offset + self._window_starts(seg, 1)
+                                            for offset, seg in zip(offsets[1:-1], segments[1:])] or [np.zeros(0, int)])
+        self.seconds = {'base': len(self.base_slots) / 15, 'extras': len(self.extra_starts) / 15}
+
+    def _window_starts(self, segment, skip):
+        """Local starts s with segment[s] == segment[s + (T - 1) * skip] >= 0 (segments are contiguous runs)."""
+        span = (self.num_frames - 1) * skip
+        first, last = segment[:len(segment) - span], segment[span:]
+        return np.nonzero((first == last) & (first >= 0))[0]
+
+    def __len__(self) -> int:
+        return len(self.base_slots) + len(self.extra_starts)
+
+    def window_rows(self, index, random_phase=False):
+        """Rows [T] of self.data in window `index`. A base slot's phase is drawn at random (training) or is its first
+        valid one (fixed windows, e.g. the test curve's train_fixed/loss)."""
+        if index < len(self.base_slots):
+            slot = self.base_slots[index]
+            phases = [p for p in range(self.frame_skip) if slot * self.frame_skip + p in self.base_starts]
+            phase = phases[int(torch.randint(len(phases), ()))] if random_phase else phases[0]
+            return slot * self.frame_skip + phase + self.frame_skip * np.arange(self.num_frames)
+        return self.extra_starts[index - len(self.base_slots)] + np.arange(self.num_frames)
+
+    def __getitem__(self, index: int):
+        frames = self.data[self.window_rows(index, random_phase=True)]                             # [T, H, W, C]
+        return torch.from_numpy(frames).permute(0, 3, 1, 2).float() / 127.5 - 1.0, 0           # [T, C, H, W]
+
+
 class ZeldaDataset(VideoHDF5Dataset):
     def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4, resolution=(128, 128), fps=15, preload_ratio=0.2):
         super().__init__(video_path=video_path, transform=transform, save_path=save_path, train=train, num_frames=num_frames,
