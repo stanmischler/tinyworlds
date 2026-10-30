@@ -4,7 +4,7 @@ of the same scenes and situations, so a train vs held-out gap means memorising, 
 Windows (from the Link-blur diagnosis): heldout_windows.json = the 97 judged held-out windows (camera still, Link
 moving); train_windows.json = 150 train windows matched to them by scene (nearest judged window by pooled-frame RMSE).
 Each window: context start, +4, +8, target +12; tokenizer + CoMo actions re-encoded from the window's pixels
-(evaluation.predictors.DynamicsPredictor, as scripts/eval/eval_next_frame.py), EMA dynamics weights, 1 Euler step,
+(evaluation.predictors.DynamicsPredictor, as scripts/eval/eval_next_frame.py), EMA dynamics weights, 1 Euler step (--num-steps),
 generator seed = seed * n_candidates + index (held-out) or the window's index (train), as in the diagnosis.
 Metrics (pixels in [0, 1]): full-frame PSNR / SSIM / LPIPS-alex, Link-box PSNR (the 32x32 box with most moving pixels)
 and box sharpness (gradient energy of the prediction / of the target). Box crops are saved for blind judging.
@@ -67,13 +67,14 @@ def main():
     p.add_argument('--test-h5', default='data/zelda_test_frames.h5')
     p.add_argument('--video-tokenizer-path', default='results/zelda_cont_final_tp/video_tokenizer/checkpoints/video_tokenizer_step_29000')
     p.add_argument('--latent-actions-path', default='results/como_actions_v1_full')
+    p.add_argument('--num-steps', type=int, default=1, help='Euler steps (1 = the diagnosis protocol)')
     p.add_argument('--limit', type=int, help='first N windows of each split (smoke)')
     p.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     a = p.parse_args()
     os.makedirs(a.out_dir, exist_ok=True)
     t0 = time.time()
     device = torch.device(a.device)
-    dyn = DynamicsPredictor(a.video_tokenizer_path, a.latent_actions_path, a.dynamics_path, device, num_steps=1)
+    dyn = DynamicsPredictor(a.video_tokenizer_path, a.latent_actions_path, a.dynamics_path, device, num_steps=a.num_steps)
     lpips_fn = try_lpips(device)
     assert lpips_fn is not None, 'the lpips package (and its cached AlexNet weights) is needed'
 
