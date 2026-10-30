@@ -345,7 +345,7 @@ def como_actions(como_ckpt: str = "como_zelda_v1/como/checkpoints/como_step_5000
         results_volume.commit()
 
 
-@app.function(gpu="L4", cpu=4, memory=16384, volumes=VOLUMES, timeout=3 * 60 * 60)
+@app.function(gpu=os.environ.get("TINYWORLDS_EVAL_GPU", "L4"), cpu=4, memory=16384, volumes=VOLUMES, timeout=3 * 60 * 60)
 def eval_dynamics(run_dir: str, name: str, extra_args: str = "", num_steps: str = "32"):
     """Held-out next-frame eval (scripts/eval/eval_next_frame.py) of a pipeline run dir on the results volume, on a GPU,
     once per step count in num_steps (flow: Euler steps, 32 = a sample of the next frame; "1,32" adds the 1-step mean).

@@ -15,6 +15,17 @@ Protocol (fixed, deterministic):
     reconstruction of the target (the ceiling any token prediction can reach)
   - metrics per window, then mean / per-block mean: PSNR, SSIM, token accuracy, LPIPS if the
     `lpips` package is installed
+  - Link-focused metrics (evaluation/link_box.py), from the real frames only so every model is scored on the same pixels:
+      judge box  = 32x32 box on Link in the target, placed by judges (--link-boxes file; Zelda only); none during a
+                   dialog overlay (paused game)
+      motion box = 32x32 box with the most pixels changed beyond the camera scroll (evaluation.motion.motion_box); none
+                   when nothing moves (< 20 px), a large area changes (> 2048 px), the camera jumps (> 12 px) or a
+                   dialog overlay is on screen
+      per box: LPIPS on the crops (mean over boxed windows) and FID of the crop set vs the target crops
+      motion-weighted PSNR on the motion-boxed windows, w = camera-compensated |target - last context frame|;
+      still windows (< 20 moving px, no overlay) get plain PSNR on their own line
+    thresholds are tuned on Zelda at 128 px; on other games read the link metrics with care
+    windows without a box are dropped from that box's metrics; model, copy and recon use the same windows
   - spectrum: radially averaged power of the predicted frames vs the tokenizer reconstruction (and of the
     reconstruction vs the real frames), as % per frequency band; negative = fine detail lost
 
@@ -39,6 +50,9 @@ import numpy as np
 import torch
 
 from evaluation.image_metrics import psnr, ssim, try_lpips
+from evaluation.link_box import (overlay_windows, judge_boxes, box_lpips, try_inception, box_inception_features, fid,
+                                 motion_weights, motion_weighted_psnr)
+from evaluation.motion import motion_box, MIN_MOVING_PX
 from evaluation.spectrum import radial_power_sum, band_deficits
 from evaluation.windows import test_windows, load_window_batch, to_model_range, to_unit
 from utils.inference_utils import load_models, default_num_steps
@@ -75,6 +89,10 @@ def main():
     p.add_argument('--decode', choices=['context', 'alone'], default='context',
                    help='context: tokenize/detokenize the target with its context frames, as in training (the tokenizer is '
                         'temporal); alone: the target frame on its own (protocol before 2026-10-02)')
+    p.add_argument('--link-boxes', help='judge-placed Link boxes for the judge-box metrics (evaluation/zelda_link_boxes.json '
+                                        'for the Zelda test split); without it only the motion-box metrics are computed')
+    p.add_argument('--save-predictions', action='store_true',
+                   help='also save every predicted target frame (uint8) to <out_dir>/<name>_pred.npz, for example sheets')
     p.add_argument('--batch-size', type=int, default=32)
     p.add_argument('--device', default='mps' if torch.backends.mps.is_available() else ('cuda' if torch.cuda.is_available() else 'cpu'))
     p.add_argument('--seed', type=int, default=0, help='seed for the random actions')
@@ -109,6 +127,7 @@ def main():
         dyn.correction_k = dyn.correction_k if args.correction_k is None else args.correction_k
         dyn.correction_interval = dyn.correction_interval if args.correction_interval is None else args.correction_interval
     lpips_fn = try_lpips(device)
+    inception = try_inception(device)
     n_actions = lam.quantizer.codebook_size
     rng = torch.Generator(device='cpu').manual_seed(args.seed)
 
@@ -118,6 +137,8 @@ def main():
     h5 = h5py.File(args.test_h5, 'r')
     frames_dset, source_index = h5['frames'], h5['source_index'][:]
     n_blocks = len(json.loads(h5.attrs['test_blocks_local']))
+    in_overlay = overlay_windows(args.test_h5, windows, args.context, args.frame_skip)  # [N] bool
+    judge = judge_boxes(args.link_boxes, windows, frames_dset.shape[1]) if args.link_boxes else None  # [N, 2] or None
     print(f'{len(windows)} windows from {n_blocks} blocks of {args.test_h5}; checkpoints:')
     for k in ('video_tokenizer_path', 'latent_actions_path', 'dynamics_path'):
         print(f'  {getattr(args, k)}')
@@ -134,8 +155,14 @@ def main():
 
     per = {k: [] for k in ('block', 'source_start', 'psnr', 'ssim', 'lpips', 'token_acc',
                            'copy_psnr', 'copy_ssim', 'copy_lpips', 'copy_token_acc',
-                           'recon_psnr', 'recon_ssim', 'recon_lpips', 'action', 'lam_code')}
+                           'recon_psnr', 'recon_ssim', 'recon_lpips', 'action', 'lam_code',
+                           'motion_box', 'judge_box', 'motion_group', 'n_moving')}
+    for pre in ('', 'copy_', 'recon_'):
+        for m in ('judge_box_lpips', 'motion_box_lpips', 'motion_psnr', 'still_psnr'):
+            per[pre + m] = []
+    box_feats = {f'{b}_{k}': [] for b in ('judge', 'motion') for k in ('pred', 'copy', 'recon', 'target')}  # Inception
     seed_rows = []  # (context frames, target, prediction, copy) for the PNG
+    pred_u8 = []  # [B, H, W, C] uint8 per batch, with --save-predictions
     power = {'pred': 0, 'recon': 0, 'target': 0}  # radial power sums over all windows [H/2 - 1]
     seed_starts = {}
     for block_id, s in windows:
@@ -199,6 +226,31 @@ def main():
                 power[k] = power[k] + radial_power_sum(frames)
             per['recon_psnr'] += psnr(recon, tgt).tolist(); per['recon_ssim'] += ssim(recon, tgt).tolist(); per['recon_lpips'] += lp(recon, tgt).tolist()
 
+            if args.save_predictions:
+                pred_u8.append((pred * 255).round().byte().permute(0, 2, 3, 1).cpu().numpy())
+
+            # Link-focused metrics; boxes and weights from the real frames (on the CPU: same boxes on every device)
+            last_c, tgt_c = copy.float().cpu(), tgt.float().cpu()  # [B, C, H, W]
+            mbox, n_moving = motion_box(last_c, tgt_c)  # [B, 2], [B]
+            overlay = torch.tensor(in_overlay[i:i + B])  # [B]
+            mbox[overlay] = -1
+            jbox = judge[i:i + B].clone() if judge is not None else torch.full_like(mbox, -1)  # [B, 2]
+            jbox[overlay] = -1  # paused game under a dialog: Link static, copy-last is exact, nothing to judge
+            moving, still = mbox[:, 0] >= 0, ~overlay & (n_moving < MIN_MOVING_PX)  # [B]
+            weights = motion_weights(last_c, tgt_c)  # [B, H, W]
+            per['motion_box'] += mbox.tolist(); per['judge_box'] += jbox.tolist(); per['n_moving'] += n_moving.tolist()
+            per['motion_group'] += ['moving' if m else 'still' if s else 'overlay' if o else 'dropped'
+                                    for m, s, o in zip(moving.tolist(), still.tolist(), overlay.tolist())]
+            for pre, img in (('', pred), ('copy_', copy), ('recon_', recon)):
+                img_c = img.float().cpu()
+                per[pre + 'judge_box_lpips'] += box_lpips(lpips_fn, img, tgt, jbox).tolist()
+                per[pre + 'motion_box_lpips'] += box_lpips(lpips_fn, img, tgt, mbox).tolist()
+                per[pre + 'motion_psnr'] += torch.where(moving, motion_weighted_psnr(img_c, tgt_c, weights), float('nan')).tolist()
+                per[pre + 'still_psnr'] += torch.where(still, psnr(img_c, tgt_c), float('nan')).tolist()
+            for b, bx in (('judge', jbox), ('motion', mbox)):
+                for k, img in (('pred', pred), ('copy', copy), ('recon', recon), ('target', tgt)):
+                    box_feats[f'{b}_{k}'].append(box_inception_features(inception, img, bx))
+
             for j, w in enumerate(batch):
                 if w in seed_set:
                     seed_rows.append((w, to_unit(context[j]).cpu(), tgt[j].cpu(), pred[j].cpu(), copy[j].cpu(), int(last_action[j])))
@@ -213,20 +265,33 @@ def main():
         return None if len(v) == 0 or np.all(np.isnan(v)) else float(np.nanmean(v))
 
     groups = {'model': '', 'copy_baseline': 'copy_', 'tokenizer_recon': 'recon_'}
-    metric_names = {'': ['psnr', 'ssim', 'lpips', 'token_acc'], 'copy_': ['psnr', 'ssim', 'lpips', 'token_acc'], 'recon_': ['psnr', 'ssim', 'lpips']}
+    link = ['judge_box_lpips', 'motion_box_lpips', 'motion_psnr', 'still_psnr']
+    metric_names = {'': ['psnr', 'ssim', 'lpips', 'token_acc'] + link, 'copy_': ['psnr', 'ssim', 'lpips', 'token_acc'] + link,
+                    'recon_': ['psnr', 'ssim', 'lpips'] + link}
     blocks_arr = np.array(per['block'])
     summary = {g: {m: mean(pre + m) for m in metric_names[pre]} for g, pre in groups.items()}
+    feats = {k: np.concatenate(v) for k, v in box_feats.items()}
+    for g, k in (('model', 'pred'), ('copy_baseline', 'copy'), ('tokenizer_recon', 'recon')):
+        for b in ('judge', 'motion'):
+            summary[g][f'{b}_box_fid'] = fid(feats[f'{b}_{k}'], feats[f'{b}_target']) if inception is not None else None
+    groups_n = {g: per['motion_group'].count(g) for g in ('moving', 'still', 'overlay', 'dropped')}
+    n_link = {'judge_box': int(sum(b[0] >= 0 for b in per['judge_box'])), 'motion_box': groups_n['moving'],
+              'still': groups_n['still'], 'overlay': groups_n['overlay'], 'dropped': groups_n['dropped']}
     per_block = {int(b): {g: {m: mean(pre + m, blocks_arr == b) for m in metric_names[pre]} for g, pre in groups.items()}
                  for b in sorted(set(per['block']))}
     result = {
         'name': name, 'n_windows': len(windows), 'test_h5': args.test_h5,
         'config': {k: v for k, v in vars(args).items() if k not in ('out_dir', 'name')},
-        'summary': summary, 'per_block': per_block,
+        'summary': summary, 'n_link_windows': n_link, 'per_block': per_block,
         'spectrum': {'pred_vs_recon': band_deficits(power['pred'], power['recon'], pred.shape[-1]),
                      'recon_vs_target': band_deficits(power['recon'], power['target'], pred.shape[-1])},
         'windows': {k: per[k] for k in ('block', 'source_start', 'action', 'lam_code', 'psnr', 'ssim', 'token_acc',
-                                        'copy_psnr', 'copy_ssim', 'copy_token_acc')},
+                                        'copy_psnr', 'copy_ssim', 'copy_token_acc', 'lpips', 'copy_lpips',
+                                        'judge_box', 'motion_box', 'motion_group', 'n_moving',
+                                        *(pre + m for pre in ('', 'copy_', 'recon_') for m in link))},
     }
+    if args.save_predictions:
+        np.savez_compressed(os.path.join(args.out_dir, f'{name}_pred.npz'), pred=np.concatenate(pred_u8))
     json_path = os.path.join(args.out_dir, f'{name}.json')
     with open(json_path, 'w') as f:
         json.dump(result, f, indent=1)
@@ -264,6 +329,7 @@ def main():
     print('\nsummary:')
     for g, vals in summary.items():
         print(f'  {g:16s} ' + '  '.join(f'{m} {v:.4f}' for m, v in vals.items() if v is not None))
+    print('  link windows: ' + '  '.join(f'{k} {v}' for k, v in n_link.items()))
     for k, bands in result['spectrum'].items():
         print(f'  power {k:15s} ' + '  '.join(f'{b} {v:+.1f}%' for b, v in bands.items()))
     print(f'saved {json_path}' + (f' and {png_path}' if png_path else ''))
