@@ -338,7 +338,9 @@ def flow_dynamics_kwargs(cfg, action_dim):
                       correction=cfg.get('correction', False), correction_weight=cfg.get('correction_weight', 1.0),
                       token_loss=cfg.get('token_loss', 'mse'), token_loss_weight=cfg.get('token_loss_weight', 1.0),
                       topk_frac=cfg.get('topk_frac', 0.05), focal_gamma=cfg.get('focal_gamma', 1.0),
-                      action_dropout_prob=cfg.get('action_dropout_prob', 0.0))
+                      action_dropout_prob=cfg.get('action_dropout_prob', 0.0),
+                      motion_loss_per_sample=cfg.get('motion_loss_per_sample', False),
+                      dropout=cfg.get('dropout', 0.0), action_token=cfg.get('action_token', False))
     return kwargs
 
 

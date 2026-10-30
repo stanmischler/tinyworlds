@@ -1,0 +1,2119 @@
+{
+ "protocol": "Pick TRAIN Zelda windows that match the judged held-out blur windows (experiments/blur_samples/windows.json) in\nfilter and scene, so blur on frames the dynamics model trained on can be compared with blur on held-out frames.\n\nWindows: context start, +4, +8, target +12 (context 3, frame_skip 4), inside one contiguous train segment, train rows\n>= 1000 (the dynamics loader skips the first 1000). Stride 4 as the held-out set, every start (stride 1) in the house rows.\nFilter (as the held-out set): camera still (phase-correlation shift of the target vs the last context frame = (0, 0)) and\n64..2048 moving pixels (evaluation.motion.moving_token_mask, patch 1, thr 0.1); box = the 32x32 box with most moving px.\nScene: nearest judged held-out window by RMSE of the 32x32 average-pooled target frames (RGB in [0, 1]); a train window\nis \"like block b\" when its nearest judged window is in block b at RMSE <= --radius, \"outdoor/other\" when every judged\nwindow is farther than --far.\nSelection: every eligible window in the house train rows (--house), then evenly spaced picks among the windows like\nblocks 1, 5 and 2-3 (quotas below), then evenly spaced \"other\" windows over the video.\n\n    python experiments/train_blur/select_windows.py --out experiments/train_blur/train_windows.json\n",
+ "config": {
+  "train_h5": "data/zelda_train_frames.h5",
+  "test_h5": "data/zelda_test_frames.h5",
+  "heldout": "experiments/blur_samples/windows.json",
+  "start_index": 1000,
+  "house": "3167:3242",
+  "radius": 0.1,
+  "far": 0.14,
+  "quota": "1:40,5:40,23:25,other:25",
+  "min_moving": 64,
+  "max_moving": 2048,
+  "out": "experiments/train_blur/train_windows.json"
+ },
+ "n_eligible": 2486,
+ "windows": [
+  {
+   "start": 1948,
+   "source_start": 1948,
+   "n_moving": 85,
+   "box": [
+    69,
+    26
+   ],
+   "nn_dist": 0.2069,
+   "nn_id": "224",
+   "nn_block": 5,
+   "scene": "other",
+   "id": "t000"
+  },
+  {
+   "start": 3203,
+   "source_start": 3203,
+   "n_moving": 219,
+   "box": [
+    29,
+    95
+   ],
+   "nn_dist": 0.0215,
+   "nn_id": "009",
+   "nn_block": 0,
+   "scene": "house",
+   "id": "t001"
+  },
+  {
+   "start": 3206,
+   "source_start": 3206,
+   "n_moving": 68,
+   "box": [
+    53,
+    32
+   ],
+   "nn_dist": 0.0195,
+   "nn_id": "009",
+   "nn_block": 0,
+   "scene": "house",
+   "id": "t002"
+  },
+  {
+   "start": 3207,
+   "source_start": 3207,
+   "n_moving": 82,
+   "box": [
+    53,
+    33
+   ],
+   "nn_dist": 0.0182,
+   "nn_id": "009",
+   "nn_block": 0,
+   "scene": "house",
+   "id": "t003"
+  },
+  {
+   "start": 3208,
+   "source_start": 3208,
+   "n_moving": 74,
+   "box": [
+    50,
+    33
+   ],
+   "nn_dist": 0.0184,
+   "nn_id": "009",
+   "nn_block": 0,
+   "scene": "house",
+   "id": "t004"
+  },
+  {
+   "start": 3209,
+   "source_start": 3209,
+   "n_moving": 90,
+   "box": [
+    53,
+    33
+   ],
+   "nn_dist": 0.0187,
+   "nn_id": "009",
+   "nn_block": 0,
+   "scene": "house",
+   "id": "t005"
+  },
+  {
+   "start": 3210,
+   "source_start": 3210,
+   "n_moving": 115,
+   "box": [
+    53,
+    32
+   ],
+   "nn_dist": 0.0209,
+   "nn_id": "009",
+   "nn_block": 0,
+   "scene": "house",
+   "id": "t006"
+  },
+  {
+   "start": 3211,
+   "source_start": 3211,
+   "n_moving": 118,
+   "box": [
+    53,
+    32
+   ],
+   "nn_dist": 0.0224,
+   "nn_id": "009",
+   "nn_block": 0,
+   "scene": "house",
+   "id": "t007"
+  },
+  {
+   "start": 3212,
+   "source_start": 3212,
+   "n_moving": 116,
+   "box": [
+    53,
+    32
+   ],
+   "nn_dist": 0.0212,
+   "nn_id": "009",
+   "nn_block": 0,
+   "scene": "house",
+   "id": "t008"
+  },
+  {
+   "start": 3213,
+   "source_start": 3213,
+   "n_moving": 136,
+   "box": [
+    53,
+    32
+   ],
+   "nn_dist": 0.0223,
+   "nn_id": "009",
+   "nn_block": 0,
+   "scene": "house",
+   "id": "t009"
+  },
+  {
+   "start": 3214,
+   "source_start": 3214,
+   "n_moving": 109,
+   "box": [
+    53,
+    32
+   ],
+   "nn_dist": 0.0224,
+   "nn_id": "009",
+   "nn_block": 0,
+   "scene": "house",
+   "id": "t010"
+  },
+  {
+   "start": 3215,
+   "source_start": 3215,
+   "n_moving": 76,
+   "box": [
+    51,
+    32
+   ],
+   "nn_dist": 0.0221,
+   "nn_id": "009",
+   "nn_block": 0,
+   "scene": "house",
+   "id": "t011"
+  },
+  {
+   "start": 3216,
+   "source_start": 3216,
+   "n_moving": 70,
+   "box": [
+    50,
+    32
+   ],
+   "nn_dist": 0.022,
+   "nn_id": "009",
+   "nn_block": 0,
+   "scene": "house",
+   "id": "t012"
+  },
+  {
+   "start": 3219,
+   "source_start": 3219,
+   "n_moving": 71,
+   "box": [
+    44,
+    32
+   ],
+   "nn_dist": 0.023,
+   "nn_id": "009",
+   "nn_block": 0,
+   "scene": "house",
+   "id": "t013"
+  },
+  {
+   "start": 3220,
+   "source_start": 3220,
+   "n_moving": 127,
+   "box": [
+    47,
+    32
+   ],
+   "nn_dist": 0.0226,
+   "nn_id": "009",
+   "nn_block": 0,
+   "scene": "house",
+   "id": "t014"
+  },
+  {
+   "start": 3221,
+   "source_start": 3221,
+   "n_moving": 171,
+   "box": [
+    47,
+    32
+   ],
+   "nn_dist": 0.0226,
+   "nn_id": "009",
+   "nn_block": 0,
+   "scene": "house",
+   "id": "t015"
+  },
+  {
+   "start": 3222,
+   "source_start": 3222,
+   "n_moving": 181,
+   "box": [
+    46,
+    30
+   ],
+   "nn_dist": 0.0227,
+   "nn_id": "009",
+   "nn_block": 0,
+   "scene": "house",
+   "id": "t016"
+  },
+  {
+   "start": 3223,
+   "source_start": 3223,
+   "n_moving": 210,
+   "box": [
+    47,
+    29
+   ],
+   "nn_dist": 0.0231,
+   "nn_id": "009",
+   "nn_block": 0,
+   "scene": "house",
+   "id": "t017"
+  },
+  {
+   "start": 3224,
+   "source_start": 3224,
+   "n_moving": 178,
+   "box": [
+    47,
+    26
+   ],
+   "nn_dist": 0.0232,
+   "nn_id": "009",
+   "nn_block": 0,
+   "scene": "house",
+   "id": "t018"
+  },
+  {
+   "start": 3225,
+   "source_start": 3225,
+   "n_moving": 156,
+   "box": [
+    46,
+    24
+   ],
+   "nn_dist": 0.0226,
+   "nn_id": "009",
+   "nn_block": 0,
+   "scene": "house",
+   "id": "t019"
+  },
+  {
+   "start": 3226,
+   "source_start": 3226,
+   "n_moving": 168,
+   "box": [
+    47,
+    22
+   ],
+   "nn_dist": 0.0234,
+   "nn_id": "009",
+   "nn_block": 0,
+   "scene": "house",
+   "id": "t020"
+  },
+  {
+   "start": 3227,
+   "source_start": 3227,
+   "n_moving": 201,
+   "box": [
+    47,
+    19
+   ],
+   "nn_dist": 0.0247,
+   "nn_id": "007",
+   "nn_block": 0,
+   "scene": "house",
+   "id": "t021"
+  },
+  {
+   "start": 3228,
+   "source_start": 3228,
+   "n_moving": 186,
+   "box": [
+    47,
+    17
+   ],
+   "nn_dist": 0.0247,
+   "nn_id": "007",
+   "nn_block": 0,
+   "scene": "house",
+   "id": "t022"
+  },
+  {
+   "start": 3229,
+   "source_start": 3229,
+   "n_moving": 114,
+   "box": [
+    47,
+    17
+   ],
+   "nn_dist": 0.0253,
+   "nn_id": "009",
+   "nn_block": 0,
+   "scene": "house",
+   "id": "t023"
+  },
+  {
+   "start": 4780,
+   "source_start": 5536,
+   "n_moving": 100,
+   "box": [
+    64,
+    0
+   ],
+   "nn_dist": 0.2097,
+   "nn_id": "224",
+   "nn_block": 5,
+   "scene": "other",
+   "id": "t024"
+  },
+  {
+   "start": 5620,
+   "source_start": 6376,
+   "n_moving": 64,
+   "box": [
+    75,
+    24
+   ],
+   "nn_dist": 0.1906,
+   "nn_id": "087",
+   "nn_block": 1,
+   "scene": "other",
+   "id": "t025"
+  },
+  {
+   "start": 6012,
+   "source_start": 6768,
+   "n_moving": 96,
+   "box": [
+    39,
+    43
+   ],
+   "nn_dist": 0.0955,
+   "nn_id": "087",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t026"
+  },
+  {
+   "start": 6480,
+   "source_start": 7236,
+   "n_moving": 92,
+   "box": [
+    40,
+    34
+   ],
+   "nn_dist": 0.089,
+   "nn_id": "070",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t027"
+  },
+  {
+   "start": 7024,
+   "source_start": 7780,
+   "n_moving": 110,
+   "box": [
+    49,
+    61
+   ],
+   "nn_dist": 0.0983,
+   "nn_id": "087",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t028"
+  },
+  {
+   "start": 7252,
+   "source_start": 8008,
+   "n_moving": 84,
+   "box": [
+    65,
+    26
+   ],
+   "nn_dist": 0.2125,
+   "nn_id": "224",
+   "nn_block": 5,
+   "scene": "other",
+   "id": "t029"
+  },
+  {
+   "start": 7536,
+   "source_start": 8292,
+   "n_moving": 70,
+   "box": [
+    29,
+    0
+   ],
+   "nn_dist": 0.0998,
+   "nn_id": "065",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t030"
+  },
+  {
+   "start": 7772,
+   "source_start": 8528,
+   "n_moving": 73,
+   "box": [
+    36,
+    95
+   ],
+   "nn_dist": 0.096,
+   "nn_id": "075",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t031"
+  },
+  {
+   "start": 7860,
+   "source_start": 8616,
+   "n_moving": 115,
+   "box": [
+    21,
+    45
+   ],
+   "nn_dist": 0.0955,
+   "nn_id": "075",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t032"
+  },
+  {
+   "start": 7956,
+   "source_start": 8712,
+   "n_moving": 95,
+   "box": [
+    46,
+    43
+   ],
+   "nn_dist": 0.0957,
+   "nn_id": "075",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t033"
+  },
+  {
+   "start": 8056,
+   "source_start": 8812,
+   "n_moving": 102,
+   "box": [
+    49,
+    43
+   ],
+   "nn_dist": 0.0964,
+   "nn_id": "075",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t034"
+  },
+  {
+   "start": 8136,
+   "source_start": 8892,
+   "n_moving": 90,
+   "box": [
+    53,
+    49
+   ],
+   "nn_dist": 0.0963,
+   "nn_id": "075",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t035"
+  },
+  {
+   "start": 8220,
+   "source_start": 8976,
+   "n_moving": 79,
+   "box": [
+    36,
+    95
+   ],
+   "nn_dist": 0.0949,
+   "nn_id": "075",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t036"
+  },
+  {
+   "start": 8324,
+   "source_start": 9080,
+   "n_moving": 74,
+   "box": [
+    35,
+    74
+   ],
+   "nn_dist": 0.0946,
+   "nn_id": "075",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t037"
+  },
+  {
+   "start": 8432,
+   "source_start": 9188,
+   "n_moving": 117,
+   "box": [
+    36,
+    95
+   ],
+   "nn_dist": 0.0949,
+   "nn_id": "075",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t038"
+  },
+  {
+   "start": 8700,
+   "source_start": 9456,
+   "n_moving": 90,
+   "box": [
+    0,
+    31
+   ],
+   "nn_dist": 0.0914,
+   "nn_id": "070",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t039"
+  },
+  {
+   "start": 8756,
+   "source_start": 9512,
+   "n_moving": 117,
+   "box": [
+    41,
+    6
+   ],
+   "nn_dist": 0.0905,
+   "nn_id": "070",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t040"
+  },
+  {
+   "start": 9832,
+   "source_start": 11344,
+   "n_moving": 136,
+   "box": [
+    17,
+    0
+   ],
+   "nn_dist": 0.0207,
+   "nn_id": "076",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t041"
+  },
+  {
+   "start": 10260,
+   "source_start": 11772,
+   "n_moving": 98,
+   "box": [
+    28,
+    54
+   ],
+   "nn_dist": 0.0875,
+   "nn_id": "087",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t042"
+  },
+  {
+   "start": 10376,
+   "source_start": 11888,
+   "n_moving": 105,
+   "box": [
+    26,
+    6
+   ],
+   "nn_dist": 0.018,
+   "nn_id": "081",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t043"
+  },
+  {
+   "start": 10824,
+   "source_start": 12336,
+   "n_moving": 91,
+   "box": [
+    21,
+    91
+   ],
+   "nn_dist": 0.094,
+   "nn_id": "087",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t044"
+  },
+  {
+   "start": 11420,
+   "source_start": 12932,
+   "n_moving": 350,
+   "box": [
+    18,
+    50
+   ],
+   "nn_dist": 0.1833,
+   "nn_id": "087",
+   "nn_block": 1,
+   "scene": "other",
+   "id": "t045"
+  },
+  {
+   "start": 12232,
+   "source_start": 13744,
+   "n_moving": 350,
+   "box": [
+    62,
+    0
+   ],
+   "nn_dist": 0.1986,
+   "nn_id": "234",
+   "nn_block": 5,
+   "scene": "other",
+   "id": "t046"
+  },
+  {
+   "start": 12380,
+   "source_start": 13892,
+   "n_moving": 123,
+   "box": [
+    43,
+    95
+   ],
+   "nn_dist": 0.0959,
+   "nn_id": "065",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t047"
+  },
+  {
+   "start": 12460,
+   "source_start": 13972,
+   "n_moving": 112,
+   "box": [
+    42,
+    95
+   ],
+   "nn_dist": 0.0961,
+   "nn_id": "065",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t048"
+  },
+  {
+   "start": 13036,
+   "source_start": 14548,
+   "n_moving": 121,
+   "box": [
+    37,
+    14
+   ],
+   "nn_dist": 0.0896,
+   "nn_id": "070",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t049"
+  },
+  {
+   "start": 13212,
+   "source_start": 14724,
+   "n_moving": 133,
+   "box": [
+    14,
+    47
+   ],
+   "nn_dist": 0.0878,
+   "nn_id": "070",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t050"
+  },
+  {
+   "start": 14428,
+   "source_start": 15940,
+   "n_moving": 129,
+   "box": [
+    41,
+    33
+   ],
+   "nn_dist": 0.0973,
+   "nn_id": "070",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t051"
+  },
+  {
+   "start": 14824,
+   "source_start": 16336,
+   "n_moving": 157,
+   "box": [
+    15,
+    76
+   ],
+   "nn_dist": 0.088,
+   "nn_id": "070",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t052"
+  },
+  {
+   "start": 15792,
+   "source_start": 17304,
+   "n_moving": 90,
+   "box": [
+    55,
+    19
+   ],
+   "nn_dist": 0.0981,
+   "nn_id": "070",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t053"
+  },
+  {
+   "start": 15924,
+   "source_start": 17436,
+   "n_moving": 163,
+   "box": [
+    18,
+    27
+   ],
+   "nn_dist": 0.0909,
+   "nn_id": "070",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t054"
+  },
+  {
+   "start": 16196,
+   "source_start": 17708,
+   "n_moving": 113,
+   "box": [
+    41,
+    0
+   ],
+   "nn_dist": 0.0889,
+   "nn_id": "087",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t055"
+  },
+  {
+   "start": 16236,
+   "source_start": 18504,
+   "n_moving": 891,
+   "box": [
+    95,
+    95
+   ],
+   "nn_dist": 0.1936,
+   "nn_id": "234",
+   "nn_block": 5,
+   "scene": "other",
+   "id": "t056"
+  },
+  {
+   "start": 17076,
+   "source_start": 19344,
+   "n_moving": 1350,
+   "box": [
+    18,
+    62
+   ],
+   "nn_dist": 0.0916,
+   "nn_id": "065",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t057"
+  },
+  {
+   "start": 17508,
+   "source_start": 19776,
+   "n_moving": 83,
+   "box": [
+    72,
+    27
+   ],
+   "nn_dist": 0.0951,
+   "nn_id": "065",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t058"
+  },
+  {
+   "start": 17648,
+   "source_start": 19916,
+   "n_moving": 148,
+   "box": [
+    73,
+    35
+   ],
+   "nn_dist": 0.094,
+   "nn_id": "065",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t059"
+  },
+  {
+   "start": 17780,
+   "source_start": 20048,
+   "n_moving": 100,
+   "box": [
+    74,
+    34
+   ],
+   "nn_dist": 0.0937,
+   "nn_id": "065",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t060"
+  },
+  {
+   "start": 17880,
+   "source_start": 20148,
+   "n_moving": 82,
+   "box": [
+    61,
+    13
+   ],
+   "nn_dist": 0.095,
+   "nn_id": "065",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t061"
+  },
+  {
+   "start": 17976,
+   "source_start": 20244,
+   "n_moving": 64,
+   "box": [
+    72,
+    16
+   ],
+   "nn_dist": 0.0956,
+   "nn_id": "065",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t062"
+  },
+  {
+   "start": 18116,
+   "source_start": 20384,
+   "n_moving": 1232,
+   "box": [
+    8,
+    53
+   ],
+   "nn_dist": 0.0924,
+   "nn_id": "071",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t063"
+  },
+  {
+   "start": 18604,
+   "source_start": 20872,
+   "n_moving": 208,
+   "box": [
+    57,
+    51
+   ],
+   "nn_dist": 0.0957,
+   "nn_id": "065",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t064"
+  },
+  {
+   "start": 18704,
+   "source_start": 20972,
+   "n_moving": 225,
+   "box": [
+    77,
+    61
+   ],
+   "nn_dist": 0.0948,
+   "nn_id": "065",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t065"
+  },
+  {
+   "start": 19088,
+   "source_start": 21356,
+   "n_moving": 103,
+   "box": [
+    55,
+    15
+   ],
+   "nn_dist": 0.0956,
+   "nn_id": "065",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t066"
+  },
+  {
+   "start": 19140,
+   "source_start": 21408,
+   "n_moving": 1225,
+   "box": [
+    9,
+    65
+   ],
+   "nn_dist": 0.0914,
+   "nn_id": "065",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t067"
+  },
+  {
+   "start": 19416,
+   "source_start": 21684,
+   "n_moving": 596,
+   "box": [
+    1,
+    46
+   ],
+   "nn_dist": 0.2209,
+   "nn_id": "224",
+   "nn_block": 5,
+   "scene": "other",
+   "id": "t068"
+  },
+  {
+   "start": 20448,
+   "source_start": 22716,
+   "n_moving": 64,
+   "box": [
+    77,
+    24
+   ],
+   "nn_dist": 0.2103,
+   "nn_id": "065",
+   "nn_block": 1,
+   "scene": "other",
+   "id": "t069"
+  },
+  {
+   "start": 21292,
+   "source_start": 23560,
+   "n_moving": 83,
+   "box": [
+    70,
+    1
+   ],
+   "nn_dist": 0.2265,
+   "nn_id": "224",
+   "nn_block": 5,
+   "scene": "other",
+   "id": "t070"
+  },
+  {
+   "start": 22240,
+   "source_start": 24508,
+   "n_moving": 294,
+   "box": [
+    59,
+    91
+   ],
+   "nn_dist": 0.2056,
+   "nn_id": "229",
+   "nn_block": 5,
+   "scene": "other",
+   "id": "t071"
+  },
+  {
+   "start": 22936,
+   "source_start": 25960,
+   "n_moving": 98,
+   "box": [
+    72,
+    2
+   ],
+   "nn_dist": 0.2412,
+   "nn_id": "225",
+   "nn_block": 5,
+   "scene": "other",
+   "id": "t072"
+  },
+  {
+   "start": 22996,
+   "source_start": 26020,
+   "n_moving": 298,
+   "box": [
+    42,
+    79
+   ],
+   "nn_dist": 0.0341,
+   "nn_id": "154",
+   "nn_block": 3,
+   "scene": "like23",
+   "id": "t073"
+  },
+  {
+   "start": 23000,
+   "source_start": 26024,
+   "n_moving": 323,
+   "box": [
+    42,
+    70
+   ],
+   "nn_dist": 0.0464,
+   "nn_id": "153",
+   "nn_block": 3,
+   "scene": "like23",
+   "id": "t074"
+  },
+  {
+   "start": 23004,
+   "source_start": 26028,
+   "n_moving": 358,
+   "box": [
+    42,
+    61
+   ],
+   "nn_dist": 0.0408,
+   "nn_id": "153",
+   "nn_block": 3,
+   "scene": "like23",
+   "id": "t075"
+  },
+  {
+   "start": 23008,
+   "source_start": 26032,
+   "n_moving": 324,
+   "box": [
+    42,
+    53
+   ],
+   "nn_dist": 0.0385,
+   "nn_id": "152",
+   "nn_block": 3,
+   "scene": "like23",
+   "id": "t076"
+  },
+  {
+   "start": 24020,
+   "source_start": 27044,
+   "n_moving": 258,
+   "box": [
+    59,
+    16
+   ],
+   "nn_dist": 0.0592,
+   "nn_id": "150",
+   "nn_block": 3,
+   "scene": "like23",
+   "id": "t077"
+  },
+  {
+   "start": 24024,
+   "source_start": 27048,
+   "n_moving": 261,
+   "box": [
+    65,
+    23
+   ],
+   "nn_dist": 0.0598,
+   "nn_id": "149",
+   "nn_block": 3,
+   "scene": "like23",
+   "id": "t078"
+  },
+  {
+   "start": 24028,
+   "source_start": 27052,
+   "n_moving": 370,
+   "box": [
+    64,
+    32
+   ],
+   "nn_dist": 0.0254,
+   "nn_id": "149",
+   "nn_block": 3,
+   "scene": "like23",
+   "id": "t079"
+  },
+  {
+   "start": 24032,
+   "source_start": 27056,
+   "n_moving": 385,
+   "box": [
+    62,
+    40
+   ],
+   "nn_dist": 0.046,
+   "nn_id": "150",
+   "nn_block": 3,
+   "scene": "like23",
+   "id": "t080"
+  },
+  {
+   "start": 24036,
+   "source_start": 27060,
+   "n_moving": 351,
+   "box": [
+    54,
+    49
+   ],
+   "nn_dist": 0.0605,
+   "nn_id": "150",
+   "nn_block": 3,
+   "scene": "like23",
+   "id": "t081"
+  },
+  {
+   "start": 24040,
+   "source_start": 27064,
+   "n_moving": 364,
+   "box": [
+    44,
+    59
+   ],
+   "nn_dist": 0.0609,
+   "nn_id": "150",
+   "nn_block": 3,
+   "scene": "like23",
+   "id": "t082"
+  },
+  {
+   "start": 24044,
+   "source_start": 27068,
+   "n_moving": 276,
+   "box": [
+    49,
+    64
+   ],
+   "nn_dist": 0.0555,
+   "nn_id": "150",
+   "nn_block": 3,
+   "scene": "like23",
+   "id": "t083"
+  },
+  {
+   "start": 24048,
+   "source_start": 27072,
+   "n_moving": 277,
+   "box": [
+    59,
+    64
+   ],
+   "nn_dist": 0.0556,
+   "nn_id": "150",
+   "nn_block": 3,
+   "scene": "like23",
+   "id": "t084"
+  },
+  {
+   "start": 24052,
+   "source_start": 27076,
+   "n_moving": 239,
+   "box": [
+    68,
+    64
+   ],
+   "nn_dist": 0.0574,
+   "nn_id": "150",
+   "nn_block": 3,
+   "scene": "like23",
+   "id": "t085"
+  },
+  {
+   "start": 24056,
+   "source_start": 27080,
+   "n_moving": 361,
+   "box": [
+    77,
+    63
+   ],
+   "nn_dist": 0.0565,
+   "nn_id": "150",
+   "nn_block": 3,
+   "scene": "like23",
+   "id": "t086"
+  },
+  {
+   "start": 24060,
+   "source_start": 27084,
+   "n_moving": 331,
+   "box": [
+    82,
+    54
+   ],
+   "nn_dist": 0.0587,
+   "nn_id": "150",
+   "nn_block": 3,
+   "scene": "like23",
+   "id": "t087"
+  },
+  {
+   "start": 24064,
+   "source_start": 27088,
+   "n_moving": 175,
+   "box": [
+    82,
+    47
+   ],
+   "nn_dist": 0.0574,
+   "nn_id": "150",
+   "nn_block": 3,
+   "scene": "like23",
+   "id": "t088"
+  },
+  {
+   "start": 24068,
+   "source_start": 27092,
+   "n_moving": 136,
+   "box": [
+    82,
+    43
+   ],
+   "nn_dist": 0.0603,
+   "nn_id": "148",
+   "nn_block": 3,
+   "scene": "like23",
+   "id": "t089"
+  },
+  {
+   "start": 24072,
+   "source_start": 27096,
+   "n_moving": 164,
+   "box": [
+    79,
+    43
+   ],
+   "nn_dist": 0.0572,
+   "nn_id": "148",
+   "nn_block": 3,
+   "scene": "like23",
+   "id": "t090"
+  },
+  {
+   "start": 24076,
+   "source_start": 27100,
+   "n_moving": 272,
+   "box": [
+    74,
+    43
+   ],
+   "nn_dist": 0.0542,
+   "nn_id": "149",
+   "nn_block": 3,
+   "scene": "like23",
+   "id": "t091"
+  },
+  {
+   "start": 24080,
+   "source_start": 27104,
+   "n_moving": 348,
+   "box": [
+    62,
+    50
+   ],
+   "nn_dist": 0.0621,
+   "nn_id": "150",
+   "nn_block": 3,
+   "scene": "like23",
+   "id": "t092"
+  },
+  {
+   "start": 24084,
+   "source_start": 27108,
+   "n_moving": 362,
+   "box": [
+    54,
+    59
+   ],
+   "nn_dist": 0.0609,
+   "nn_id": "150",
+   "nn_block": 3,
+   "scene": "like23",
+   "id": "t093"
+  },
+  {
+   "start": 24188,
+   "source_start": 27212,
+   "n_moving": 261,
+   "box": [
+    58,
+    20
+   ],
+   "nn_dist": 0.0576,
+   "nn_id": "150",
+   "nn_block": 3,
+   "scene": "like23",
+   "id": "t094"
+  },
+  {
+   "start": 24192,
+   "source_start": 27216,
+   "n_moving": 271,
+   "box": [
+    66,
+    20
+   ],
+   "nn_dist": 0.0571,
+   "nn_id": "149",
+   "nn_block": 3,
+   "scene": "like23",
+   "id": "t095"
+  },
+  {
+   "start": 24196,
+   "source_start": 27220,
+   "n_moving": 323,
+   "box": [
+    75,
+    25
+   ],
+   "nn_dist": 0.0489,
+   "nn_id": "148",
+   "nn_block": 3,
+   "scene": "like23",
+   "id": "t096"
+  },
+  {
+   "start": 24200,
+   "source_start": 27224,
+   "n_moving": 360,
+   "box": [
+    84,
+    33
+   ],
+   "nn_dist": 0.0521,
+   "nn_id": "148",
+   "nn_block": 3,
+   "scene": "like23",
+   "id": "t097"
+  },
+  {
+   "start": 24448,
+   "source_start": 27472,
+   "n_moving": 115,
+   "box": [
+    70,
+    12
+   ],
+   "nn_dist": 0.2353,
+   "nn_id": "234",
+   "nn_block": 5,
+   "scene": "other",
+   "id": "t098"
+  },
+  {
+   "start": 25900,
+   "source_start": 28924,
+   "n_moving": 601,
+   "box": [
+    67,
+    50
+   ],
+   "nn_dist": 0.2249,
+   "nn_id": "225",
+   "nn_block": 5,
+   "scene": "other",
+   "id": "t099"
+  },
+  {
+   "start": 27128,
+   "source_start": 30152,
+   "n_moving": 94,
+   "box": [
+    67,
+    27
+   ],
+   "nn_dist": 0.2049,
+   "nn_id": "223",
+   "nn_block": 5,
+   "scene": "other",
+   "id": "t100"
+  },
+  {
+   "start": 29256,
+   "source_start": 33036,
+   "n_moving": 218,
+   "box": [
+    42,
+    37
+   ],
+   "nn_dist": 0.1547,
+   "nn_id": "065",
+   "nn_block": 1,
+   "scene": "other",
+   "id": "t101"
+  },
+  {
+   "start": 31568,
+   "source_start": 35348,
+   "n_moving": 66,
+   "box": [
+    81,
+    42
+   ],
+   "nn_dist": 0.2057,
+   "nn_id": "060",
+   "nn_block": 1,
+   "scene": "other",
+   "id": "t102"
+  },
+  {
+   "start": 32824,
+   "source_start": 36604,
+   "n_moving": 155,
+   "box": [
+    25,
+    21
+   ],
+   "nn_dist": 0.1738,
+   "nn_id": "203",
+   "nn_block": 5,
+   "scene": "other",
+   "id": "t103"
+  },
+  {
+   "start": 34864,
+   "source_start": 38644,
+   "n_moving": 424,
+   "box": [
+    28,
+    2
+   ],
+   "nn_dist": 0.1741,
+   "nn_id": "236",
+   "nn_block": 5,
+   "scene": "other",
+   "id": "t104"
+  },
+  {
+   "start": 35360,
+   "source_start": 39140,
+   "n_moving": 266,
+   "box": [
+    54,
+    74
+   ],
+   "nn_dist": 0.04,
+   "nn_id": "234",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t105"
+  },
+  {
+   "start": 35392,
+   "source_start": 39172,
+   "n_moving": 308,
+   "box": [
+    42,
+    43
+   ],
+   "nn_dist": 0.0836,
+   "nn_id": "229",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t106"
+  },
+  {
+   "start": 35396,
+   "source_start": 39176,
+   "n_moving": 67,
+   "box": [
+    40,
+    42
+   ],
+   "nn_dist": 0.0844,
+   "nn_id": "229",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t107"
+  },
+  {
+   "start": 35416,
+   "source_start": 39196,
+   "n_moving": 128,
+   "box": [
+    38,
+    40
+   ],
+   "nn_dist": 0.0435,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t108"
+  },
+  {
+   "start": 35420,
+   "source_start": 39200,
+   "n_moving": 347,
+   "box": [
+    37,
+    37
+   ],
+   "nn_dist": 0.0426,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t109"
+  },
+  {
+   "start": 35424,
+   "source_start": 39204,
+   "n_moving": 311,
+   "box": [
+    37,
+    27
+   ],
+   "nn_dist": 0.0423,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t110"
+  },
+  {
+   "start": 35436,
+   "source_start": 39216,
+   "n_moving": 306,
+   "box": [
+    38,
+    18
+   ],
+   "nn_dist": 0.0418,
+   "nn_id": "232",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t111"
+  },
+  {
+   "start": 35440,
+   "source_start": 39220,
+   "n_moving": 66,
+   "box": [
+    37,
+    7
+   ],
+   "nn_dist": 0.0408,
+   "nn_id": "231",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t112"
+  },
+  {
+   "start": 35444,
+   "source_start": 39224,
+   "n_moving": 106,
+   "box": [
+    37,
+    9
+   ],
+   "nn_dist": 0.0428,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t113"
+  },
+  {
+   "start": 35456,
+   "source_start": 39236,
+   "n_moving": 165,
+   "box": [
+    32,
+    15
+   ],
+   "nn_dist": 0.0425,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t114"
+  },
+  {
+   "start": 35460,
+   "source_start": 39240,
+   "n_moving": 75,
+   "box": [
+    31,
+    16
+   ],
+   "nn_dist": 0.0409,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t115"
+  },
+  {
+   "start": 35492,
+   "source_start": 39272,
+   "n_moving": 326,
+   "box": [
+    32,
+    29
+   ],
+   "nn_dist": 0.0395,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t116"
+  },
+  {
+   "start": 35496,
+   "source_start": 39276,
+   "n_moving": 283,
+   "box": [
+    32,
+    37
+   ],
+   "nn_dist": 0.042,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t117"
+  },
+  {
+   "start": 35500,
+   "source_start": 39280,
+   "n_moving": 287,
+   "box": [
+    32,
+    46
+   ],
+   "nn_dist": 0.0423,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t118"
+  },
+  {
+   "start": 35504,
+   "source_start": 39284,
+   "n_moving": 298,
+   "box": [
+    32,
+    55
+   ],
+   "nn_dist": 0.0398,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t119"
+  },
+  {
+   "start": 35508,
+   "source_start": 39288,
+   "n_moving": 201,
+   "box": [
+    32,
+    60
+   ],
+   "nn_dist": 0.0414,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t120"
+  },
+  {
+   "start": 35512,
+   "source_start": 39292,
+   "n_moving": 134,
+   "box": [
+    31,
+    60
+   ],
+   "nn_dist": 0.0416,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t121"
+  },
+  {
+   "start": 35528,
+   "source_start": 39308,
+   "n_moving": 113,
+   "box": [
+    26,
+    64
+   ],
+   "nn_dist": 0.0425,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t122"
+  },
+  {
+   "start": 35532,
+   "source_start": 39312,
+   "n_moving": 327,
+   "box": [
+    27,
+    74
+   ],
+   "nn_dist": 0.0402,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t123"
+  },
+  {
+   "start": 35536,
+   "source_start": 39316,
+   "n_moving": 72,
+   "box": [
+    24,
+    74
+   ],
+   "nn_dist": 0.0412,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t124"
+  },
+  {
+   "start": 35564,
+   "source_start": 39344,
+   "n_moving": 211,
+   "box": [
+    27,
+    80
+   ],
+   "nn_dist": 0.0412,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t125"
+  },
+  {
+   "start": 35568,
+   "source_start": 39348,
+   "n_moving": 134,
+   "box": [
+    27,
+    83
+   ],
+   "nn_dist": 0.0396,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t126"
+  },
+  {
+   "start": 35572,
+   "source_start": 39352,
+   "n_moving": 67,
+   "box": [
+    25,
+    83
+   ],
+   "nn_dist": 0.0419,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t127"
+  },
+  {
+   "start": 35584,
+   "source_start": 39364,
+   "n_moving": 196,
+   "box": [
+    27,
+    80
+   ],
+   "nn_dist": 0.0407,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t128"
+  },
+  {
+   "start": 35588,
+   "source_start": 39368,
+   "n_moving": 300,
+   "box": [
+    27,
+    74
+   ],
+   "nn_dist": 0.0415,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t129"
+  },
+  {
+   "start": 35592,
+   "source_start": 39372,
+   "n_moving": 324,
+   "box": [
+    27,
+    64
+   ],
+   "nn_dist": 0.0402,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t130"
+  },
+  {
+   "start": 35596,
+   "source_start": 39376,
+   "n_moving": 300,
+   "box": [
+    27,
+    55
+   ],
+   "nn_dist": 0.0389,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t131"
+  },
+  {
+   "start": 35600,
+   "source_start": 39380,
+   "n_moving": 242,
+   "box": [
+    27,
+    46
+   ],
+   "nn_dist": 0.0412,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t132"
+  },
+  {
+   "start": 35604,
+   "source_start": 39384,
+   "n_moving": 294,
+   "box": [
+    27,
+    39
+   ],
+   "nn_dist": 0.0396,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t133"
+  },
+  {
+   "start": 35608,
+   "source_start": 39388,
+   "n_moving": 253,
+   "box": [
+    27,
+    28
+   ],
+   "nn_dist": 0.0384,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t134"
+  },
+  {
+   "start": 35620,
+   "source_start": 39400,
+   "n_moving": 142,
+   "box": [
+    27,
+    18
+   ],
+   "nn_dist": 0.0386,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t135"
+  },
+  {
+   "start": 35628,
+   "source_start": 39408,
+   "n_moving": 70,
+   "box": [
+    25,
+    15
+   ],
+   "nn_dist": 0.0406,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t136"
+  },
+  {
+   "start": 35632,
+   "source_start": 39412,
+   "n_moving": 93,
+   "box": [
+    27,
+    14
+   ],
+   "nn_dist": 0.0397,
+   "nn_id": "229",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t137"
+  },
+  {
+   "start": 35640,
+   "source_start": 39420,
+   "n_moving": 87,
+   "box": [
+    24,
+    13
+   ],
+   "nn_dist": 0.0377,
+   "nn_id": "229",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t138"
+  },
+  {
+   "start": 35644,
+   "source_start": 39424,
+   "n_moving": 162,
+   "box": [
+    21,
+    14
+   ],
+   "nn_dist": 0.0349,
+   "nn_id": "229",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t139"
+  },
+  {
+   "start": 35648,
+   "source_start": 39428,
+   "n_moving": 110,
+   "box": [
+    16,
+    14
+   ],
+   "nn_dist": 0.031,
+   "nn_id": "194",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t140"
+  },
+  {
+   "start": 37288,
+   "source_start": 41824,
+   "n_moving": 1175,
+   "box": [
+    95,
+    8
+   ],
+   "nn_dist": 0.0979,
+   "nn_id": "236",
+   "nn_block": 5,
+   "scene": "like5",
+   "id": "t141"
+  },
+  {
+   "start": 37796,
+   "source_start": 42332,
+   "n_moving": 94,
+   "box": [
+    28,
+    42
+   ],
+   "nn_dist": 0.0949,
+   "nn_id": "070",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t142"
+  },
+  {
+   "start": 37964,
+   "source_start": 42500,
+   "n_moving": 156,
+   "box": [
+    54,
+    39
+   ],
+   "nn_dist": 0.0883,
+   "nn_id": "065",
+   "nn_block": 1,
+   "scene": "like1",
+   "id": "t143"
+  },
+  {
+   "start": 38764,
+   "source_start": 43300,
+   "n_moving": 82,
+   "box": [
+    21,
+    13
+   ],
+   "nn_dist": 0.1522,
+   "nn_id": "065",
+   "nn_block": 1,
+   "scene": "other",
+   "id": "t144"
+  },
+  {
+   "start": 42088,
+   "source_start": 46624,
+   "n_moving": 589,
+   "box": [
+    69,
+    95
+   ],
+   "nn_dist": 0.2644,
+   "nn_id": "224",
+   "nn_block": 5,
+   "scene": "other",
+   "id": "t145"
+  },
+  {
+   "start": 44628,
+   "source_start": 49920,
+   "n_moving": 413,
+   "box": [
+    0,
+    47
+   ],
+   "nn_dist": 0.3408,
+   "nn_id": "224",
+   "nn_block": 5,
+   "scene": "other",
+   "id": "t146"
+  },
+  {
+   "start": 46768,
+   "source_start": 52060,
+   "n_moving": 633,
+   "box": [
+    95,
+    0
+   ],
+   "nn_dist": 0.2727,
+   "nn_id": "070",
+   "nn_block": 1,
+   "scene": "other",
+   "id": "t147"
+  },
+  {
+   "start": 55812,
+   "source_start": 62616,
+   "n_moving": 779,
+   "box": [
+    78,
+    17
+   ],
+   "nn_dist": 0.2822,
+   "nn_id": "224",
+   "nn_block": 5,
+   "scene": "other",
+   "id": "t148"
+  },
+  {
+   "start": 64656,
+   "source_start": 72216,
+   "n_moving": 705,
+   "box": [
+    74,
+    33
+   ],
+   "nn_dist": 0.284,
+   "nn_id": "224",
+   "nn_block": 5,
+   "scene": "other",
+   "id": "t149"
+  }
+ ]
+}

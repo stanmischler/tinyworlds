@@ -38,13 +38,17 @@ class FlowDynamicsModel(nn.Module):
                  latent_dim=6, num_bins=4, conditioning_dim=0, time_dim=64, fm_pred="v", fm_shift=1.0, qk_norm=True,
                  t_eps=0.05, round_latents=True, fm_source="noise", fm_source_noise=0.0, noise_cond=False, random_context=False,
                  bridge_loss="stabilised", bridge_t_max=0.999, bridge_delta=1e-4, correction=False, correction_weight=1.0,
-                 token_loss="mse", token_loss_weight=1.0, topk_frac=0.05, focal_gamma=1.0, action_dropout_prob=0.0):
+                 token_loss="mse", token_loss_weight=1.0, topk_frac=0.05, focal_gamma=1.0, action_dropout_prob=0.0,
+                 motion_loss_per_sample=False, dropout=0.0, action_token=False):
         super().__init__()
         # token_loss: how the per-token velocity error e [B, P] is reduced (see token_weighted_loss); "mse" = plain mean
         assert token_loss in ("mse", "motion", "topk", "focal"), token_loss
         assert token_loss == "mse" or fm_source != "bridge", 'token_loss needs fm_source "noise" or "copy"'
         self.token_loss, self.token_loss_weight = token_loss, float(token_loss_weight)
         self.topk_frac, self.focal_gamma = float(topk_frac), float(focal_gamma)
+        # motion_loss_per_sample: the moving-token term is each sample's mean error over its moving tokens, averaged over
+        # the samples that have any (False = pooled over the batch, so the samples with the most motion dominate)
+        self.motion_loss_per_sample = bool(motion_loss_per_sample)
         # action dropout (training only): each action of the window is replaced by the learned null action with this
         # probability, independently; sampling with guidance_scale != 1 then mixes the velocities with and without the
         # last action (classifier-free guidance). The null action only exists when dropout is on (old checkpoints load).
@@ -75,8 +79,16 @@ class FlowDynamicsModel(nn.Module):
             self.alpha_mlp = nn.Sequential(nn.Linear(time_dim, 2 * time_dim), nn.SiLU(), nn.Linear(2 * time_dim, time_dim))
         self.transformer = STTransformer(
             embed_dim, num_heads, hidden_dim, num_blocks, causal=True,
-            conditioning_dim=self.action_dim + time_dim * (2 if self.noise_cond else 1), qk_norm=qk_norm,
+            conditioning_dim=self.action_dim + time_dim * (2 if self.noise_cond else 1), qk_norm=qk_norm, dropout=dropout,
         )
+        # action token: each frame's action a_{t-1} is also embedded as one extra token appended to that frame's P image
+        # tokens, so they can attend to it in spatial attention; it goes through every block and is dropped before the
+        # output head. FiLM still carries the action and the flow time. Zero-init: the token starts as the zero vector.
+        self.action_token = bool(action_token)
+        if self.action_token:
+            assert self.action_dim > 0, 'action_token needs actions'
+            self.action_token_embed = nn.Linear(self.action_dim, embed_dim)
+            nn.init.zeros_(self.action_token_embed.weight); nn.init.zeros_(self.action_token_embed.bias)
         # zero-init output: the model starts by predicting v = 0 (or x1 = 0), as DiT's zero-init final layer
         self.output_mlp = nn.Linear(embed_dim, latent_dim)
         nn.init.zeros_(self.output_mlp.weight); nn.init.zeros_(self.output_mlp.bias)
@@ -93,6 +105,7 @@ class FlowDynamicsModel(nn.Module):
         self.correction, self.correction_weight = bool(correction), float(correction_weight)
         self.correction_k, self.correction_interval = 1, 1.0
         if self.correction:
+            assert not self.action_token, 'correction does not support the action token'
             assert fm_pred == "v" and fm_source in ("noise", "copy") and not self.noise_cond, \
                 'correction needs a velocity head and a straight path (fm_source noise or copy, no noise_cond)'
             self.corrector = nn.ModuleDict({name: copy.deepcopy(getattr(self, name)) for name in self.NET_MODULES})
@@ -115,13 +128,15 @@ class FlowDynamicsModel(nn.Module):
             temb = torch.cat([temb, self.alpha_mlp(timestep_embedding(alpha, self.time_dim))], dim=-1)  # [B, T, 2Dt]
         if self.action_dim == 0:
             return temb
-        B = t.shape[0]
-        if actions is None:
-            a = torch.zeros(B, T, self.action_dim, device=t.device, dtype=temb.dtype)  # [B, T, A]
-        else:
-            # a_{t-1} drives frame t (same shift as AdaptiveNormalizer does for [B, T-1, A] conditioning)
-            a = torch.cat([torch.zeros_like(actions[:, :1]), actions[:, :T - 1]], dim=1).to(temb.dtype)  # [B, T, A]
+        a = self._frame_actions(actions, t.shape[0], T, t.device, temb.dtype)  # [B, T, A]
         return torch.cat([a, temb], dim=-1)  # [B, T, A + Dt]
+
+    def _frame_actions(self, actions, B, T, device, dtype):
+        # actions: [B, T-1, A] or None -> [B, T, A], a_{t-1} drives frame t (same shift as AdaptiveNormalizer does for
+        # [B, T-1, A] conditioning); frame 0, or every frame without actions, gets zeros
+        if actions is None:
+            return torch.zeros(B, T, self.action_dim, device=device, dtype=dtype)
+        return torch.cat([torch.zeros_like(actions[:, :1]), actions[:, :T - 1]], dim=1).to(dtype)
 
     def net(self, latents, actions, t, alpha=None, modules=None):
         # latents: [B, T, P, L] (last frame noisy); actions: [B, T-1, A] or None; t, alpha: [B, T]; modules: the corrector
@@ -129,8 +144,11 @@ class FlowDynamicsModel(nn.Module):
         m = self if modules is None else modules
         B, T, P, L = latents.shape
         emb = m.latent_embed(latents.float()) + self.pos_spatial_dec.to(latents.device)  # [B, T, P, E]
-        out = m.transformer(emb, conditioning=self._conditioning(actions, t, T, alpha, m.time_mlp))  # [B, T, P, E]
-        return m.output_mlp(out)  # [B, T, P, L]
+        if self.action_token:
+            a = self._frame_actions(actions, B, T, latents.device, emb.dtype)  # [B, T, A]
+            emb = torch.cat([emb, self.action_token_embed(a)[:, :, None]], dim=2)  # [B, T, P+1, E] token appended last
+        out = m.transformer(emb, conditioning=self._conditioning(actions, t, T, alpha, m.time_mlp))  # [B, T, P(+1), E]
+        return m.output_mlp(out[:, :, :P])  # [B, T, P, L] action token dropped
 
     def velocity(self, latents, actions, t):
         # velocity of the last frame: [B, P, L]
@@ -145,24 +163,34 @@ class FlowDynamicsModel(nn.Module):
         drop = torch.rand(actions.shape[:2], device=actions.device) < self.action_dropout_prob  # [B, T-1]
         return torch.where(drop[..., None], self.null_action.to(actions.dtype), actions)  # [B, T-1, A]
 
-    def token_weighted_loss(self, v_hat, v, token_mask=None):
-        # v_hat, v: [B, P, L] predicted and true velocity; token_mask: [B, P] moving tokens (token_loss "motion")
+    def token_weighted_loss(self, v_hat, v, token_mask=None, loss_mask=None):
+        # v_hat, v: [B, P, L] predicted and true velocity; token_mask: [B, P] moving tokens (token_loss "motion");
+        # loss_mask: [B, P] tokens in the loss (None = all), e.g. without the border revealed by a token shift
         e = ((v_hat.float() - v) ** 2).mean(-1)  # [B, P] per-token velocity error
-        mse = e.mean()
+        valid = torch.ones_like(e) if loss_mask is None else loss_mask.float()  # [B, P]
+        mse = (valid * e).sum() / valid.sum().clamp_min(1)  # mean error over the valid tokens (= e.mean() if all valid)
         if self.token_loss == "motion":
-            # extra term normalised by the moving area (as CGSReg, arXiv 2607.15142): mean error over the batch's moving tokens
             if token_mask is None:  # e.g. the test curve: no frames to build the mask from
                 return mse
-            m = token_mask.float()  # [B, P]
+            m = token_mask.float() * valid  # [B, P]
+            if self.motion_loss_per_sample:
+                # each sample's mean error over its moving tokens, averaged over the samples that have motion
+                n = m.sum(1)  # [B] moving tokens per sample
+                per_sample = (m * e).sum(1) / n.clamp_min(1)  # [B]
+                has_motion = (n > 0).float()  # [B]
+                return mse + self.token_loss_weight * (has_motion * per_sample).sum() / has_motion.sum().clamp_min(1)
+            # extra term normalised by the moving area (as CGSReg, arXiv 2607.15142): mean error over the batch's moving tokens
             return mse + self.token_loss_weight * (m * e).sum() / m.sum().clamp_min(1)
         if self.token_loss == "topk":
-            # mean error of each sample's worst topk_frac tokens
+            # mean error of each sample's worst topk_frac valid tokens
             k = max(1, round(self.topk_frac * e.shape[1]))
-            return mse + self.token_loss_weight * e.topk(k, dim=1).values.mean()
+            return mse + self.token_loss_weight * (valid * e).topk(k, dim=1).values.mean()
         if self.token_loss == "focal":
-            # dynamic focal weight w = sg((e / e_mean)^gamma), e_mean per sample: tokens above the sample's mean error weigh more
-            w = (e / e.mean(1, keepdim=True).clamp_min(1e-8)).pow(self.focal_gamma).detach()  # [B, P]
-            return (w * e).mean()
+            # dynamic focal weight w = sg((e / e_mean)^gamma), e_mean = the sample's mean error over its valid tokens:
+            # tokens above it weigh more; the loss is the mean of w * e over the valid tokens
+            e_mean = (valid * e).sum(1, keepdim=True) / valid.sum(1, keepdim=True).clamp_min(1)  # [B, 1]
+            w = (e / e_mean.clamp_min(1e-8)).pow(self.focal_gamma).detach()  # [B, P]
+            return (valid * w * e).sum() / valid.sum().clamp_min(1)
         return mse
 
     def corrected_velocity(self, context, xt, v, actions, t):
@@ -175,11 +203,11 @@ class FlowDynamicsModel(nn.Module):
         c = self.net(inp, actions, t, modules=self.corrector)[:, -1].float()  # [B, P, L]
         return v + self.correction_gate * (c - v)  # [B, P, L]
 
-    def forward(self, latents, training=True, conditioning=None, targets=None, token_mask=None):
+    def forward(self, latents, training=True, conditioning=None, targets=None, token_mask=None, loss_mask=None):
         # latents: [B, T, P, L] clean FSQ (or continuous) latents; conditioning: [B, T-1, A] actions. Returns
         # (v_hat, (x1_hat, s, parts), loss) like DynamicsModel.forward returns (logits, mask, loss); x1_hat = x_t + s * v_hat [B, P, L]
         # is the predicted clean last frame, s [B] its noise level and parts the loss terms to log ({} without correction).
-        # token_mask: [B, P] moving tokens (token_loss "motion").
+        # token_mask: [B, P] moving tokens (token_loss "motion"); loss_mask: [B, P] tokens in the loss (None = all).
         if self.null_action is not None and self.training and conditioning is not None:
             conditioning = self.drop_actions(conditioning)
         if self.random_context and training and latents.shape[1] > 2:
@@ -198,7 +226,7 @@ class FlowDynamicsModel(nn.Module):
         t = torch.ones(B, T, device=latents.device)  # [B, T] context is clean (t = 1)
         t[:, -1] = tt
         v_hat = self.velocity(noisy, conditioning, t)  # [B, P, L]
-        loss = self.token_weighted_loss(v_hat, x1 - x0, token_mask)
+        loss = self.token_weighted_loss(v_hat, x1 - x0, token_mask, loss_mask)
         x1_hat = xt + s[:, None, None] * v_hat.float()  # [B, P, L] predicted clean latents (for the frequency loss)
         parts = {}  # loss terms to log
         if self.correction:

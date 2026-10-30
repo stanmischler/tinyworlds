@@ -93,6 +93,17 @@ def moving_token_mask(last, target, patch_size, tol=1, thr=0.1):
     return tokens.flatten(1) > 0  # [B, P], row-major patches as the tokenizer
 
 
+def revealed_strip_tokens(last, target, patch_size, tol=1):
+    # last, target: [B, C, H, W] in [0, 1] -> [B, P] bool, tokens touched by the strip the camera scroll reveals (widened
+    # by tol, without the wrap border, so nothing when the camera is still): their content is new, unpredictable from the
+    # context
+    B, C, H, W = target.shape
+    cam = global_shift(last.mean(1).float(), target.mean(1).float())  # [B, 2]
+    strip = revealed_mask(cam, H, W, tol) & ~revealed_mask(torch.zeros_like(cam), H, W, tol)  # [B, H, W]
+    tokens = F.max_pool2d(strip[:, None].float(), patch_size)  # [B, 1, Hp, Wp]
+    return tokens.flatten(1) > 0  # [B, P]
+
+
 def overlay_intervals(frames, max_px=2048):
     # frames: [N, C, H, W] in [0, 1], consecutive frames of one clip -> list of (start, end): frames start..end-1 show an
     # overlay (dialog box, menu) drawn over a paused game. An overlay opens with a large change (> max_px moving px) at

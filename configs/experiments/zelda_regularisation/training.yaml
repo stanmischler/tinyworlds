@@ -1,0 +1,51 @@
+# Stop the 13M dynamics model memorising the training video (held-out Link blurry 66/85 vs train 4/107 at 60M).
+# Same frozen tokenizer (KL c16 temporal, zelda_cont_final_tp step 29000), frozen CoMo actions and 13M "flow matching"
+# recipe (256/512/12, lr 3e-4 cosine, bs 64, EMA 0.999, seed 0) for every run, 100k steps, checkpoint every 10k.
+# Runs (one dynamics yaml each):
+#   today's recipe          todays_recipe.yaml          the recipe as it is, 100k steps
+#   regularised + shifted   regularised_shifted.yaml    token shift +-4, dropout 0.1, weight decay 0.05
+#   motion-weighted loss    motion_weighted.yaml        regularised + 0.3 * per-sample mean error over moving tokens
+#   error-weighted loss     error_weighted.yaml         regularised + focal (gamma 1), scroll strip left out
+#   action token            action_token.yaml           regularised + one action token per frame in spatial attention
+# Launch on Jean Zay: see cluster/README.md (one H100 job per run, train_dynamics.py with this training yaml).
+use_wandb: true
+wandb_project: tinyworlds
+
+dataset: ZELDA_TRAIN      # zelda_train_frames.h5: all frames minus the 10 held-out test blocks (scripts/data/split_dataset.py)
+preload_ratio: 1.0        # all ~65k train frames (ZeldaDataset defaults to 0.2)
+
+patch_size: 4             # 48 pixel values per token; 1024 tokens per 128px frame
+context_length: 4
+frame_size: 128
+latent_dim: 16            # KL c16 tokenizer (taken from the checkpoint anyway)
+num_bins: 4               # FSQ only
+n_actions: 16             # logging only (full CoMo z)
+
+amp: true
+tf32: true
+compile: true
+
+num_workers: 8
+pin_memory: true
+
+distributed:
+  use_ddp: false
+  use_fsdp: false
+  reshard_after_forward: false
+nproc_per_node: 1
+standalone: true
+
+video_tokenizer_config: configs/experiments/zelda_continuous/tokenizer_final_tp.yaml      # unused (run_video_tokenizer false)
+latent_actions_config: configs/experiments/lam_loop/i4_bal16_seed2.yaml                  # unused (run_latent_actions false)
+dynamics_config: configs/experiments/zelda_regularisation/todays_recipe.yaml   # per run
+run_video_tokenizer: false   # frozen KL c16 temporal tokenizer: video_tokenizer_path in the dynamics yamls
+run_latent_actions: false    # CoMo actions: path in the dynamics yamls
+run_dynamics: true
+
+optimizer: adamw
+muon_momentum: 0.95
+muon_backend_steps: 5
+use_moe: false
+num_experts: 4
+top_k_experts: 2
+moe_aux_loss_coeff: 0.01

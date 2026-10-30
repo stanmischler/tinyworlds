@@ -1,0 +1,1365 @@
+{
+ "source": "blur_confusion windows (stride 4, 1780 windows) with Link visible; label = judge on the 1-step dynamics prediction",
+ "n_windows_eval": 1780,
+ "seed": 0,
+ "windows": [
+  {
+   "id": "006",
+   "label": "BLURRY",
+   "block": 0,
+   "start": 60,
+   "index": 15,
+   "source_start": 3318,
+   "box": [
+    61,
+    3
+   ],
+   "n_moving": 172,
+   "judged_dyn1_sharpness": 0.6797305160985627
+  },
+  {
+   "id": "007",
+   "label": "BLURRY",
+   "block": 0,
+   "start": 64,
+   "index": 16,
+   "source_start": 3322,
+   "box": [
+    62,
+    11
+   ],
+   "n_moving": 222,
+   "judged_dyn1_sharpness": 0.6767206590328528
+  },
+  {
+   "id": "008",
+   "label": "BLURRY",
+   "block": 0,
+   "start": 68,
+   "index": 17,
+   "source_start": 3326,
+   "box": [
+    61,
+    21
+   ],
+   "n_moving": 154,
+   "judged_dyn1_sharpness": 0.7038486989281774
+  },
+  {
+   "id": "009",
+   "label": "BLURRY",
+   "block": 0,
+   "start": 72,
+   "index": 18,
+   "source_start": 3330,
+   "box": [
+    59,
+    29
+   ],
+   "n_moving": 127,
+   "judged_dyn1_sharpness": 0.8434783715180609
+  },
+  {
+   "id": "010",
+   "label": "BLURRY",
+   "block": 0,
+   "start": 76,
+   "index": 19,
+   "source_start": 3334,
+   "box": [
+    56,
+    37
+   ],
+   "n_moving": 123,
+   "judged_dyn1_sharpness": 0.9295807439342795
+  },
+  {
+   "id": "011",
+   "label": "BLURRY",
+   "block": 0,
+   "start": 80,
+   "index": 20,
+   "source_start": 3338,
+   "box": [
+    60,
+    49
+   ],
+   "n_moving": 153,
+   "judged_dyn1_sharpness": 0.6728287869638536
+  },
+  {
+   "id": "012",
+   "label": "BLURRY",
+   "block": 0,
+   "start": 88,
+   "index": 22,
+   "source_start": 3346,
+   "box": [
+    61,
+    65
+   ],
+   "n_moving": 151,
+   "judged_dyn1_sharpness": 0.7330862634551987
+  },
+  {
+   "id": "017",
+   "label": "BLURRY",
+   "block": 0,
+   "start": 148,
+   "index": 37,
+   "source_start": 3406,
+   "box": [
+    61,
+    65
+   ],
+   "n_moving": 218,
+   "judged_dyn1_sharpness": 0.6807111739406603
+  },
+  {
+   "id": "018",
+   "label": "BLURRY",
+   "block": 0,
+   "start": 152,
+   "index": 38,
+   "source_start": 3410,
+   "box": [
+    61,
+    56
+   ],
+   "n_moving": 163,
+   "judged_dyn1_sharpness": 0.8563127805551137
+  },
+  {
+   "id": "019",
+   "label": "BLURRY",
+   "block": 0,
+   "start": 160,
+   "index": 40,
+   "source_start": 3418,
+   "box": [
+    52,
+    46
+   ],
+   "n_moving": 122,
+   "judged_dyn1_sharpness": 0.5779395396728172
+  },
+  {
+   "id": "020",
+   "label": "SHARP",
+   "block": 0,
+   "start": 164,
+   "index": 41,
+   "source_start": 3422,
+   "box": [
+    45,
+    54
+   ],
+   "n_moving": 233,
+   "judged_dyn1_sharpness": 0.7038940536512175
+  },
+  {
+   "id": "021",
+   "label": "BLURRY",
+   "block": 0,
+   "start": 168,
+   "index": 42,
+   "source_start": 3426,
+   "box": [
+    36,
+    65
+   ],
+   "n_moving": 262,
+   "judged_dyn1_sharpness": 0.7993485267334199
+  },
+  {
+   "id": "022",
+   "label": "BLURRY",
+   "block": 0,
+   "start": 172,
+   "index": 43,
+   "source_start": 3430,
+   "box": [
+    26,
+    70
+   ],
+   "n_moving": 156,
+   "judged_dyn1_sharpness": 0.7431179709190155
+  },
+  {
+   "id": "023",
+   "label": "BLURRY",
+   "block": 0,
+   "start": 176,
+   "index": 44,
+   "source_start": 3434,
+   "box": [
+    23,
+    70
+   ],
+   "n_moving": 110,
+   "judged_dyn1_sharpness": 0.8434814713498103
+  },
+  {
+   "id": "024",
+   "label": "BLURRY",
+   "block": 0,
+   "start": 184,
+   "index": 46,
+   "source_start": 3442,
+   "box": [
+    12,
+    67
+   ],
+   "n_moving": 95,
+   "judged_dyn1_sharpness": 0.8261570881349933
+  },
+  {
+   "id": "031",
+   "label": "BLURRY",
+   "block": 0,
+   "start": 252,
+   "index": 63,
+   "source_start": 3510,
+   "box": [
+    12,
+    66
+   ],
+   "n_moving": 193,
+   "judged_dyn1_sharpness": 0.7186435898664361
+  },
+  {
+   "id": "032",
+   "label": "BLURRY",
+   "block": 0,
+   "start": 256,
+   "index": 64,
+   "source_start": 3514,
+   "box": [
+    12,
+    58
+   ],
+   "n_moving": 171,
+   "judged_dyn1_sharpness": 0.8072873648827165
+  },
+  {
+   "id": "033",
+   "label": "BLURRY",
+   "block": 0,
+   "start": 260,
+   "index": 65,
+   "source_start": 3518,
+   "box": [
+    11,
+    50
+   ],
+   "n_moving": 213,
+   "judged_dyn1_sharpness": 0.7662029374508047
+  },
+  {
+   "id": "034",
+   "label": "BLURRY",
+   "block": 0,
+   "start": 268,
+   "index": 67,
+   "source_start": 3526,
+   "box": [
+    10,
+    32
+   ],
+   "n_moving": 172,
+   "judged_dyn1_sharpness": 0.7598108184638515
+  },
+  {
+   "id": "035",
+   "label": "BLURRY",
+   "block": 0,
+   "start": 272,
+   "index": 68,
+   "source_start": 3530,
+   "box": [
+    11,
+    21
+   ],
+   "n_moving": 158,
+   "judged_dyn1_sharpness": 0.8283654066387256
+  },
+  {
+   "id": "036",
+   "label": "SHARP",
+   "block": 0,
+   "start": 276,
+   "index": 69,
+   "source_start": 3534,
+   "box": [
+    12,
+    14
+   ],
+   "n_moving": 169,
+   "judged_dyn1_sharpness": 0.941020598359496
+  },
+  {
+   "id": "041",
+   "label": "BLURRY",
+   "block": 0,
+   "start": 336,
+   "index": 84,
+   "source_start": 3594,
+   "box": [
+    17,
+    3
+   ],
+   "n_moving": 148,
+   "judged_dyn1_sharpness": 0.7395905910618887
+  },
+  {
+   "id": "042",
+   "label": "SHARP",
+   "block": 0,
+   "start": 340,
+   "index": 85,
+   "source_start": 3598,
+   "box": [
+    26,
+    3
+   ],
+   "n_moving": 157,
+   "judged_dyn1_sharpness": 0.6986112022581854
+  },
+  {
+   "id": "043",
+   "label": "BLURRY",
+   "block": 0,
+   "start": 344,
+   "index": 86,
+   "source_start": 3602,
+   "box": [
+    36,
+    8
+   ],
+   "n_moving": 153,
+   "judged_dyn1_sharpness": 0.8086246829863192
+  },
+  {
+   "id": "044",
+   "label": "BLURRY",
+   "block": 0,
+   "start": 348,
+   "index": 87,
+   "source_start": 3606,
+   "box": [
+    42,
+    17
+   ],
+   "n_moving": 181,
+   "judged_dyn1_sharpness": 0.7305292834239324
+  },
+  {
+   "id": "045",
+   "label": "BLURRY",
+   "block": 0,
+   "start": 352,
+   "index": 88,
+   "source_start": 3610,
+   "box": [
+    51,
+    25
+   ],
+   "n_moving": 236,
+   "judged_dyn1_sharpness": 0.8514256194645342
+  },
+  {
+   "id": "046",
+   "label": "BLURRY",
+   "block": 0,
+   "start": 356,
+   "index": 89,
+   "source_start": 3614,
+   "box": [
+    55,
+    27
+   ],
+   "n_moving": 110,
+   "judged_dyn1_sharpness": 0.7894071596368534
+  },
+  {
+   "id": "049",
+   "label": "BLURRY",
+   "block": 0,
+   "start": 536,
+   "index": 134,
+   "source_start": 3794,
+   "box": [
+    32,
+    44
+   ],
+   "n_moving": 148,
+   "judged_dyn1_sharpness": 0.5707663641891622
+  },
+  {
+   "id": "053",
+   "label": "SHARP",
+   "block": 1,
+   "start": 772,
+   "index": 190,
+   "source_start": 10547,
+   "box": [
+    0,
+    34
+   ],
+   "n_moving": 118,
+   "judged_dyn1_sharpness": 0.8342422590735167
+  },
+  {
+   "id": "054",
+   "label": "SHARP",
+   "block": 1,
+   "start": 776,
+   "index": 191,
+   "source_start": 10551,
+   "box": [
+    0,
+    34
+   ],
+   "n_moving": 143,
+   "judged_dyn1_sharpness": 0.7939916088585935
+  },
+  {
+   "id": "055",
+   "label": "BLURRY",
+   "block": 1,
+   "start": 796,
+   "index": 196,
+   "source_start": 10571,
+   "box": [
+    0,
+    36
+   ],
+   "n_moving": 65,
+   "judged_dyn1_sharpness": 0.8837326447978047
+  },
+  {
+   "id": "056",
+   "label": "BLURRY",
+   "block": 1,
+   "start": 800,
+   "index": 197,
+   "source_start": 10575,
+   "box": [
+    1,
+    45
+   ],
+   "n_moving": 107,
+   "judged_dyn1_sharpness": 0.8631650846971076
+  },
+  {
+   "id": "057",
+   "label": "BLURRY",
+   "block": 1,
+   "start": 836,
+   "index": 206,
+   "source_start": 10611,
+   "box": [
+    7,
+    39
+   ],
+   "n_moving": 77,
+   "judged_dyn1_sharpness": 0.8223001855179
+  },
+  {
+   "id": "058",
+   "label": "BLURRY",
+   "block": 1,
+   "start": 848,
+   "index": 209,
+   "source_start": 10623,
+   "box": [
+    7,
+    28
+   ],
+   "n_moving": 121,
+   "judged_dyn1_sharpness": 0.889348241975585
+  },
+  {
+   "id": "059",
+   "label": "SHARP",
+   "block": 1,
+   "start": 852,
+   "index": 210,
+   "source_start": 10627,
+   "box": [
+    7,
+    19
+   ],
+   "n_moving": 104,
+   "judged_dyn1_sharpness": 0.9464506846999382
+  },
+  {
+   "id": "060",
+   "label": "BLURRY",
+   "block": 1,
+   "start": 856,
+   "index": 211,
+   "source_start": 10631,
+   "box": [
+    7,
+    11
+   ],
+   "n_moving": 122,
+   "judged_dyn1_sharpness": 0.9430784913226438
+  },
+  {
+   "id": "061",
+   "label": "SHARP",
+   "block": 1,
+   "start": 860,
+   "index": 212,
+   "source_start": 10635,
+   "box": [
+    7,
+    5
+   ],
+   "n_moving": 98,
+   "judged_dyn1_sharpness": 0.8668571571571346
+  },
+  {
+   "id": "062",
+   "label": "BLURRY",
+   "block": 1,
+   "start": 948,
+   "index": 234,
+   "source_start": 10723,
+   "box": [
+    12,
+    0
+   ],
+   "n_moving": 156,
+   "judged_dyn1_sharpness": 0.8675496891329153
+  },
+  {
+   "id": "063",
+   "label": "BLURRY",
+   "block": 1,
+   "start": 964,
+   "index": 238,
+   "source_start": 10739,
+   "box": [
+    14,
+    1
+   ],
+   "n_moving": 88,
+   "judged_dyn1_sharpness": 0.8475376732630275
+  },
+  {
+   "id": "064",
+   "label": "BLURRY",
+   "block": 1,
+   "start": 984,
+   "index": 243,
+   "source_start": 10759,
+   "box": [
+    13,
+    1
+   ],
+   "n_moving": 78,
+   "judged_dyn1_sharpness": 0.9438606704239595
+  },
+  {
+   "id": "065",
+   "label": "BLURRY",
+   "block": 1,
+   "start": 1012,
+   "index": 250,
+   "source_start": 10787,
+   "box": [
+    4,
+    4
+   ],
+   "n_moving": 65,
+   "judged_dyn1_sharpness": 0.93917059595571
+  },
+  {
+   "id": "066",
+   "label": "BLURRY",
+   "block": 1,
+   "start": 1036,
+   "index": 256,
+   "source_start": 10811,
+   "box": [
+    8,
+    6
+   ],
+   "n_moving": 102,
+   "judged_dyn1_sharpness": 0.8412193652563014
+  },
+  {
+   "id": "067",
+   "label": "BLURRY",
+   "block": 1,
+   "start": 1040,
+   "index": 257,
+   "source_start": 10815,
+   "box": [
+    9,
+    11
+   ],
+   "n_moving": 125,
+   "judged_dyn1_sharpness": 0.8780475439614284
+  },
+  {
+   "id": "068",
+   "label": "SHARP",
+   "block": 1,
+   "start": 1044,
+   "index": 258,
+   "source_start": 10819,
+   "box": [
+    9,
+    22
+   ],
+   "n_moving": 132,
+   "judged_dyn1_sharpness": 0.8341276384507335
+  },
+  {
+   "id": "069",
+   "label": "SHARP",
+   "block": 1,
+   "start": 1052,
+   "index": 260,
+   "source_start": 10827,
+   "box": [
+    8,
+    38
+   ],
+   "n_moving": 99,
+   "judged_dyn1_sharpness": 0.8556471698096076
+  },
+  {
+   "id": "070",
+   "label": "BLURRY",
+   "block": 1,
+   "start": 1080,
+   "index": 267,
+   "source_start": 10855,
+   "box": [
+    8,
+    59
+   ],
+   "n_moving": 78,
+   "judged_dyn1_sharpness": 0.8913462103637179
+  },
+  {
+   "id": "071",
+   "label": "BLURRY",
+   "block": 1,
+   "start": 1096,
+   "index": 271,
+   "source_start": 10871,
+   "box": [
+    8,
+    48
+   ],
+   "n_moving": 82,
+   "judged_dyn1_sharpness": 0.8074294086831754
+  },
+  {
+   "id": "072",
+   "label": "SHARP",
+   "block": 1,
+   "start": 1144,
+   "index": 283,
+   "source_start": 10919,
+   "box": [
+    9,
+    29
+   ],
+   "n_moving": 83,
+   "judged_dyn1_sharpness": 0.8995299903738546
+  },
+  {
+   "id": "073",
+   "label": "BLURRY",
+   "block": 1,
+   "start": 1152,
+   "index": 285,
+   "source_start": 10927,
+   "box": [
+    9,
+    24
+   ],
+   "n_moving": 109,
+   "judged_dyn1_sharpness": 0.8551270172155359
+  },
+  {
+   "id": "074",
+   "label": "BLURRY",
+   "block": 1,
+   "start": 1156,
+   "index": 286,
+   "source_start": 10931,
+   "box": [
+    9,
+    15
+   ],
+   "n_moving": 141,
+   "judged_dyn1_sharpness": 0.9521716903389769
+  },
+  {
+   "id": "075",
+   "label": "SHARP",
+   "block": 1,
+   "start": 1160,
+   "index": 287,
+   "source_start": 10935,
+   "box": [
+    9,
+    9
+   ],
+   "n_moving": 122,
+   "judged_dyn1_sharpness": 0.9752850824412558
+  },
+  {
+   "id": "076",
+   "label": "BLURRY",
+   "block": 1,
+   "start": 1168,
+   "index": 289,
+   "source_start": 10943,
+   "box": [
+    13,
+    0
+   ],
+   "n_moving": 216,
+   "judged_dyn1_sharpness": 0.9075377554978229
+  },
+  {
+   "id": "080",
+   "label": "BLURRY",
+   "block": 1,
+   "start": 1184,
+   "index": 293,
+   "source_start": 10959,
+   "box": [
+    21,
+    0
+   ],
+   "n_moving": 223,
+   "judged_dyn1_sharpness": 0.8305469152253083
+  },
+  {
+   "id": "081",
+   "label": "SHARP",
+   "block": 1,
+   "start": 1188,
+   "index": 294,
+   "source_start": 10963,
+   "box": [
+    21,
+    6
+   ],
+   "n_moving": 127,
+   "judged_dyn1_sharpness": 0.8959581460905247
+  },
+  {
+   "id": "082",
+   "label": "SHARP",
+   "block": 1,
+   "start": 1192,
+   "index": 295,
+   "source_start": 10967,
+   "box": [
+    21,
+    13
+   ],
+   "n_moving": 97,
+   "judged_dyn1_sharpness": 0.8557935836230828
+  },
+  {
+   "id": "083",
+   "label": "SHARP",
+   "block": 1,
+   "start": 1216,
+   "index": 301,
+   "source_start": 10991,
+   "box": [
+    25,
+    15
+   ],
+   "n_moving": 90,
+   "judged_dyn1_sharpness": 0.8612614467613374
+  },
+  {
+   "id": "084",
+   "label": "BLURRY",
+   "block": 1,
+   "start": 1220,
+   "index": 302,
+   "source_start": 10995,
+   "box": [
+    29,
+    15
+   ],
+   "n_moving": 137,
+   "judged_dyn1_sharpness": 0.7837122582322377
+  },
+  {
+   "id": "085",
+   "label": "BLURRY",
+   "block": 1,
+   "start": 1224,
+   "index": 303,
+   "source_start": 10999,
+   "box": [
+    43,
+    15
+   ],
+   "n_moving": 140,
+   "judged_dyn1_sharpness": 0.7973859637432419
+  },
+  {
+   "id": "086",
+   "label": "BLURRY",
+   "block": 1,
+   "start": 1260,
+   "index": 312,
+   "source_start": 11035,
+   "box": [
+    42,
+    20
+   ],
+   "n_moving": 90,
+   "judged_dyn1_sharpness": 0.8706099441585754
+  },
+  {
+   "id": "087",
+   "label": "SHARP",
+   "block": 1,
+   "start": 1264,
+   "index": 313,
+   "source_start": 11039,
+   "box": [
+    42,
+    29
+   ],
+   "n_moving": 109,
+   "judged_dyn1_sharpness": 0.7563507672227241
+  },
+  {
+   "id": "111",
+   "label": "SHARP",
+   "block": 2,
+   "start": 1748,
+   "index": 431,
+   "source_start": 18040,
+   "box": [
+    57,
+    43
+   ],
+   "n_moving": 221,
+   "judged_dyn1_sharpness": 0.9944886933502625
+  },
+  {
+   "id": "119",
+   "label": "SHARP",
+   "block": 2,
+   "start": 2108,
+   "index": 521,
+   "source_start": 18400,
+   "box": [
+    38,
+    44
+   ],
+   "n_moving": 83,
+   "judged_dyn1_sharpness": 0.9913316126341567
+  },
+  {
+   "id": "120",
+   "label": "SHARP",
+   "block": 2,
+   "start": 2112,
+   "index": 522,
+   "source_start": 18404,
+   "box": [
+    48,
+    37
+   ],
+   "n_moving": 743,
+   "judged_dyn1_sharpness": 1.4496527445794871
+  },
+  {
+   "id": "121",
+   "label": "SHARP",
+   "block": 2,
+   "start": 2116,
+   "index": 523,
+   "source_start": 18408,
+   "box": [
+    43,
+    43
+   ],
+   "n_moving": 684,
+   "judged_dyn1_sharpness": 1.5564512718070576
+  },
+  {
+   "id": "148",
+   "label": "SHARP",
+   "block": 3,
+   "start": 2704,
+   "index": 667,
+   "source_start": 25513,
+   "box": [
+    79,
+    33
+   ],
+   "n_moving": 240,
+   "judged_dyn1_sharpness": 0.9543340850231137
+  },
+  {
+   "id": "149",
+   "label": "SHARP",
+   "block": 3,
+   "start": 2708,
+   "index": 668,
+   "source_start": 25517,
+   "box": [
+    69,
+    33
+   ],
+   "n_moving": 279,
+   "judged_dyn1_sharpness": 0.9069732566553734
+  },
+  {
+   "id": "150",
+   "label": "SHARP",
+   "block": 3,
+   "start": 2712,
+   "index": 669,
+   "source_start": 25521,
+   "box": [
+    58,
+    33
+   ],
+   "n_moving": 235,
+   "judged_dyn1_sharpness": 0.9498309677397212
+  },
+  {
+   "id": "151",
+   "label": "BLURRY",
+   "block": 3,
+   "start": 2716,
+   "index": 670,
+   "source_start": 25525,
+   "box": [
+    51,
+    33
+   ],
+   "n_moving": 251,
+   "judged_dyn1_sharpness": 0.9855519143129949
+  },
+  {
+   "id": "152",
+   "label": "SHARP",
+   "block": 3,
+   "start": 2736,
+   "index": 675,
+   "source_start": 25545,
+   "box": [
+    42,
+    47
+   ],
+   "n_moving": 345,
+   "judged_dyn1_sharpness": 0.9328332915433756
+  },
+  {
+   "id": "153",
+   "label": "SHARP",
+   "block": 3,
+   "start": 2740,
+   "index": 676,
+   "source_start": 25549,
+   "box": [
+    42,
+    56
+   ],
+   "n_moving": 305,
+   "judged_dyn1_sharpness": 0.9387247793007131
+  },
+  {
+   "id": "154",
+   "label": "SHARP",
+   "block": 3,
+   "start": 2748,
+   "index": 678,
+   "source_start": 25557,
+   "box": [
+    42,
+    73
+   ],
+   "n_moving": 326,
+   "judged_dyn1_sharpness": 0.8908338332511372
+  },
+  {
+   "id": "155",
+   "label": "SHARP",
+   "block": 3,
+   "start": 2752,
+   "index": 679,
+   "source_start": 25561,
+   "box": [
+    42,
+    78
+   ],
+   "n_moving": 254,
+   "judged_dyn1_sharpness": 0.9133368852980076
+  },
+  {
+   "id": "193",
+   "label": "SHARP",
+   "block": 5,
+   "start": 3628,
+   "index": 892,
+   "source_start": 39471,
+   "box": [
+    33,
+    0
+   ],
+   "n_moving": 87,
+   "judged_dyn1_sharpness": 0.916530332171101
+  },
+  {
+   "id": "194",
+   "label": "BLURRY",
+   "block": 5,
+   "start": 3632,
+   "index": 893,
+   "source_start": 39475,
+   "box": [
+    31,
+    0
+   ],
+   "n_moving": 185,
+   "judged_dyn1_sharpness": 0.8780904325396665
+  },
+  {
+   "id": "195",
+   "label": "SHARP",
+   "block": 5,
+   "start": 3644,
+   "index": 896,
+   "source_start": 39487,
+   "box": [
+    23,
+    0
+   ],
+   "n_moving": 136,
+   "judged_dyn1_sharpness": 0.7987046552308446
+  },
+  {
+   "id": "196",
+   "label": "SHARP",
+   "block": 5,
+   "start": 3648,
+   "index": 897,
+   "source_start": 39491,
+   "box": [
+    19,
+    0
+   ],
+   "n_moving": 124,
+   "judged_dyn1_sharpness": 0.865061343054815
+  },
+  {
+   "id": "197",
+   "label": "BLURRY",
+   "block": 5,
+   "start": 3664,
+   "index": 901,
+   "source_start": 39507,
+   "box": [
+    17,
+    4
+   ],
+   "n_moving": 207,
+   "judged_dyn1_sharpness": 0.8119190873261322
+  },
+  {
+   "id": "198",
+   "label": "BLURRY",
+   "block": 5,
+   "start": 3668,
+   "index": 902,
+   "source_start": 39511,
+   "box": [
+    17,
+    8
+   ],
+   "n_moving": 163,
+   "judged_dyn1_sharpness": 0.8331048963422056
+  },
+  {
+   "id": "199",
+   "label": "BLURRY",
+   "block": 5,
+   "start": 3672,
+   "index": 903,
+   "source_start": 39515,
+   "box": [
+    17,
+    11
+   ],
+   "n_moving": 229,
+   "judged_dyn1_sharpness": 0.8401535252579222
+  },
+  {
+   "id": "201",
+   "label": "SHARP",
+   "block": 5,
+   "start": 3680,
+   "index": 905,
+   "source_start": 39523,
+   "box": [
+    0,
+    0
+   ],
+   "n_moving": 195,
+   "judged_dyn1_sharpness": 0.892548709664047
+  },
+  {
+   "id": "203",
+   "label": "BLURRY",
+   "block": 5,
+   "start": 3704,
+   "index": 911,
+   "source_start": 39547,
+   "box": [
+    0,
+    9
+   ],
+   "n_moving": 174,
+   "judged_dyn1_sharpness": 0.8828929592939412
+  },
+  {
+   "id": "204",
+   "label": "SHARP",
+   "block": 5,
+   "start": 3840,
+   "index": 945,
+   "source_start": 39683,
+   "box": [
+    36,
+    9
+   ],
+   "n_moving": 149,
+   "judged_dyn1_sharpness": 0.7962093496917695
+  },
+  {
+   "id": "205",
+   "label": "SHARP",
+   "block": 5,
+   "start": 3844,
+   "index": 946,
+   "source_start": 39687,
+   "box": [
+    36,
+    4
+   ],
+   "n_moving": 259,
+   "judged_dyn1_sharpness": 0.7376095296558112
+  },
+  {
+   "id": "206",
+   "label": "BLURRY",
+   "block": 5,
+   "start": 3848,
+   "index": 947,
+   "source_start": 39691,
+   "box": [
+    36,
+    0
+   ],
+   "n_moving": 182,
+   "judged_dyn1_sharpness": 0.7411847965571594
+  },
+  {
+   "id": "223",
+   "label": "SHARP",
+   "block": 5,
+   "start": 3960,
+   "index": 975,
+   "source_start": 39803,
+   "box": [
+    20,
+    0
+   ],
+   "n_moving": 86,
+   "judged_dyn1_sharpness": 0.937704335921117
+  },
+  {
+   "id": "224",
+   "label": "BLURRY",
+   "block": 5,
+   "start": 3964,
+   "index": 976,
+   "source_start": 39807,
+   "box": [
+    30,
+    0
+   ],
+   "n_moving": 191,
+   "judged_dyn1_sharpness": 0.8201119499939539
+  },
+  {
+   "id": "225",
+   "label": "SHARP",
+   "block": 5,
+   "start": 3968,
+   "index": 977,
+   "source_start": 39811,
+   "box": [
+    39,
+    0
+   ],
+   "n_moving": 185,
+   "judged_dyn1_sharpness": 0.6914552752110922
+  },
+  {
+   "id": "226",
+   "label": "BLURRY",
+   "block": 5,
+   "start": 4092,
+   "index": 1008,
+   "source_start": 39935,
+   "box": [
+    0,
+    0
+   ],
+   "n_moving": 113,
+   "judged_dyn1_sharpness": 0.8567757957533115
+  },
+  {
+   "id": "227",
+   "label": "BLURRY",
+   "block": 5,
+   "start": 4096,
+   "index": 1009,
+   "source_start": 39939,
+   "box": [
+    0,
+    0
+   ],
+   "n_moving": 205,
+   "judged_dyn1_sharpness": 0.8358793622741453
+  },
+  {
+   "id": "228",
+   "label": "SHARP",
+   "block": 5,
+   "start": 4100,
+   "index": 1010,
+   "source_start": 39943,
+   "box": [
+    4,
+    0
+   ],
+   "n_moving": 248,
+   "judged_dyn1_sharpness": 0.8776895412341563
+  },
+  {
+   "id": "229",
+   "label": "BLURRY",
+   "block": 5,
+   "start": 4104,
+   "index": 1011,
+   "source_start": 39947,
+   "box": [
+    14,
+    0
+   ],
+   "n_moving": 252,
+   "judged_dyn1_sharpness": 0.8729205460054451
+  },
+  {
+   "id": "230",
+   "label": "SHARP",
+   "block": 5,
+   "start": 4108,
+   "index": 1012,
+   "source_start": 39951,
+   "box": [
+    24,
+    0
+   ],
+   "n_moving": 238,
+   "judged_dyn1_sharpness": 0.8529282096581039
+  },
+  {
+   "id": "231",
+   "label": "BLURRY",
+   "block": 5,
+   "start": 4112,
+   "index": 1013,
+   "source_start": 39955,
+   "box": [
+    32,
+    3
+   ],
+   "n_moving": 277,
+   "judged_dyn1_sharpness": 0.8186533671678712
+  },
+  {
+   "id": "232",
+   "label": "SHARP",
+   "block": 5,
+   "start": 4116,
+   "index": 1014,
+   "source_start": 39959,
+   "box": [
+    41,
+    12
+   ],
+   "n_moving": 335,
+   "judged_dyn1_sharpness": 0.861663580665071
+  },
+  {
+   "id": "233",
+   "label": "BLURRY",
+   "block": 5,
+   "start": 4152,
+   "index": 1023,
+   "source_start": 39995,
+   "box": [
+    63,
+    59
+   ],
+   "n_moving": 358,
+   "judged_dyn1_sharpness": 0.8844207552689832
+  },
+  {
+   "id": "234",
+   "label": "BLURRY",
+   "block": 5,
+   "start": 4156,
+   "index": 1024,
+   "source_start": 39999,
+   "box": [
+    68,
+    68
+   ],
+   "n_moving": 338,
+   "judged_dyn1_sharpness": 0.9020725077172416
+  },
+  {
+   "id": "236",
+   "label": "SHARP",
+   "block": 5,
+   "start": 4324,
+   "index": 1066,
+   "source_start": 40167,
+   "box": [
+    40,
+    43
+   ],
+   "n_moving": 86,
+   "judged_dyn1_sharpness": 0.8028397677658816
+  }
+ ]
+}

@@ -19,7 +19,7 @@ def create_optimizer(model, args):
 def _create_adamw(model, args):
     decay, no_decay = _split_decay_params(model)
     optimizer = optim.AdamW([
-        {"params": decay, "weight_decay": 0.01},
+        {"params": decay, "weight_decay": _weight_decay(args)},
         {"params": no_decay, "weight_decay": 0},
     ], lr=args.learning_rate, betas=(0.9, 0.999), eps=1e-8, fused=True)
     return [optimizer]
@@ -52,14 +52,14 @@ def _create_muon_split(model, args):
     if muon_params:
         muon_opt = Muon(
             muon_params, lr=lr, momentum=momentum,
-            backend_steps=backend_steps, weight_decay=0.01,
+            backend_steps=backend_steps, weight_decay=_weight_decay(args),
         )
         optimizers.append(muon_opt)
 
     # AdamW for the rest
     adamw_groups = []
     if adamw_decay:
-        adamw_groups.append({"params": adamw_decay, "weight_decay": 0.01})
+        adamw_groups.append({"params": adamw_decay, "weight_decay": _weight_decay(args)})
     if adamw_no_decay:
         adamw_groups.append({"params": adamw_no_decay, "weight_decay": 0})
     if adamw_groups:
@@ -79,3 +79,8 @@ def _split_decay_params(model):
             else:
                 decay.append(param)
     return decay, no_decay
+
+
+def _weight_decay(args):
+    # decay of the weight matrices; stages without a weight_decay option keep the original 0.01
+    return getattr(args, "weight_decay", 0.01)

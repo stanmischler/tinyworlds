@@ -27,7 +27,8 @@ from utils.utils import (
 )
 from utils.config import DynamicsConfig, load_stage_config_merged
 from models.frequency_loss import focal_log_frequency_loss, frequency_weight
-from evaluation.motion import moving_token_mask
+from evaluation.motion import moving_token_mask, revealed_strip_tokens
+from datasets.token_shift import random_token_shifts, shift_token_grid, shift_token_mask
 import wandb
 from dataclasses import asdict
 from utils.distributed import init_distributed_from_env, prepare_model_for_distributed, unwrap_model, print_param_count_if_main, cleanup_distributed
@@ -124,6 +125,11 @@ def main():
     assert args.token_loss == 'mse' or (args.dynamics_type == 'flow' and not args.fm_random_context), \
         'token_loss needs dynamics_type flow and no fm_random_context (the moving mask is for the last frame of the full window)'
     assert args.dynamics_type != 'biflow' or args.action_dropout_prob == 0, 'Bi-flow has no action dropout'
+    assert not (args.token_shift or args.focal_exclude_scroll_strip) or (
+        args.dynamics_type == 'flow' and args.fm_source != 'bridge' and not args.fm_random_context), \
+        'token_shift / focal_exclude_scroll_strip need dynamics_type flow, no bridge, no fm_random_context (loss mask of the last frame)'
+    assert not args.focal_exclude_scroll_strip or args.token_loss == 'focal', 'focal_exclude_scroll_strip needs token_loss focal'
+    assert not (args.dropout or args.action_token) or args.dynamics_type == 'flow', 'dropout / action_token need dynamics_type flow'
     if is_flow:
         dynamics_model = build_flow_dynamics(vars(args), conditioning_dim if args.use_actions else 0).to(args.device)
     else:
@@ -316,12 +322,26 @@ def main():
             else:
                 quantized_actions = None
 
-            # moving tokens of the target frame for token_loss "motion": [B, P]
+            # token masks of the target frame, from the real frames: moving tokens for token_loss "motion" [B, P];
+            # loss_mask [B, P] = tokens in the loss (token shift border and, optionally, the scroll-revealed strip left out)
             extra = {}
-            if args.token_loss == 'motion':
-                with torch.no_grad():
+            video_latents_raw = video_latents  # [B, T, P, L] unshifted, for the sampled-prediction PNG and metric
+            with torch.no_grad():
+                if args.token_loss == 'motion' or args.focal_exclude_scroll_strip:
                     unit = (x[:, -2:].float() + 1) / 2  # [B, 2, C, H, W] last context frame and target in [0, 1]
+                if args.token_loss == 'motion':
                     extra['token_mask'] = moving_token_mask(unit[:, 0], unit[:, 1], args.patch_size)
+                if args.focal_exclude_scroll_strip:
+                    extra['loss_mask'] = ~revealed_strip_tokens(unit[:, 0], unit[:, 1], args.patch_size)
+                if args.token_shift > 0:
+                    # move the whole clip (latents and masks) by the same random number of tokens per sample
+                    grid = (args.frame_size // args.patch_size,) * 2  # (Hp, Wp)
+                    shifts = random_token_shifts(x.shape[0], args.token_shift, x.device)  # [B, 2]
+                    video_latents, inside = shift_token_grid(video_latents, shifts, grid)  # [B, T, P, L], [B, P]
+                    for k in ('token_mask', 'loss_mask'):
+                        if k in extra:
+                            extra[k] = shift_token_mask(extra[k], shifts, grid)
+                    extra['loss_mask'] = inside & extra.get('loss_mask', inside)
 
             # predict masked frame latents with dynamics model (masking in dynamics model)
             with train_ctx:
@@ -423,12 +443,12 @@ def main():
                 sampler = ema_model if ema_model is not None else raw_dynamics
                 sampler.eval()
                 with torch.no_grad():
-                    n_vis = min(16, video_latents.shape[0])
+                    n_vis = min(16, video_latents_raw.shape[0])
                     cond = quantized_actions[:n_vis] if quantized_actions is not None else None
-                    sampled = sampler.forward_inference(video_latents[:n_vis, :-1], 1, 10, conditioning=cond)  # [n, T, P, L]
+                    sampled = sampler.forward_inference(video_latents_raw[:n_vis, :-1], 1, 10, conditioning=cond)  # [n, T, P, L]
                     predicted_frames = video_tokenizer.decode(sampled)  # [n, T, C, H, W]
                     if args.continuous_latents:  # no codes: latent MSE of the sample instead of token accuracy
-                        sample_metric = ('sample_latent_mse', F.mse_loss(sampled[:, -1].float(), video_latents[:n_vis, -1].float()).item())
+                        sample_metric = ('sample_latent_mse', F.mse_loss(sampled[:, -1].float(), video_latents_raw[:n_vis, -1].float()).item())
                     else:
                         sample_metric = ('sample_token_acc', (video_tokenizer.quantizer.get_indices_from_latents(sampled[:, -1])
                                                               == video_tokens[:n_vis, -1]).float().mean().item())

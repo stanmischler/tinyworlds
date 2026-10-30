@@ -354,6 +354,24 @@ class DynamicsConfig:
 	token_loss_weight: float = 1.0
 	topk_frac: float = 0.05
 	focal_gamma: float = 1.0
+	# token_loss "motion" only: True = the moving-token term is each sample's mean error over its moving tokens, averaged
+	# over the samples that have motion; False = pooled over the batch's moving tokens (original)
+	motion_loss_per_sample: bool = False
+	# Regularisation against memorising the training video (flow only; all off by default = original recipe):
+	# token_shift = max random shift in tokens (1 token = patch_size px) of the whole clip on the latent grid, per sample,
+	# zero fill, the revealed border left out of the loss (datasets/token_shift.py); 0 = off.
+	# dropout = on every attention / feed-forward output of the backbone. weight_decay = AdamW/Muon decay of the weight
+	# matrices (0.01 was hard-coded before).
+	token_shift: int = 0
+	dropout: float = 0.0
+	weight_decay: float = 0.01
+	# token_loss "focal" only: leave out of the loss the tokens of the strip revealed by the camera scroll (new content,
+	# unpredictable from the context, so they would get the largest weights)
+	focal_exclude_scroll_strip: bool = False
+	# Action token (flow only): each frame's action also enters as one extra token appended to the frame's tokens
+	# (zero-init Linear(A -> embed_dim)), through every block, dropped before the output head; FiLM is kept.
+	# False = FiLM only (original)
+	action_token: bool = False
 	# stop training at this step but keep the lr schedule of n_updates (the f-loss-only run stops after the curves cross)
 	stop_step: Optional[int] = None
 	# set by train_dynamics.py from the tokenizer (STA-62): True = continuous latents, flow samples are not rounded to the grid

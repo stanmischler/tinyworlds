@@ -20,7 +20,7 @@ class QKNorm(nn.Module):
 
 
 class SpatialAttention(nn.Module):
-    def __init__(self, embed_dim, num_heads, conditioning_dim=None, qk_norm=False):
+    def __init__(self, embed_dim, num_heads, conditioning_dim=None, qk_norm=False, dropout=0.0):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -33,6 +33,7 @@ class SpatialAttention(nn.Module):
         self.out_proj = nn.Linear(embed_dim, embed_dim)
 
         self.norm = AdaptiveNormalizer(embed_dim, conditioning_dim)
+        self.dropout = nn.Dropout(dropout)  # on the sublayer output, before the residual add (p = 0: identity)
         self.qk_norm = QKNorm(self.head_dim) if qk_norm else None  # None = original attention, old checkpoints load
 
     def forward(self, x, conditioning=None):
@@ -52,7 +53,7 @@ class SpatialAttention(nn.Module):
         attn_output = rearrange(attn_output, '(B T) H P D -> B T P (H D)', B=B, T=T) # [B, T, P, E]
 
         # out proj to mix head information
-        attn_out = self.out_proj(attn_output)  # [B, T, P, E]
+        attn_out = self.dropout(self.out_proj(attn_output))  # [B, T, P, E]
 
         # residual and optionally conditioned norm
         out = self.norm(x + attn_out, conditioning) # [B, T, P, E]
@@ -60,7 +61,7 @@ class SpatialAttention(nn.Module):
         return out # [B, T, P, E]
 
 class TemporalAttention(nn.Module):
-    def __init__(self, embed_dim, num_heads, causal=True, conditioning_dim=None, qk_norm=False):
+    def __init__(self, embed_dim, num_heads, causal=True, conditioning_dim=None, qk_norm=False, dropout=0.0):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -73,6 +74,7 @@ class TemporalAttention(nn.Module):
         self.out_proj = nn.Linear(embed_dim, embed_dim)
         
         self.norm = AdaptiveNormalizer(embed_dim, conditioning_dim)
+        self.dropout = nn.Dropout(dropout)  # on the sublayer output, before the residual add (p = 0: identity)
         self.causal = causal
         self.qk_norm = QKNorm(self.head_dim) if qk_norm else None
         
@@ -104,7 +106,7 @@ class TemporalAttention(nn.Module):
         attn_output = rearrange(attn_output, '(b p) h t d -> b t p (h d)', b=B, p=P) # [B, T, P, E]
 
         # out proj to mix head information
-        attn_out = self.out_proj(attn_output)  # [B, T, P, E]
+        attn_out = self.dropout(self.out_proj(attn_output))  # [B, T, P, E]
 
         # residual and optionally conditioned norm
         out = self.norm(x + attn_out, conditioning) # [B, T, P, E]
@@ -113,18 +115,19 @@ class TemporalAttention(nn.Module):
 
 class SwiGLUFFN(nn.Module):
     # swiglu(x) = W3(sigmoid(W1(x) + b1) * (W2(x) + b2)) + b3
-    def __init__(self, embed_dim, hidden_dim, conditioning_dim=None):
+    def __init__(self, embed_dim, hidden_dim, conditioning_dim=None, dropout=0.0):
         super().__init__()
         h = math.floor(2 * hidden_dim / 3)
         self.w_v = nn.Linear(embed_dim, h)
         self.w_g = nn.Linear(embed_dim, h)
         self.w_o = nn.Linear(h, embed_dim)
         self.norm = AdaptiveNormalizer(embed_dim, conditioning_dim)
+        self.dropout = nn.Dropout(dropout)  # on the sublayer output, before the residual add (p = 0: identity)
 
     def forward(self, x, conditioning=None):
         v = F.silu(self.w_v(x)) # [B, T, P, h]
         g = self.w_g(x) # [B, T, P, h]
-        out = self.w_o(v * g) # [B, T, P, E]
+        out = self.dropout(self.w_o(v * g)) # [B, T, P, E]
         return self.norm(x + out, conditioning) # [B, T, P, E]
 
 
@@ -217,11 +220,13 @@ class MoESwiGLUFFN(nn.Module):
 
 class STTransformerBlock(nn.Module):
     def __init__(self, embed_dim, num_heads, hidden_dim, causal=True, conditioning_dim=None,
-                 use_moe=False, num_experts=4, top_k_experts=2, moe_aux_loss_coeff=0.01, temporal=True, qk_norm=False):
+                 use_moe=False, num_experts=4, top_k_experts=2, moe_aux_loss_coeff=0.01, temporal=True, qk_norm=False,
+                 dropout=0.0):
         super().__init__()
-        self.spatial_attn = SpatialAttention(embed_dim, num_heads, conditioning_dim, qk_norm)
+        assert dropout == 0 or not use_moe, 'dropout is not implemented for the MoE feed-forward'
+        self.spatial_attn = SpatialAttention(embed_dim, num_heads, conditioning_dim, qk_norm, dropout)
         # temporal=False: spatial-only block, each frame is processed independently of the others
-        self.temporal_attn = TemporalAttention(embed_dim, num_heads, causal, conditioning_dim, qk_norm) if temporal else None
+        self.temporal_attn = TemporalAttention(embed_dim, num_heads, causal, conditioning_dim, qk_norm, dropout) if temporal else None
         if use_moe:
             self.ffn = MoESwiGLUFFN(
                 embed_dim, hidden_dim,
@@ -230,7 +235,7 @@ class STTransformerBlock(nn.Module):
                 conditioning_dim=conditioning_dim,
             )
         else:
-            self.ffn = SwiGLUFFN(embed_dim, hidden_dim, conditioning_dim)
+            self.ffn = SwiGLUFFN(embed_dim, hidden_dim, conditioning_dim, dropout)
 
     def forward(self, x, conditioning=None):
         # x: [B, T, P, E]
@@ -243,7 +248,8 @@ class STTransformerBlock(nn.Module):
 
 class STTransformer(nn.Module):
     def __init__(self, embed_dim, num_heads, hidden_dim, num_blocks, causal=True, conditioning_dim=None,
-                 use_moe=False, num_experts=4, top_k_experts=2, moe_aux_loss_coeff=0.01, temporal=True, qk_norm=False):
+                 use_moe=False, num_experts=4, top_k_experts=2, moe_aux_loss_coeff=0.01, temporal=True, qk_norm=False,
+                 dropout=0.0):
         super().__init__()
         self.temporal = temporal
         # calculate temporal PE dim
@@ -255,7 +261,7 @@ class STTransformer(nn.Module):
                 embed_dim, num_heads, hidden_dim, causal, conditioning_dim,
                 use_moe=use_moe, num_experts=num_experts,
                 top_k_experts=top_k_experts, moe_aux_loss_coeff=moe_aux_loss_coeff,
-                temporal=temporal, qk_norm=qk_norm,
+                temporal=temporal, qk_norm=qk_norm, dropout=dropout,
             )
             for _ in range(num_blocks)
         ])
