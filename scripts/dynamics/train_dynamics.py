@@ -110,13 +110,18 @@ def main():
         raise FileNotFoundError(f"Latent Action Model checkpoint not found at {args.latent_actions_path}")
 
     # init dynamics model and optional ckpt load
-    assert args.dynamics_type in ('maskgit', 'flow', 'biflow', 'edm'), \
-        f"dynamics_type must be 'maskgit', 'flow', 'biflow' or 'edm', got {args.dynamics_type}"
-    is_flow = args.dynamics_type in ('flow', 'biflow', 'edm')  # continuous generators: EMA, test curve, sampled previews
+    assert args.dynamics_type in ('maskgit', 'flow', 'biflow', 'edm', 'regression'), \
+        f"dynamics_type must be 'maskgit', 'flow', 'biflow', 'edm' or 'regression', got {args.dynamics_type}"
+    # continuous predictors: EMA, test curve, sampled previews (regression is one pass, but shares the flow interface)
+    is_flow = args.dynamics_type in ('flow', 'biflow', 'edm', 'regression')
     assert args.dynamics_type != 'edm' or args.continuous_latents, 'edm samples are not rounded: needs continuous latents or pixel_space'
     assert args.dynamics_type != 'edm' or (args.fm_loss == 'v' and args.token_loss == 'mse' and not args.correction
                                            and not args.fm_random_context and args.action_dropout_prob == 0), \
         'edm: plain denoiser loss only (no fm_loss / token_loss / correction / fm_random_context / action dropout)'
+    assert args.dynamics_type != 'regression' or (args.continuous_latents and args.fm_loss == 'v' and args.token_loss == 'mse'
+                                                  and not args.correction and not args.fm_random_context
+                                                  and args.action_dropout_prob == 0), \
+        'regression: continuous latents, plain MSE only (no fm_loss / token_loss / correction / fm_random_context / action dropout)'
     assert is_flow or not args.continuous_latents, 'a continuous tokenizer needs dynamics_type flow (MaskGIT predicts codes)'
     assert args.fm_loss in ('v', 'f', 'fv'), f"fm_loss must be 'v', 'f' or 'fv', got {args.fm_loss}"
     assert not (args.correction and args.fm_loss != 'v'), 'correction is only wired for the velocity loss'
@@ -126,10 +131,11 @@ def main():
         'token_loss needs dynamics_type flow and no fm_random_context (the moving mask is for the last frame of the full window)'
     assert args.dynamics_type != 'biflow' or args.action_dropout_prob == 0, 'Bi-flow has no action dropout'
     assert not (args.token_shift or args.focal_exclude_scroll_strip) or (
-        args.dynamics_type == 'flow' and args.fm_source != 'bridge' and not args.fm_random_context), \
-        'token_shift / focal_exclude_scroll_strip need dynamics_type flow, no bridge, no fm_random_context (loss mask of the last frame)'
+        args.dynamics_type in ('flow', 'regression') and args.fm_source != 'bridge' and not args.fm_random_context), \
+        'token_shift / focal_exclude_scroll_strip need dynamics_type flow or regression, no bridge, no fm_random_context (loss mask of the last frame)'
     assert not args.focal_exclude_scroll_strip or args.token_loss == 'focal', 'focal_exclude_scroll_strip needs token_loss focal'
-    assert not (args.dropout or args.action_token) or args.dynamics_type == 'flow', 'dropout / action_token need dynamics_type flow'
+    assert not (args.dropout or args.action_token) or args.dynamics_type in ('flow', 'regression'), \
+        'dropout / action_token need dynamics_type flow or regression'
     if is_flow:
         dynamics_model = build_flow_dynamics(vars(args), conditioning_dim if args.use_actions else 0).to(args.device)
     else:
@@ -439,7 +445,7 @@ def main():
                                                  'peak_gpu_gb': round(peak_gb, 1)})
                 loss_terms = {k: [] for k in loss_terms}
             if is_flow:
-                # sample the last frame of 16 training windows from the model's source (10 Euler steps, EMA weights if on) and decode
+                # sample the last frame of 16 training windows from the model's source (10 Euler steps, one pass for regression; EMA weights if on) and decode
                 sampler = ema_model if ema_model is not None else raw_dynamics
                 sampler.eval()
                 with torch.no_grad():
@@ -455,7 +461,7 @@ def main():
                 raw_dynamics.train()
                 masked_frames = x.clone()
                 masked_frames[:, -1] = 0  # the generated frame
-                print(f'\n Step {i} {sample_metric[0]} (10 Euler steps, train windows): {sample_metric[1]:.3f}')
+                print(f'\n Step {i} {sample_metric[0]} ({"1 pass" if args.dynamics_type == "regression" else "10 Euler steps"}, train windows): {sample_metric[1]:.3f}')
                 if args.use_wandb and is_main:
                     wandb.log({f'train/{sample_metric[0]}': sample_metric[1]}, step=i)
             elif args.use_wandb:

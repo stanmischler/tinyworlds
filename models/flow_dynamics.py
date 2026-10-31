@@ -477,3 +477,39 @@ class EDMDynamicsModel(FlowDynamicsModel):
             d = (x - D) / sigmas[k]  # [B, P, L] dx/dsigma
             x = x + (sigmas[k + 1] - sigmas[k]) * d  # the last step (sigma -> 0) lands on D
         return x
+
+
+class RegressionDynamicsModel(FlowDynamicsModel):
+    """One-pass regression dynamics, the non-generative baseline for FlowDynamicsModel: same causal ST-transformer (`net`),
+    action token and FiLM, but no noise, no flow time and no sampling loop. The new frame's slot holds zeros (direct
+    regression) or a copy of the last context frame (residual: the output is added to it), and the prediction is trained
+    by MSE against the true next latents. Every frame's flow time is fixed at t = 1, so the FiLM time embedding is a
+    constant and only the action varies. The fm_* / correction / guidance / token_loss options of FlowDynamicsModel are
+    unused (train_dynamics.py asserts them off)."""
+
+    def __init__(self, regression_residual=False, **flow_kwargs):
+        super().__init__(**flow_kwargs)
+        self.residual = bool(regression_residual)
+
+    def predict(self, context, conditioning):
+        # context: [B, Tc, P, L] clean frames; conditioning: [B, Tc, A] or None -> predicted next latents [B, P, L]
+        B, Tc = context.shape[:2]
+        prev = context[:, -1].float()  # [B, P, L]
+        slot = prev if self.residual else torch.zeros_like(prev)  # [B, P, L] input in the new frame's slot
+        inp = torch.cat([context.float(), slot[:, None]], dim=1)  # [B, Tc+1, P, L]
+        t = torch.ones(B, Tc + 1, device=context.device)  # [B, Tc+1] constant time input
+        out = self.net(inp, conditioning, t)[:, -1].float()  # [B, P, L]
+        return prev + out if self.residual else out
+
+    def forward(self, latents, training=True, conditioning=None, targets=None, token_mask=None, loss_mask=None):
+        # latents: [B, T, P, L] clean; conditioning: [B, T-1, A]; loss_mask: [B, P] tokens in the loss (None = all)
+        # -> (x1_hat, (x1_hat, s, {}), loss) like FlowDynamicsModel.forward, s = 0 (no noise)
+        x1 = latents[:, -1].float()  # [B, P, L]
+        x1_hat = self.predict(latents[:, :-1], conditioning)  # [B, P, L]
+        loss = self.token_weighted_loss(x1_hat, x1, loss_mask=loss_mask)  # masked MSE over the latents
+        return x1_hat, (x1_hat, torch.zeros_like(x1[:, 0, 0]), {}), loss
+
+    @torch.no_grad()
+    def sample_next(self, context_latents, conditioning, num_steps, generator=None):
+        # context_latents: [B, Tc, P, L]; conditioning: [B, Tc, A] or None -> new frame [B, P, L]; one pass, num_steps unused
+        return self.predict(context_latents, conditioning)
