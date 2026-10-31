@@ -19,7 +19,7 @@
 
 \begin{document}
 \small
-\noindent{\Large\bfseries tinyworlds --- results so far}\hfill last updated 2026-10-30
+\noindent{\Large\bfseries tinyworlds --- results so far}\hfill last updated 2026-10-31
 
 \paragraph{Metrics.}
 Tokenizer: reconstruction PSNR/SSIM on held-out frames.
@@ -56,6 +56,10 @@ continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 
 continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & action token & 33.55 & 0.936 & 0.029 & \pr{47} & + 1 action token per frame in spatial attention; judge-box 0.087 / 35.5 \\
 continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & motion-weighted loss & 32.75 & 0.928 & 0.034 & \pr{47} & + 0.3 per-sample loss on moving tokens; judge-box 0.086 / 36.4 \\
 continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & error-weighted loss & 32.55 & 0.923 & 0.035 & \pr{47} & + focal $\gamma$ 1; most coherent Link in crops but gap 4.5 dB; judge-box 0.088 / 40.3 \\
+\midrule
+\multicolumn{11}{l}{\textit{Previous frame as flow source (FlowC2S from scratch): 13M, 100k, no regularisation, $x_0 = z_t + 0.5\,\epsilon$; 32 Euler steps (longer flow matching rerun: 33.71 / 0.938 / 0.028, judge-box 0.087 / 35.9)}} \\
+continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & FlowC2S from scratch & 33.49 & 0.934 & 0.030 & \pr{49} & $-0.21$ dB vs FM rerun (block CI $[-0.29, -0.14]$); ahead until $\sim$60k; judge-box 0.088 / 37.6 \\
+continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & FlowC2S + motion loss & 33.37 & 0.934 & 0.031 & \pr{49} & + 0.1 per-sample loss on moving tokens; judge-box 0.086 / 37.8 \\
 \midrule
 -- & -- & -- & CoMo-ViT, full $z$ & 0.561 & CoMo decoder & 33.41 & 0.931 & 0.038 & \pr{20} & CoMo decoder as dynamics \\
 -- & -- & -- & CoMo-ViT, 16 codes & 0.561 & CoMo decoder & 30.15 & 0.844 & 0.050 & \pr{20} &  \\
