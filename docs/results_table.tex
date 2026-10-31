@@ -54,6 +54,7 @@ continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 
 \multicolumn{11}{l}{\textit{Against memorisation: 13M, 100k, token shift $\pm$4 + dropout 0.1 + wd 0.05 on every row; 32 Euler steps (longer flow matching at 32 steps: 33.73 / 0.939 / 0.028)}} \\
 continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & regularised + shifted & 33.46 & 0.935 & 0.029 & \pr{47} & judge-box LPIPS 0.088 / FID 35.7 (longer FM 0.085 / 36.7); train--held-out gap 1.8 vs 3.5 dB \\
 continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & action token & 33.55 & 0.936 & 0.029 & \pr{47} & + 1 action token per frame in spatial attention; judge-box 0.087 / 35.5 \\
+continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & residual regression & 34.43 & 0.940 & 0.030 & \pr{48} & action-token row with flow matching swapped for one-pass MSE on $z_{t+1}-z_t$, lr 1e-3; judge-box 0.087 / 36.7 (action token at 1 step: 34.53 / 0.943 / 0.031) \\
 continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & motion-weighted loss & 32.75 & 0.928 & 0.034 & \pr{47} & + 0.3 per-sample loss on moving tokens; judge-box 0.086 / 36.4 \\
 continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & error-weighted loss & 32.55 & 0.923 & 0.035 & \pr{47} & + focal $\gamma$ 1; most coherent Link in crops but gap 4.5 dB; judge-box 0.088 / 40.3 \\
 \midrule
