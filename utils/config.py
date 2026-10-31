@@ -373,6 +373,20 @@ class DynamicsConfig:
 	# (zero-init Linear(A -> embed_dim)), through every block, dropped before the output head; FiLM is kept.
 	# False = FiLM only (original)
 	action_token: bool = False
+	# Sampled-frame loss (flow only, models/sampled_frame_loss.py): on up to sampled_loss_batch windows of the batch that
+	# have a motion box (evaluation/motion.py motion_box, from the real last context frame and target), the next latent
+	# is sampled from noise with sampled_loss_steps Euler steps, the gradient kept through the last sampled_loss_grad_steps
+	# only (DRaFT-K); it is decoded with the real context and the 32x32 box is compared with the real frame's:
+	# loss += sampled_loss_weight * (LPIPS-alex + L1). 0 = off (original). The gradient reaches the kept velocities scaled by
+	# their step size (endpoint, last of 32 steps with fm_shift 3: dt ~ 0.09; clean_guess: s_k, up to 1, so λ is calibrated per target); gradient clipping (norm 1) acts on the summed loss
+	sampled_loss_weight: float = 0.0
+	sampled_loss_steps: int = 32
+	sampled_loss_grad_steps: int = 1
+	sampled_loss_batch: int = 16
+	# what loss 2 scores: 'endpoint' = the decoded end of the sampler (gradient through its last sampled_loss_grad_steps
+	# steps); 'clean_guess' = the one-shot clean-frame guess x_k + s_k * v at a random step k of the sampler
+	# (FlowDynamicsModel.clean_guess_with_grad; sampled_loss_grad_steps unused)
+	sampled_loss_target: str = 'endpoint'
 	# stop training at this step but keep the lr schedule of n_updates (the f-loss-only run stops after the curves cross)
 	stop_step: Optional[int] = None
 	# set by train_dynamics.py from the tokenizer (STA-62): True = continuous latents, flow samples are not rounded to the grid

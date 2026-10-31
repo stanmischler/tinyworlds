@@ -1,0 +1,37 @@
+# clean-guess LPIPS λ 10: flow loss + 10 * (LPIPS + L1) on the motion box of the decoded one-shot clean-frame guess at a random sampler step
+batch_size_per_gpu: 64
+gradient_accumulation_steps: 1
+n_updates: 2000
+learning_rate: 0.00002
+log_interval: 250   # checkpoint + sampled-prediction PNG
+
+use_actions: true
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 12
+
+dynamics_type: flow
+fm_pred: v
+fm_shift: 3.0
+qk_norm: true
+ema_decay: 0.999
+seed: 0
+init_weights: results/zelda_longer_fm/dynamics/checkpoints/dynamics_step_99999   # longer flow matching (EMA), fresh optimizer
+
+sampled_loss_weight: 10   # its gradient is ~0.09x the flow loss's before λ (experiments/sampled_lpips/grad_ratio.py --target clean_guess, median of 16 batches), so λ 10 puts it at ~1x
+sampled_loss_steps: 32
+sampled_loss_grad_steps: 1   # unused by clean_guess
+sampled_loss_batch: 16
+sampled_loss_target: clean_guess
+
+video_tokenizer_path: results/zelda_cont_final_tp/video_tokenizer/checkpoints/video_tokenizer_step_29000   # frozen KL c16 temporal
+latent_actions_path: results/como_actions_v1_full   # CoMo IDM + train z stats, models/como.py CoMoActions
+action_file: data/zelda_train_como_z.npy             # raw z per train .h5 row
+
+test_eval_h5: data/zelda_test_frames.h5   # test/* curve (1 Euler step) for watching; the reported number is eval_next_frame.py
+test_eval_interval: 500
+
+# resume: set to a checkpoint dir (…/dynamics/checkpoints/dynamics_step_N)
+checkpoint:
