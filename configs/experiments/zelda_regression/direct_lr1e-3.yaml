@@ -1,0 +1,39 @@
+# direct regression, lr 1e-3: one-pass MSE regression of the next latents (slot = zeros) on the
+# zelda_regularisation/action_token.yaml recipe (its flow-matching twin). Sweep arm: the 100k lr schedule, stopped at 10k;
+# the winner resumes from its last checkpoint to 100k.
+batch_size_per_gpu: 64
+gradient_accumulation_steps: 1
+n_updates: 100000
+stop_step: 10001      # sweep: stop on the 100k schedule; last checkpoint dynamics_step_10000, as the twin's (null = to 100k)
+learning_rate: 0.001
+log_interval: 10000   # checkpoint + sampled-prediction PNG
+
+use_actions: true
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 12
+
+dynamics_type: regression
+regression_residual: false
+qk_norm: true
+ema_decay: 0.999
+seed: 0
+
+# regularisation (datasets/token_shift.py, models/st_transformer.py, utils/optimizer_utils.py)
+token_shift: 4            # whole clip shifted by up to +-4 tokens (16 px) on the latent grid, border out of the loss
+dropout: 0.1              # attention and feed-forward outputs
+weight_decay: 0.05
+
+action_token: true        # zero-init Linear(128 -> 256) of a_{t-1}, appended to each frame's tokens, dropped at the output
+
+video_tokenizer_path: results/zelda_cont_final_tp/video_tokenizer/checkpoints/video_tokenizer_step_29000   # frozen KL c16 temporal
+latent_actions_path: results/como_actions_v1_full   # CoMo IDM + train z stats, models/como.py CoMoActions
+action_file: data/zelda_train_como_z.npy             # raw z per train .h5 row
+
+test_eval_h5: data/zelda_test_frames.h5   # test/* curve for watching; the reported number is eval_next_frame.py
+test_eval_interval: 2000
+
+# resume: set to a checkpoint dir (…/dynamics/checkpoints/dynamics_step_N)
+checkpoint:

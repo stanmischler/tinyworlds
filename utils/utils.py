@@ -325,6 +325,9 @@ def flow_dynamics_kwargs(cfg, action_dim):
     }
     if cfg.get('dynamics_type') == 'biflow':
         kwargs.update(bf_alpha_max=cfg.get('bf_alpha_max', 1.0), bf_eps=cfg.get('bf_eps', 0.1))
+    elif cfg.get('dynamics_type') == 'regression':
+        kwargs.update(regression_residual=cfg.get('regression_residual', False),
+                      dropout=cfg.get('dropout', 0.0), action_token=cfg.get('action_token', False))
     elif cfg.get('dynamics_type') == 'edm':
         kwargs.update(edm_p_mean=cfg.get('edm_p_mean', -0.4), edm_p_std=cfg.get('edm_p_std', 1.2),
                       edm_sigma_data=cfg.get('edm_sigma_data', 0.5), edm_sigma_min=cfg.get('edm_sigma_min', 0.002),
@@ -345,8 +348,9 @@ def flow_dynamics_kwargs(cfg, action_dim):
 
 
 def build_flow_dynamics(cfg, action_dim):
-    from models.flow_dynamics import FlowDynamicsModel, BiFlowDynamicsModel, EDMDynamicsModel
-    cls = {'biflow': BiFlowDynamicsModel, 'edm': EDMDynamicsModel}.get(cfg.get('dynamics_type'), FlowDynamicsModel)
+    from models.flow_dynamics import FlowDynamicsModel, BiFlowDynamicsModel, EDMDynamicsModel, RegressionDynamicsModel
+    classes = {'biflow': BiFlowDynamicsModel, 'edm': EDMDynamicsModel, 'regression': RegressionDynamicsModel}
+    cls = classes.get(cfg.get('dynamics_type'), FlowDynamicsModel)
     return cls(**flow_dynamics_kwargs(cfg, action_dim))
 
 
@@ -448,8 +452,8 @@ def load_dynamics_from_checkpoint(checkpoint_path, device, model = None, is_dist
                 break
         conditioning_dim = cond_inferred if cond_inferred is not None else 3
     kwargs = maskgit_dynamics_kwargs(cfg, conditioning_dim)
-    if cfg.get('dynamics_type', 'maskgit') in ('flow', 'biflow', 'edm'):
-        # flow-matching dynamics (STA-28) or Bi-flow (STA-61); prefer the EMA weights when the checkpoint has them.
+    if cfg.get('dynamics_type', 'maskgit') in ('flow', 'biflow', 'edm', 'regression'):
+        # flow-matching dynamics (STA-28), Bi-flow (STA-61), EDM or one-pass regression; prefer the EMA weights when the checkpoint has them.
         # FiLM input = [action, 64-d time embedding (+ 64-d noise-level embedding for Bi-flow)]
         n_time = 2 if cfg.get('dynamics_type') == 'biflow' else 1
         action_dim = cfg['conditioning_dim'] if cfg.get('conditioning_dim') is not None else conditioning_dim - 64 * n_time
