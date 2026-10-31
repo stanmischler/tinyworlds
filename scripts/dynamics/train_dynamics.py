@@ -28,6 +28,7 @@ from utils.utils import (
 from utils.config import DynamicsConfig, load_stage_config_merged
 from models.frequency_loss import focal_log_frequency_loss, frequency_weight
 from evaluation.motion import moving_token_mask, revealed_strip_tokens
+from models.sampled_frame_loss import frozen_lpips, boxed_windows, box_lpips_l1
 from datasets.token_shift import random_token_shifts, shift_token_grid, shift_token_mask
 import wandb
 from dataclasses import asdict
@@ -130,6 +131,12 @@ def main():
         'token_shift / focal_exclude_scroll_strip need dynamics_type flow, no bridge, no fm_random_context (loss mask of the last frame)'
     assert not args.focal_exclude_scroll_strip or args.token_loss == 'focal', 'focal_exclude_scroll_strip needs token_loss focal'
     assert not (args.dropout or args.action_token) or args.dynamics_type == 'flow', 'dropout / action_token need dynamics_type flow'
+    assert args.sampled_loss_weight == 0 or (args.dynamics_type == 'flow' and args.fm_source == 'noise' and args.continuous_latents
+                                             and not (args.correction or args.fm_random_context or args.token_shift)), \
+        'the sampled-frame loss needs a flow model from noise on continuous latents, no correction / random context / token shift'
+    assert args.sampled_loss_weight == 0 or args.fm_loss == 'v', 'the sampled-frame loss is added to the velocity loss only'
+    assert 0 < args.sampled_loss_grad_steps <= args.sampled_loss_steps, 'sampled_loss_grad_steps must be in 1..sampled_loss_steps'
+    assert args.sampled_loss_target in ('endpoint', 'clean_guess'), 'sampled_loss_target: endpoint or clean_guess'
     if is_flow:
         dynamics_model = build_flow_dynamics(vars(args), conditioning_dim if args.use_actions else 0).to(args.device)
     else:
@@ -186,6 +193,7 @@ def main():
         model_type=dynamics_model.model_type,
         device_mesh=dist_setup['device_mesh'],
     )
+    lpips_fn = frozen_lpips(args.device) if args.sampled_loss_weight > 0 else None
     if args.tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
@@ -282,7 +290,8 @@ def main():
     use_moe = getattr(args, 'use_moe', False)
     end_step = args.stop_step or args.n_updates  # stop_step: stop early on the lr schedule of n_updates
     assert end_step <= args.n_updates, f'stop_step {end_step} > n_updates {args.n_updates}'
-    loss_terms = {'v_loss': [], 'f_loss': [], 'lambda': [], 'flow_loss': [], 'corr_loss': []}  # per-step scalars, averaged into train_log.jsonl
+    loss_terms = {'v_loss': [], 'f_loss': [], 'lambda': [], 'flow_loss': [], 'corr_loss': [],
+                  'sampled_lpips': [], 'sampled_l1': [], 'sampled_windows': []}  # per-step scalars, averaged into train_log.jsonl
 
     def append_jsonl(name, record):
         # local log next to the checkpoints (read by experiments/focal_frequency/pick_switch.py)
@@ -371,6 +380,28 @@ def main():
                         loss_terms['f_loss'].append(f_loss.item())
                         loss = loss + lam * args.f_loss_scale * f_loss
 
+                # sampled-frame loss: sample the next latent like the eval (gradient through the last steps only), decode it
+                # with the real context, LPIPS + L1 on the motion box vs the real frame (flow loss above is kept as it is)
+                if args.sampled_loss_weight > 0:
+                    loss_terms['v_loss'].append(loss.item())
+                    unit = (x[:, -2:].float() + 1) / 2  # [B, 2, C, H, W] last context frame and target in [0, 1]
+                    rows, boxes = boxed_windows(unit[:, 0], unit[:, 1], args.sampled_loss_batch)  # [n], [n, 2]
+                    loss_terms['sampled_windows'].append(len(rows))
+                    if len(rows):
+                        context = video_latents[rows, :-1].float()  # [n, Tc, P, L]
+                        cond = quantized_actions[rows] if quantized_actions is not None else None  # [n, Tc, A]
+                        if args.sampled_loss_target == 'clean_guess':
+                            z_next = raw_dynamics.clean_guess_with_grad(context, cond, args.sampled_loss_steps)  # [n, P, L]
+                        else:
+                            z_next = raw_dynamics.sample_next_with_grad(context, cond, args.sampled_loss_steps,
+                                                                        args.sampled_loss_grad_steps)  # [n, P, L]
+                        with torch.autocast(args.device, enabled=False):  # fp32 decode, as for the frequency loss
+                            decoded = video_tokenizer.decode(torch.cat([context, z_next[:, None]], dim=1))  # [n, T, C, H, W]
+                            pred_frame = (decoded[:, -1] + 1) / 2  # [n, C, H, W] in [0, 1]
+                            s_lpips, s_l1 = box_lpips_l1(lpips_fn, pred_frame, unit[rows, 1], boxes)
+                        loss_terms['sampled_lpips'].append(s_lpips.item()); loss_terms['sampled_l1'].append(s_l1.item())
+                        loss = loss + args.sampled_loss_weight * (s_lpips + s_l1)
+
                 # add MoE load-balancing auxiliary loss
                 moe_aux_scalar = 0.0
                 if use_moe:
@@ -402,7 +433,7 @@ def main():
         # wandb logging
         if args.use_wandb and is_main:
             log_dict = {'train/loss': loss.item() * args.gradient_accumulation_steps}  # undo the accumulation scaling
-            if args.fm_loss != 'v' or args.correction:
+            if args.fm_loss != 'v' or args.correction or args.sampled_loss_weight > 0:
                 log_dict.update({f'train/{k}': v[-1] for k, v in loss_terms.items() if v})
             if args.correction:
                 gate = raw_dynamics.correction_gate.detach()  # [L]
@@ -433,7 +464,7 @@ def main():
 
         # save model and visualize results
         if i % args.log_interval == 0 or i == end_step - 1:  # also save the final step
-            if args.fm_loss != 'v' or args.correction:  # interval means of the loss terms (the f-loss is absent where the decoder was skipped)
+            if args.fm_loss != 'v' or args.correction or args.sampled_loss_weight > 0:  # interval means of the loss terms (the f-loss is absent where the decoder was skipped)
                 peak_gb = torch.cuda.max_memory_allocated() / 2 ** 30 if torch.cuda.is_available() else 0.0
                 append_jsonl('train_log.jsonl', {'step': i, **{k: sum(v) / len(v) for k, v in loss_terms.items() if v},
                                                  'peak_gpu_gb': round(peak_gb, 1)})
