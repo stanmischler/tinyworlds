@@ -9,6 +9,9 @@ Each sample is a transition (t, t+gap) inside one contiguous stretch of the .h5 
 {-jitter..jitter} minus 0) for the InfoNCE positive. The feature table and the frames sit on the GPU, so a step is a
 gather + the IDM/decoder; no dataloader.
 
+dataset: <name of a datasets.data_utils.MULTI_VIDEO entry> trains on all of its files instead of train_h5 (load_files): the
+base file at `gap` from start_index, the 15 fps extras at gap 1, every second of gameplay equally likely.
+
 Logged: train recon MSE, InfoNCE, copy-frame-t MSE (the baseline a motion-blind decoder can reach), and on a fixed
 held-out batch from the test .h5: recon / copy / recon with z shuffled across the batch (shuffle gap = how much the
 decoder uses z), z spread (mean per-dim std, mean pairwise cosine). Every ckpt_every steps: checkpoint
@@ -51,8 +54,9 @@ import torch.nn.functional as F
 from omegaconf import OmegaConf
 from PIL import Image
 
+from datasets.data_utils import multi_video_files
 from datasets.split import segments
-from models.como import CoMo, JointCoMo, TokenizerFeatures, MAE_TOKENS, MAE_DIM
+from models.como import CoMo, JointCoMo, TokenizerFeatures, MAE_TOKENS, MAE_DIM, mae_feature_path
 from models.drawing import DrawingModel
 from models.video_tokenizer import VideoTokenizer
 from utils.utils import (COMO_ARCH_KEYS, DRAWING_ARCH_KEYS, EMA_CHECKPOINT, MODEL_CHECKPOINT, OPTIMIZER_CHECKPOINT, STATE,
@@ -90,17 +94,58 @@ def load_split(cfg, h5_path, feat_path, device, fake=0, feat_device=None):
     return frames, feats, segs
 
 
+def load_files(cfg, files, device, feat_device=None):
+    # files: [(h5, gap, start_index)] of a multi-file dataset (datasets.data_utils.multi_video_files), each with its MAE
+    # table next to it (models.como.mae_feature_path) -> frames uint8 [N, H, W, C] on device and features fp16 [N, S, D]
+    # on feat_device, all files concatenated in one allocation each (the ~130 GB table is never held twice; not pinned:
+    # a row gather from it is unpinned anyway, and one pinned block that size is a risk for nothing), plus the
+    # pair starts [M] (global rows, inside one segment of one file), their gap [M] in rows and their sampling weight [M].
+    # Every pair spans the same time (gap 4 at 60 fps = gap 1 at 15 fps) and a file has `gap` starts per such step, so
+    # weight 1 / gap gives every second of gameplay the same chance, as datasets.MultiVideoH5Dataset samples windows.
+    feat_device = feat_device or device
+    sizes = []
+    for h5, _, _ in files:
+        with h5py.File(h5, 'r') as f:
+            sizes.append(min(len(f['frames']), cfg.max_frames or len(f['frames'])))
+            shape = f['frames'].shape[1:]
+    suffix = cfg.get('feature_suffix', '')  # e.g. _smoke: tables of the first max_frames rows
+    feat_shape = np.load(mae_feature_path(files[0][0], suffix), mmap_mode='r').shape[1:]
+    frames = torch.empty((sum(sizes), *shape), dtype=torch.uint8, device=device)  # [N, H, W, C]
+    feats = torch.empty((sum(sizes), *feat_shape), dtype=torch.float16, device=feat_device)  # [N, S, D]
+    assert not cfg.max_frames or cfg.max_frames > files[0][2] + files[0][1] + cfg.jitter, 'max_frames must reach past the base start_index'
+    starts, gaps = [], []
+    offsets = np.cumsum([0] + sizes)
+    for (h5, gap, start_index), off, n in zip(files, offsets, sizes):
+        with h5py.File(h5, 'r') as f:
+            for i in range(0, n, 4096):
+                frames[off + i:off + min(i + 4096, n)] = torch.from_numpy(f['frames'][i:min(i + 4096, n)]).to(device)
+            n_file = len(f['frames'])
+        mm = np.load(mae_feature_path(h5, suffix), mmap_mode='r')
+        assert len(mm) >= n, (h5, mm.shape, n)
+        for i in range(0, n, 2048):  # chunked: the host never holds a whole file's table
+            feats[off + i:off + min(i + 2048, n)] = torch.from_numpy(np.ascontiguousarray(mm[i:min(i + 2048, n)])).to(feat_device)
+        segs = [(s, min(e, n)) for s, e in segments(h5, n_file) if s < n]  # max_frames cuts the last segment
+        file_starts = off + valid_starts(segs, gap + cfg.jitter, start_index)  # [M_file]
+        starts.append(file_starts)
+        gaps.append(np.full(len(file_starts), gap))
+        print(f'  {h5}: {n} frames, {len(segs)} segments, {len(file_starts)} pairs at gap {gap}', flush=True)
+    gaps = np.concatenate(gaps)
+    return frames, feats, np.concatenate(starts), gaps, torch.from_numpy(1.0 / gaps).float()
+
+
 def to_pixels(fr):
     # uint8 [B, H, W, C] -> float [-1, 1] [B, C, H, W]
     return fr.permute(0, 3, 1, 2).float() / 127.5 - 1
 
 
 def batch(frames, feats, starts, idx, gap, jitter, gen, device):
+    # gap: one int, or [M] per start (multi-file: 4 rows in a 60 fps file, 1 in a 15 fps one)
     t = torch.as_tensor(starts[idx], device=device)  # [B]
+    g = torch.as_tensor(gap[idx] if np.ndim(gap) else gap, device=device)  # [B] or scalar
     d = torch.randint(1, jitter + 1, (len(t),), generator=gen, device='cpu').to(device)
     sign = torch.randint(0, 2, (len(t),), generator=gen, device='cpu').to(device) * 2 - 1
-    d = d * (sign if gap > jitter else 1)  # +-1..jitter; forward only when a backward jitter could reach frame t (gap 1)
-    b, j = t + gap, t + gap + d
+    d = torch.where(g > jitter, d * sign, d)  # +-1..jitter; forward only when a backward jitter could reach frame t (gap 1)
+    b, j = t + g, t + g + d
     if feats is None:  # joint: pixels of t, t+n, t+n+delta
         return tuple(to_pixels(frames[i]) for i in (t, b, j))
     f = [feats[i.to(feats.device)].to(device, non_blocking=True).float() for i in (t, b, j)]  # [B, S, D] x3
@@ -205,9 +250,18 @@ def main():
     live = cfg.get('features') == 'tokenizer' and cfg.get('live_features', False)  # encode frames per batch
     pixels_only = joint or drawing or live
     t0 = time.time()
-    frames, feats, segs = load_split(cfg, cfg.train_h5, None if pixels_only else cfg.train_features, device, cfg.fake_features, cfg.get('feat_device'))
     span = cfg.gap + cfg.jitter
-    starts = valid_starts(segs, span, cfg.start_index if not cfg.fake_features else 0)
+    weights = None  # pair sampling weights [M]; None = uniform
+    if cfg.get('dataset'):  # multi-file dataset (datasets.data_utils.MULTI_VIDEO), MAE features of every file
+        assert not pixels_only and not cfg.fake_features, 'dataset: precomputed MAE features only'
+        files = multi_video_files(cfg.dataset)
+        assert files[0][1] == cfg.gap, f'gap {cfg.gap} != the base file skip {files[0][1]}'
+        frames, feats, starts, gaps, weights = load_files(cfg, files, device, cfg.get('feat_device'))
+        parts = f'{len(files)} files'
+    else:
+        frames, feats, segs = load_split(cfg, cfg.train_h5, None if pixels_only else cfg.train_features, device, cfg.fake_features, cfg.get('feat_device'))
+        starts = valid_starts(segs, span, cfg.start_index if not cfg.fake_features else 0)
+        gaps, parts = cfg.gap, f'{len(segs)} segments'
     vframes, vfeats, vsegs = load_split(cfg, cfg.test_h5, None if pixels_only else cfg.test_features, device, cfg.fake_features, 'cpu')  # only the val batch is used
     vstarts = valid_starts(vsegs, span)
     vgen = torch.Generator().manual_seed(1)
@@ -222,7 +276,7 @@ def main():
             # (x_t, x_b, x_j) float [B, C, H, W] -> (f_t, f_b, f_j [B, S, D], x_t, x_b)
             return (*[torch.cat([tok_feats(x[i:i + 64, None]).float() for i in range(0, len(x), 64)]) for x in b], b[0], b[1])
     vb = featurize(batch(vframes, vfeats, vstarts, vidx, cfg.gap, cfg.jitter, vgen, device))
-    print(f'train: {len(frames)} frames, {len(segs)} segments, {len(starts)} transitions; held-out {len(vstarts)} '
+    print(f'train: {len(frames)} frames, {parts}, {len(starts)} transitions; held-out {len(vstarts)} '
           f'(batch {len(vidx)}); loaded in {time.time() - t0:.0f} s', flush=True)
 
     if joint:  # IDM input = merged tokenizer hidden state (STA-43 TokenizerFeatures 'hidden' layout)
@@ -280,8 +334,11 @@ def main():
     model.train()
     tl = time.time()
     for step in range(step0, cfg.n_updates + 1):
-        idx = torch.randint(0, len(starts), (cfg.batch_size,), generator=gen).numpy()
-        b = featurize(batch(frames, feats, starts, idx, cfg.gap, cfg.jitter, gen, device))
+        if weights is None:
+            idx = torch.randint(0, len(starts), (cfg.batch_size,), generator=gen).numpy()
+        else:
+            idx = torch.multinomial(weights, cfg.batch_size, replacement=True, generator=gen).numpy()
+        b = featurize(batch(frames, feats, starts, idx, gaps, cfg.jitter, gen, device))
         x_a, x_b = b[-2:] if len(b) == 5 else b[:2]
         opt.zero_grad(set_to_none=True)
         acc = cfg.get('grad_accum', 1)  # micro-batches: exact here (per-sample InfoNCE, mean losses over equal chunks)

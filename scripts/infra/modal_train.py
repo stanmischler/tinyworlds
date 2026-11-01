@@ -144,8 +144,11 @@ def train(dataset: str = "ZELDA", overrides: list[str] | None = None, training_c
 
     # the .h5 fixes the resolution (zelda/picodoom are 128, sonic/pong are 64) and the models
     # are built from frame_size, so read it off the data rather than trusting the config default
-    from datasets.data_utils import EPISODE_H5
-    h5_path = REPO_DIR + EPISODE_H5.get(dataset, f"/data/{dataset.lower()}_frames.h5")
+    from datasets.data_utils import EPISODE_H5, MULTI_VIDEO
+    if dataset in MULTI_VIDEO:  # multi-file dataset: every file has the base file's frame size (asserted when loading)
+        h5_path = REPO_DIR + MULTI_VIDEO[dataset][0][0]
+    else:
+        h5_path = REPO_DIR + EPISODE_H5.get(dataset, f"/data/{dataset.lower()}_frames.h5")
     if os.path.exists(h5_path):
         import h5py
 
@@ -241,18 +244,32 @@ def eval_lam_set(game: str, arms: str = "", baselines: str = "random,camera", ot
     print(f"EVAL DONE {game} -> lam_eval/{game}")
 
 
-@app.function(gpu=GPU, cpu=4, memory=32768, volumes=VOLUMES, timeout=2 * 60 * 60)
-def como_features(splits: str = "zelda_train,zelda_test", limit: int = 0, suffix: str = ""):
+@app.function(gpu=GPU, cpu=4, memory=32768, volumes=VOLUMES, timeout=6 * 60 * 60)
+def como_features(splits: str = "zelda_train,zelda_test", limit: int = 0, suffix: str = "", dataset: str = ""):
     """Frozen MAE ViT-L features for CoMo (scripts/actions/como_features.py): data/<split>_frames.h5 -> data/<split>_mae_large<suffix>.npy
-    in the data volume (zelda_train ~26 GB). --limit N --suffix _smoke for a quick check.
+    in the data volume (zelda_train ~26 GB). --limit N --suffix _smoke for a quick check. --dataset ZELDA_MORE_TRAIN: also
+    every extra file of that multi-file dataset (data/zelda_youtube/<id>.h5 -> <id>_mae_large.npy, ~105 GB), skipping
+    tables already on the volume.
         modal run scripts/infra/modal_train.py::como_features"""
+    import glob
     import subprocess
 
-    for sp in [s for s in splits.split(",") if s]:
-        cmd = ["python", "scripts/actions/como_features.py", "--h5", f"data/{sp}_frames.h5", "--out", f"data/{sp}_mae_large{suffix}.npy"]
+    from datasets.data_utils import MULTI_VIDEO
+    from models.como import mae_feature_path
+
+    h5s = [f"data/{sp}_frames.h5" for sp in splits.split(",") if sp]
+    if dataset:
+        h5s += sorted(glob.glob(MULTI_VIDEO[dataset][1].lstrip("/"), root_dir=REPO_DIR))
+    for h5 in h5s:
+        out = mae_feature_path(h5, suffix)
+        if dataset and os.path.exists(f"{REPO_DIR}/{out}"):
+            print(f"{out} exists, skipped")
+            continue
+        cmd = ["python", "scripts/actions/como_features.py", "--h5", h5, "--out", f"{out}.part.npy"]
         if limit:  # smoke: verify the fixed MAE patch order first
             subprocess.run(cmd + ["--check"], cwd=REPO_DIR, check=True)
         subprocess.run(cmd + (["--limit", str(limit)] if limit else []), cwd=REPO_DIR, check=True)
+        os.rename(f"{REPO_DIR}/{out}.part.npy", f"{REPO_DIR}/{out}")  # a killed precompute never looks finished
         data_volume.commit()
 
 
@@ -327,7 +344,7 @@ def eval_como_pred(arms: str, extra_args: str = ""):
         results_volume.commit()
 
 
-@app.function(gpu=GPU, cpu=8, memory=65536, volumes=VOLUMES, timeout=2 * 60 * 60)
+@app.function(gpu=GPU, cpu=8, memory=65536, volumes=VOLUMES, timeout=4 * 60 * 60)
 def como_actions(como_ckpt: str = "como_zelda_v1/como/checkpoints/como_step_50000", out_dir: str = "como_actions_v1",
                  extra_args: str = ""):
     """STA-42: CoMo IDM over every gap-4 pair of the MAE features (scripts/actions/como_actions.py) -> data/zelda_{train,test}_como_z.npy
@@ -348,7 +365,7 @@ def como_actions(como_ckpt: str = "como_zelda_v1/como/checkpoints/como_step_5000
 @app.function(gpu=os.environ.get("TINYWORLDS_EVAL_GPU", "L4"), cpu=4, memory=16384, volumes=VOLUMES, timeout=3 * 60 * 60)
 def eval_dynamics(run_dir: str, name: str, extra_args: str = "", num_steps: str = "32"):
     """Held-out next-frame eval (scripts/eval/eval_next_frame.py) of a pipeline run dir on the results volume, on a GPU,
-    once per step count in num_steps (flow: Euler steps, 32 = a sample of the next frame; "1,32" adds the 1-step mean).
+    once per step count in num_steps (flow: Euler steps; 32 = a sample of the next frame, the protocol for every number and image).
     Outputs <name>_s<steps>.{json,png} go to evals/next_frame/ on the results volume; fetch with
     `modal volume get tinyworlds-results evals/next_frame/<name>_s1.json eval_results/`.
         modal run scripts/infra/modal_train.py::eval_dynamics --run-dir 2026_09_26_12_12_49 --name zelda_v3_ctx --extra-args "--test-h5 data/zelda_test_frames.h5"

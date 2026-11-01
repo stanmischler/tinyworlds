@@ -228,14 +228,16 @@ class MultiVideoH5Dataset(Dataset):
       scripts/data/flag_video_frames.py --apply; their `segment` [N] (id of the contiguous run each frame came from)
       keeps every window inside one run.
     All files are concatenated into self.data [N, H, W, C] (one RAM copy; val is the same object).
-    Returns (frames [T, C, H, W] in [-1, 1], 0), the same item format as ZeldaDataset.
+    Returns (frames [T, C, H, W] in [-1, 1], 0), the same item format as ZeldaDataset; when train_dynamics.py sets
+    self.actions [N, A] (row r = action of the pair (r, r + the file's skip), aligned with self.data), the second item is
+    the actions [T - 1, A] of the window's first T - 1 rows.
     """
 
     def __init__(self, base, extras, num_frames=4, load_chunk_size=4096):
         base_path, base_skip, base_start = base
         self.num_frames = num_frames
         self.frame_skip = base_skip            # the base file's skip: the test curve scores the base video's test split
-        self.load_start_index = base_start     # action_file rows would line up with the base .h5 from here (base only)
+        self.load_start_index = base_start     # action_file rows: the base .h5 from row 0, then the extras (como_actions.py)
 
         sizes, segments = [], []
         with h5py.File(base_path, 'r') as f:
@@ -286,8 +288,12 @@ class MultiVideoH5Dataset(Dataset):
         return self.extra_starts[index - len(self.base_slots)] + np.arange(self.num_frames)
 
     def __getitem__(self, index: int):
-        frames = self.data[self.window_rows(index, random_phase=True)]                             # [T, H, W, C]
-        return torch.from_numpy(frames).permute(0, 3, 1, 2).float() / 127.5 - 1.0, 0           # [T, C, H, W]
+        rows = self.window_rows(index, random_phase=True)                                         # [T]
+        frames = torch.from_numpy(self.data[rows]).permute(0, 3, 1, 2).float() / 127.5 - 1.0     # [T, C, H, W]
+        actions = getattr(self, 'actions', None)
+        if actions is None:
+            return frames, 0
+        return frames, torch.from_numpy(np.ascontiguousarray(actions[rows[:-1]], dtype=np.float32))  # [T - 1, A]
 
 
 class ZeldaDataset(VideoHDF5Dataset):

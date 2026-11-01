@@ -1,0 +1,15 @@
+# "CoMo on 4 px tokens": the motion IDM reads the 5 h-data tokenizer's hidden state at full patch-4 resolution (merge 1:
+# 1024 tokens of 4x4 px, 256-d) instead of MAE ViT-L features (196 tokens of ~9 px of the frame). Link is ~16 px, so he is
+# ~4x4 tokens here vs ~2x2 MAE patches. Test of "the action cannot resolve Link": score this CoMo's own decoder on the
+# windows where the MAE CoMo's decoder loses Link (eval_results/more_data/link_internals/como_decoder_failing.png).
+# Merged on top of configs/como/zelda.yaml,configs/como/tok/base.yaml. Live features (no table), our 20 min capture.
+#   TINYWORLDS_GPU=H100 modal run --detach scripts/infra/modal_train.py::train_como \
+#     --config configs/como/zelda.yaml,configs/como/tok/base.yaml,configs/como/tok/fine_hidden.yaml
+run_name: como_4px_tokens
+live_features: true
+tokenizer_path: results/zelda_more_data_tokenizer/video_tokenizer/checkpoints/video_tokenizer_step_59000
+tokenizer_feature: hidden
+history: 0
+merge: 1
+batch_size: 128        # 256 OOMs the H100 (Q-former over 2 x 1024 tokens); 30k steps = 3/4 of the recipe's samples
+n_updates: 30000

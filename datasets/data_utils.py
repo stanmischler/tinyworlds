@@ -98,10 +98,19 @@ def load_episode_h5(dataset, num_frames=4, preload_ratio=1):
     return train, train
 
 
-def load_multi_video(dataset, num_frames=4):
+def multi_video_files(dataset):
+    """(h5 path, frame_skip, load_start_index) of every file of a MULTI_VIDEO dataset, in the row order of
+    MultiVideoH5Dataset.data: the base file, then the extra 15 fps files (skip 1, from row 0) in sorted order.
+    Paths are relative to the repo root (the cwd), as in MULTI_VIDEO."""
     (base_path, skip, start), extras_glob = MULTI_VIDEO[dataset]
-    extras = sorted(glob.glob(os.getcwd() + extras_glob))
-    train = MultiVideoH5Dataset((os.getcwd() + base_path, skip, start), extras, num_frames=num_frames)
+    extras = sorted(glob.glob(extras_glob.lstrip('/')))
+    return [(base_path.lstrip('/'), skip, start)] + [(path, 1, 0) for path in extras]
+
+
+def load_multi_video(dataset, num_frames=4):
+    (base_path, skip, start), *extras = multi_video_files(dataset)
+    extras = [path for path, _, _ in extras]
+    train = MultiVideoH5Dataset((base_path, skip, start), extras, num_frames=num_frames)
     print(f"{dataset}: {train.seconds['base'] / 60:.0f} min base + {train.seconds['extras'] / 60:.0f} min from "
           f"{len(extras)} extra files")
     return train, train

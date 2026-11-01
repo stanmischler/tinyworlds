@@ -17,6 +17,9 @@ Outputs
     python scripts/actions/como_actions.py --como-ckpt results/obj3d_como/como/checkpoints/como_step_20000 --out-dir results/obj3d_como_actions \
         --splits obj3d_train,obj3d_test --fit-split obj3d_train --start-index 0 --gap 1 --k 0 --live   # features from the
         # CoMo checkpoint's own frozen tokenizer, computed on the fly from data/<split>_frames.h5; --k 0: continuous z only
+    python scripts/actions/como_actions.py --como-ckpt results/<run>/como/checkpoints/como_step_N --out-dir results/<run>_actions \
+        --dataset ZELDA_MORE_TRAIN --splits zelda_test   # multi-file train set: data/zelda_more_train_como_z.npy holds every
+        # file's z at its own gap (base 4, 15 fps extras 1) in MultiVideoH5Dataset row order; mean/std and k-means fit on all
 """
 
 import argparse
@@ -28,7 +31,10 @@ import h5py
 import numpy as np
 import torch
 
+from datasets.data_utils import multi_video_files
+from datasets.split import segments
 from evaluation.action_metrics import kmeans
+from models.como import mae_feature_path
 from utils.utils import load_como_from_checkpoint, STATE
 
 
@@ -67,12 +73,35 @@ def pair_z_live(lam, h5_path, gap, batch, device, limit=0):
     return z
 
 
+def dataset_z(idm, a):
+    # every file of a multi-file dataset, each at its own gap (MAE table next to its .h5) -> (raw z [N, A] concatenated in
+    # MultiVideoH5Dataset row order, base file from row 0 so train_dynamics' load_start_index slice lines up; written to
+    # <z-dir>/<dataset>_como_z<suffix>.npy) and the fit z [M, A]: pairs inside one segment, base rows from its start index
+    parts, fit = [], []
+    for h5, gap, start in multi_video_files(a.dataset):
+        feats = np.load(mae_feature_path(h5, a.feature_suffix), mmap_mode='r')
+        print(f'{h5}: {len(feats)} feature rows, gap {gap}')
+        z = pair_z(idm, feats, gap, a.batch, a.device, a.limit)  # [N_file, A], last gap rows 0
+        with h5py.File(h5, 'r') as f:
+            n_file = len(f['frames'])  # segments() needs the whole file (the table may be a --limit smoke one)
+        rows = np.concatenate([np.arange(max(s, start), min(e, len(z)) - gap) for s, e in segments(h5, n_file)
+                               if min(e, len(z)) - gap > max(s, start)])  # pairs (r, r + gap) inside one segment
+        parts.append(z)
+        fit.append(z[rows])
+    z = np.concatenate(parts)
+    path = f'{a.z_dir}/{a.dataset.lower()}_como_z{a.suffix}.npy'
+    np.save(path, z)
+    print(f'wrote {path} {z.shape}')
+    return z, torch.from_numpy(np.concatenate(fit))
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--como-ckpt', required=True)
     p.add_argument('--out-dir', required=True, help='action dirs are <out-dir>_full and <out-dir>_k<K>')
     p.add_argument('--splits', default='zelda_train,zelda_test')
     p.add_argument('--fit-split', default='zelda_train', help='split whose z gives mean/std and the k-means centroids')
+    p.add_argument('--dataset', default='', help='multi-file train set (datasets.data_utils.MULTI_VIDEO), fitted instead of --fit-split')
     p.add_argument('--start-index', type=int, default=1000, help='fit rows from here on (ZeldaDataset load_start_index)')
     p.add_argument('--gap', type=int, default=4)
     p.add_argument('--k', type=int, default=16)
@@ -105,13 +134,17 @@ def main():
         np.save(f'{a.z_dir}/{sp}_como_z{a.suffix}.npy', zs[sp])
         print(f'wrote {a.z_dir}/{sp}_como_z{a.suffix}.npy {zs[sp].shape}')
 
-    fit = torch.from_numpy(zs[a.fit_split][a.start_index:len(zs[a.fit_split]) - a.gap])  # [M, A] valid pairs only
+    if a.dataset:
+        a.fit_split = a.dataset.lower()
+        zs[a.fit_split], fit = dataset_z(idm, a)
+    else:
+        fit = torch.from_numpy(zs[a.fit_split][a.start_index:len(zs[a.fit_split]) - a.gap])  # [M, A] valid pairs only
     mean, std = fit.mean(0), fit.std(0).clamp_min(1e-6)
     centroids = kmeans(fit, a.k, seed=0) if a.k else torch.zeros(0, fit.shape[1])  # [K, A]; --k 0: continuous z only
-    summary = {'como_ckpt': a.como_ckpt, 'feature_file': a.feature_file, 'gap': a.gap, 'k': a.k, 'fit_split': a.fit_split, 'fit_rows': len(fit),
+    summary = {'como_ckpt': a.como_ckpt, 'feature_file': a.feature_file, 'dataset': a.dataset, 'gap': a.gap, 'k': a.k, 'fit_split': a.fit_split, 'fit_rows': len(fit),
                'z_std_mean': float(std.mean()), 'z_std_min': float(std.min()), 'z_std_max': float(std.max())}
     for sp, z in (zs.items() if a.k else ()):
-        zz = torch.from_numpy(z[:len(z) - a.gap])
+        zz = fit if a.dataset and sp == a.fit_split else torch.from_numpy(z[:len(z) - a.gap])  # dataset: valid pairs only
         codes = torch.cdist(zz, centroids).argmin(1)
         summary[f'{sp}_code_hist'] = torch.bincount(codes, minlength=a.k).tolist()
 

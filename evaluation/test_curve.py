@@ -16,6 +16,7 @@ import torch
 from evaluation.image_grid import render_grid
 from evaluation.image_metrics import psnr, ssim
 from evaluation.windows import test_windows, load_window_batch, to_model_range, to_unit
+from utils.inference_utils import default_num_steps
 
 N_IMAGE_WINDOWS = 8
 
@@ -105,11 +106,12 @@ class TestCurve(HeldOutWindows):
         self.copy_psnr = float(torch.cat(copy).mean())
 
     @torch.no_grad()
-    def __call__(self, dyn, tok, actions, device, num_steps=1, seed=0):
+    def __call__(self, dyn, tok, actions, device, num_steps=None, seed=0):
         # dyn: flow dynamics (EMA copy); tok: frozen tokenizer; actions: action model with encode(frames) -> [B, T-1, A]
         # -> ({'test/psnr', 'test/ssim', 'test/flow_loss', 'test/copy_psnr'}, PIL image: one row per window), means over all
         # windows; for an EDM model test/flow_loss is its preconditioned denoiser loss and for a regression model its latent MSE, neither comparable with a flow model's; a corrected model also gets test/psnr_k0 (corrector off) and test/corr_loss, and test/flow_loss stays
         # the dynamics net's own loss
+        num_steps = default_num_steps(dyn) if num_steps is None else num_steps  # flow: 32 Euler steps, a real sample
         was_training = dyn.training
         dyn.eval()
         correction = getattr(dyn, 'correction', False)

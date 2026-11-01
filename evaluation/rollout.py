@@ -4,19 +4,22 @@ protocol). Works for both tokenizer kinds (FSQ / continuous, via tok.encode / to
 
 import torch
 
+from utils.inference_utils import default_num_steps
+
 
 @torch.no_grad()
-def rollout(tok, dyn, frames, n_context, actions=None, max_context=None, num_steps=1, temperature=0.0, batch_size=16,
+def rollout(tok, dyn, frames, n_context, actions=None, max_context=None, num_steps=None, temperature=0.0, batch_size=16,
             generator=None, progress=True):
     """Predict frames[:, n_context:] from frames[:, :n_context], one frame at a time, each new frame fed back as context.
 
     frames: float [B, T, C, H, W] in [-1, 1] (only the first n_context frames are read)
     actions: float [B, T - 1, A] (actions[:, t] drives frame t -> t + 1) or None
     max_context: keep at most this many frames as dynamics context (sliding window, e.g. 6 for LPWM's 6 -> 44); None = all
-    num_steps: Euler steps (flow) or unmasking iterations (MaskGIT) per frame
+    num_steps: Euler steps (flow) or unmasking iterations (MaskGIT) per frame; None = default_num_steps (flow: 32)
     -> pred float [B, T, C, H, W] in [0, 1] (context frames are the tokenizer reconstructions), recon float [B, T, C, H, W]
        in [0, 1] (all T real frames encoded and decoded: the tokenizer ceiling)."""
     B, T = frames.shape[:2]
+    num_steps = default_num_steps(dyn) if num_steps is None else num_steps
     preds, recons = [], []
     idx_to_lat = None if tok.continuous else (lambda idx: tok.quantizer.get_latents_from_indices(idx, dim=-1))  # MaskGIT only
     for i in range(0, B, batch_size):
