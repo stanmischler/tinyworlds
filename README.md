@@ -90,6 +90,9 @@ The pipeline in one line: `scripts/data` -> `scripts/tokenizer` -> `scripts/acti
   base yaml in `configs/`. Shared logic goes in a package, never in another script: scripts import from `models`, `datasets`,
   `evaluation` and `utils` only, so no script depends on where another one sits.
 - **New metric or eval protocol**: functions in `evaluation/`, a thin command-line script in `scripts/eval/`.
+- **Evaluating a flow-matching dynamics model**: always at 32 Euler steps (`FLOW_SAMPLE_STEPS`, the default of
+  `scripts/eval/eval_next_frame.py`), for numbers and for images. 1 step returns the average of the possible next frames,
+  not a sample: it hides the real failure (a sharp but wrong Link) behind a blur.
 - **New game**: an mp4 or .h5 in `data/`, a `VideoHDF5Dataset` subclass in `datasets/datasets.py`, one row in `VIDEO_GAMES`
   (`datasets/data_utils.py`) and the dataset name in `utils/config.py`.
 - **New study** (an idea you are testing, not yet part of the pipeline): a folder `experiments/<what_it_tests>/` named in a word or

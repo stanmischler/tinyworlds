@@ -8,6 +8,8 @@
   compare : several eval runs (each saved with --save-predictions) side by side on N windows where Link moves (judge
             box and motion box both present), evenly spaced: target, target crop, each run's predicted crop with its
             judge-box LPIPS and motion-weighted PSNR; a header row holds each run's summary link metrics.
+            --worst: the first run's n worst windows by judge-box LPIPS instead (where it loses Link), and prints each
+            run's mean judge-box LPIPS on them and how many of its own n worst windows are among them.
 
 Usage (from the repo root, PYTHONPATH=$PWD):
     python scripts/eval/link_box_sheet.py boxes --out eval_results/link_boxes/boxes_heatmaps.png
@@ -15,6 +17,7 @@ Usage (from the repo root, PYTHONPATH=$PWD):
         --pred eval_results/zelda_bigger_fm_s32_pred.npz --out eval_results/link_boxes/examples.png
     python scripts/eval/link_box_sheet.py compare --evals eval_results/a_s32.json eval_results/b_s32.json \
         --labels "run a" "run b" --out eval_results/link_boxes/compare.png   # predictions read from <json stem>_pred.npz
+    python scripts/eval/link_box_sheet.py compare --worst --n 16 --evals ... --labels ... --out worst.png
 """
 
 import argparse
@@ -160,6 +163,12 @@ def text_tile(lines, font, size=(128, 128)):
     return im
 
 
+def worst_windows(res, n):
+    # the n windows with the highest judge-box LPIPS (windows without a judge box excluded), worst first
+    lp = np.array([np.nan if v is None else v for v in res['windows']['judge_box_lpips']], float)  # [N]
+    return np.argsort(np.nan_to_num(lp, nan=-1.0))[::-1][:n].tolist()
+
+
 def compare_sheet(args, font):
     runs = []
     for path in args.evals:
@@ -167,12 +176,22 @@ def compare_sheet(args, font):
             res = json.load(f)
         runs.append((res, np.load(path.replace('.json', '_pred.npz'))['pred']))  # pred [N, H, W, C] uint8
     win = runs[0][0]['windows']
-    moving = [i for i, (g, jb) in enumerate(zip(win['motion_group'], win['judge_box'])) if g == 'moving' and jb[0] >= 0]
-    ids = [moving[k] for k in np.linspace(0, len(moving) - 1, args.n).round().astype(int)]
+    if args.worst:
+        ids = worst_windows(runs[0][0], args.n)
+        for label, (res, _) in zip(args.labels, runs):
+            lp = [res['windows']['judge_box_lpips'][i] for i in ids]
+            shared = len(set(ids) & set(worst_windows(res, args.n)))
+            print(f'{label}: judge LPIPS on the first run\'s {args.n} worst {np.mean(lp):.3f}; '
+                  f'{shared}/{args.n} of its own {args.n} worst are among them')
+    else:
+        moving = [i for i, (g, jb) in enumerate(zip(win['motion_group'], win['judge_box'])) if g == 'moving' and jb[0] >= 0]
+        ids = [moving[k] for k in np.linspace(0, len(moving) - 1, args.n).round().astype(int)]
     _, _, target, _, jbox = window_data(ids)
     zoom = lambda img, b: np.kron(img[b[0]:b[0] + BOX, b[1]:b[1] + BOX], np.ones((4, 4, 1), np.uint8))  # 32 -> 128 px
     fmt = lambda v, d: '-' if v is None else f'{v:.{d}f}'
-    header = [text_tile(['all 890 test windows,', '32 Euler steps', '', 'below: windows where', 'Link moves; crop =', 'judge box, 4x'], font),
+    rows_are = [f'{args.labels[0]}\'s', f'{args.n} worst by judge', 'LPIPS; crop ='] if args.worst else ['Link moves; crop =']
+    header = [text_tile(['all 890 test windows,', '32 Euler steps', '', 'below: windows where' if not args.worst else 'below:',
+                         *rows_are, 'judge box, 4x'], font),
               text_tile(['target (real frame)', '', f"judge box n = {runs[0][0]['n_link_windows']['judge_box']}",
                          f"motion box n = {runs[0][0]['n_link_windows']['motion_box']}"], font)]
     for label, (res, _) in zip(args.labels, runs):
@@ -203,6 +222,7 @@ def main():
     p.add_argument('--k', type=int, default=6, help='examples: best and worst windows shown')
     p.add_argument('--evals', nargs='+', help='compare: eval_next_frame.py jsons, each next to its <stem>_pred.npz')
     p.add_argument('--labels', nargs='+', help='compare: one run name per json')
+    p.add_argument('--worst', action='store_true', help="compare: rows = the first run's n worst windows by judge-box LPIPS")
     args = p.parse_args()
     font = ImageFont.load_default(size=11)
     {'boxes': boxes_sheet, 'examples': examples_sheet, 'compare': compare_sheet}[args.mode](args, font)

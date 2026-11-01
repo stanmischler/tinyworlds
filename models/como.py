@@ -25,6 +25,12 @@ MAE_DIM, MAE_TOKENS, MAE_SIZE = 1024, 197, 224
 IMAGENET_MEAN, IMAGENET_STD = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
 
 
+def mae_feature_path(h5_path, suffix=''):
+    # MAE feature table of a frames .h5 (scripts/actions/como_features.py), row-aligned with it (suffix: e.g. _smoke):
+    # data/zelda_train_frames.h5 -> data/zelda_train_mae_large.npy, data/zelda_youtube/<id>.h5 -> data/zelda_youtube/<id>_mae_large.npy
+    return h5_path.removesuffix('.h5').removesuffix('_frames') + f'_mae_large{suffix}.npy'
+
+
 def _encoder(dim, heads, mlp, depth):
     # pre-LN ViT blocks (= HF ViTLayer: LN -> attn -> residual, LN -> GELU MLP -> residual)
     layer = nn.TransformerEncoderLayer(dim, heads, mlp, dropout=0.0, activation='gelu', batch_first=True, norm_first=True,

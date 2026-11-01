@@ -1,0 +1,7 @@
+# CoMo of "more data flow matching", merged on configs/como/zelda.yaml (same model and optimiser): trained from scratch on
+# every file of ZELDA_MORE_TRAIN (our recordings at gap 4 from row 1000, the YouTube files at gap 1, every second of
+# gameplay equally likely), 100k steps instead of 50k. The ~130 GB MAE table sits in host memory.
+run_name: zelda_more_data_como
+dataset: ZELDA_MORE_TRAIN
+feat_device: cpu
+n_updates: 100000

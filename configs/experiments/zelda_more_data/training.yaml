@@ -1,0 +1,66 @@
+# "more data flow matching": the "longer flow matching" pipeline (KL c16 temporal tokenizer, CoMo full z, 13M flow
+# matching dynamics) retrained from scratch on ZELDA_MORE_TRAIN (our 20 min + 4h49 of YouTube gameplay). Same recipes;
+# tokenizer 60k steps and CoMo 100k (2x), dynamics 100k (same). Test set unchanged (data/zelda_test_frames.h5).
+# Data on the volume: for f in data/zelda_youtube/*.h5; do modal volume put tinyworlds-data $f zelda_youtube/$(basename $f); done
+# 1. tokenizer (H100, ~6 h):
+#   TINYWORLDS_GPU=H100 TINYWORLDS_MEMORY_MB=49152 modal run --detach scripts/infra/modal_train.py --dataset ZELDA_MORE_TRAIN \
+#     --training-config configs/experiments/zelda_more_data/training.yaml --run-name zelda_more_data_tokenizer
+# 2. CoMo, in parallel: MAE tables of the YouTube files, training, then the actions of every row:
+#   TINYWORLDS_GPU=H100 modal run --detach scripts/infra/modal_train.py::como_features --splits "" --dataset ZELDA_MORE_TRAIN
+#   TINYWORLDS_GPU=H100 TINYWORLDS_MEMORY_MB=196608 modal run --detach scripts/infra/modal_train.py::train_como \
+#     --config configs/como/zelda.yaml,configs/experiments/zelda_more_data/como.yaml
+#   TINYWORLDS_GPU=H100 modal run --detach scripts/infra/modal_train.py::como_actions \
+#     --como-ckpt zelda_more_data_como/como/checkpoints/como_step_100000 --out-dir zelda_more_data_actions \
+#     --extra-args "--dataset ZELDA_MORE_TRAIN --splits zelda_test"
+# 3. dynamics (H100, <24 h):
+#   TINYWORLDS_GPU=H100 TINYWORLDS_MEMORY_MB=49152 modal run --detach scripts/infra/modal_train.py --dataset ZELDA_MORE_TRAIN \
+#     --training-config configs/experiments/zelda_more_data/training.yaml \
+#     --overrides "run_video_tokenizer=false,run_dynamics=true" --run-name zelda_more_data_fm
+# Eval (32 steps, Link boxes):
+#   TINYWORLDS_EVAL_GPU=A10G modal run --detach scripts/infra/modal_train.py::eval_dynamics --run-dir zelda_more_data_fm \
+#     --name zelda_more_data_fm --extra-args "--test-h5 data/zelda_test_frames.h5 \
+#     --latent-actions-path results/zelda_more_data_actions_full \
+#     --video-tokenizer-path results/zelda_more_data_tokenizer/video_tokenizer/checkpoints/video_tokenizer_step_59000 \
+#     --dynamics-path results/zelda_more_data_fm/dynamics/checkpoints/dynamics_step_99999 \
+#     --link-boxes evaluation/zelda_link_boxes.json --save-predictions"
+use_wandb: true
+wandb_project: tinyworlds
+
+dataset: ZELDA_MORE_TRAIN  # our train file from row 1000 + data/zelda_youtube/*.h5, every second of gameplay equally likely
+preload_ratio: 1.0        # ignored by the multi-file dataset (always all frames, ~16 GB)
+
+patch_size: 4             # 48 pixel values per token; 1024 tokens per 128px frame
+context_length: 4
+frame_size: 128
+latent_dim: 16            # KL c16 tokenizer
+num_bins: 4               # FSQ only
+n_actions: 16             # logging only (full CoMo z)
+
+amp: true
+tf32: true
+compile: true
+
+num_workers: 8
+pin_memory: true
+
+distributed:
+  use_ddp: false
+  use_fsdp: false
+  reshard_after_forward: false
+nproc_per_node: 1
+standalone: true
+
+video_tokenizer_config: configs/experiments/zelda_more_data/tokenizer.yaml
+latent_actions_config: configs/experiments/lam_loop/i4_bal16_seed2.yaml                  # unused (run_latent_actions false)
+dynamics_config: configs/experiments/zelda_more_data/dynamics.yaml
+run_video_tokenizer: true    # stage 1; the dynamics launch sets it false (see the header)
+run_latent_actions: false    # CoMo actions: path in the dynamics yamls
+run_dynamics: false          # stage 3, launched once the tokenizer and the CoMo actions exist
+
+optimizer: adamw
+muon_momentum: 0.95
+muon_backend_steps: 5
+use_moe: false
+num_experts: 4
+top_k_experts: 2
+moe_aux_loss_coeff: 0.01

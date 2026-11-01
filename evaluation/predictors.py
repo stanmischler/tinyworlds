@@ -13,7 +13,7 @@ from pathlib import Path
 import torch
 
 from evaluation.windows import to_unit
-from utils.inference_utils import load_models
+from utils.inference_utils import load_models, default_num_steps
 from utils.utils import load_latent_actions_from_checkpoint
 
 
@@ -34,12 +34,12 @@ def dynamics_paths(dynamics_path):
 class DynamicsPredictor:
     """Frozen tokenizer + action model (LAM or CoMo actions) + dynamics model (MaskGIT, flow, FlowC2S, Bi-flow, bridge)."""
 
-    def __init__(self, tokenizer_path, actions_path, dynamics_path, device, num_steps=1, bf_eps=None):
+    def __init__(self, tokenizer_path, actions_path, dynamics_path, device, num_steps=None, bf_eps=None):
         self.tok, self.actions, self.dyn = load_models(tokenizer_path, actions_path, dynamics_path, device)  # as eval_next_frame
         if bf_eps is not None:
             assert hasattr(self.dyn, 'bf_eps'), 'bf_eps needs a Bi-flow dynamics checkpoint'
             self.dyn.bf_eps = bf_eps
-        self.num_steps = num_steps
+        self.num_steps = default_num_steps(self.dyn) if num_steps is None else num_steps  # flow: 32 Euler steps
         self.is_flow = hasattr(self.dyn, 'sample_next')  # flow models draw noise; MaskGIT at temperature 0 does not
 
     @torch.no_grad()

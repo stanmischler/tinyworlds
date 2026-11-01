@@ -1,0 +1,33 @@
+# "fine-tune on our capture": the "more data flow matching" dynamics (100k on ZELDA_MORE_TRAIN) fine-tuned 10k steps on our
+# 20 min capture only (ZELDA_TRAIN), same tokenizer and CoMo actions. Tests whether the data mix (our capture 5.8% of samples) causes
+# the drop on camera-scroll test windows. Launch and eval: header of training.yaml.
+batch_size_per_gpu: 64
+gradient_accumulation_steps: 1
+n_updates: 10000
+learning_rate: 0.0001   # fine-tune lr (as the bridge fine-tunes)
+log_interval: 1000   # checkpoint + sampled-prediction PNG
+
+use_actions: true
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 12
+
+dynamics_type: flow
+fm_pred: v
+fm_shift: 3.0
+qk_norm: true
+ema_decay: 0.999
+seed: 0
+
+video_tokenizer_path: results/zelda_more_data_tokenizer/video_tokenizer/checkpoints/video_tokenizer_step_59000   # frozen, this study's
+latent_actions_path: results/zelda_more_data_actions_full   # CoMo IDM + train z stats of this study (como_actions.py --dataset)
+action_file: data/zelda_more_train_como_z.npy               # its first 64,850 rows are our capture (rows 1000+ used)
+init_weights: results/zelda_more_data_fm/dynamics/checkpoints/dynamics_step_99999   # EMA weights, fresh optimizer
+
+test_eval_h5: data/zelda_test_frames.h5   # test/* curve for watching; the reported number is eval_next_frame.py
+test_eval_interval: 2000   # 32-step curve, ~890 windows: a few minutes per point
+
+# resume: set to a checkpoint dir (…/dynamics/checkpoints/dynamics_step_N)
+checkpoint:

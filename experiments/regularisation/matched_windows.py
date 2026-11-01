@@ -1,4 +1,4 @@
-"""Memorisation check for one dynamics checkpoint: the same 1-step prediction on TRAIN windows and on held-out windows
+"""Memorisation check for one dynamics checkpoint: the same 32-step prediction on TRAIN windows and on held-out windows
 of the same scenes and situations, so a train vs held-out gap means memorising, not harder frames.
 
 Windows (from the Link-blur diagnosis): heldout_windows.json = the 97 judged held-out windows (camera still, Link
@@ -73,7 +73,7 @@ def main():
     os.makedirs(a.out_dir, exist_ok=True)
     t0 = time.time()
     device = torch.device(a.device)
-    dyn = DynamicsPredictor(a.video_tokenizer_path, a.latent_actions_path, a.dynamics_path, device, num_steps=1)
+    dyn = DynamicsPredictor(a.video_tokenizer_path, a.latent_actions_path, a.dynamics_path, device)
     lpips_fn = try_lpips(device)
     assert lpips_fn is not None, 'the lpips package (and its cached AlexNet weights) is needed'
 
