@@ -1,0 +1,36 @@
+# sampled LPIPS λ 20: flow loss + 20 * (LPIPS + L1) on the motion box of the 32-step sample
+batch_size_per_gpu: 64
+gradient_accumulation_steps: 1
+n_updates: 2000
+learning_rate: 0.00002
+log_interval: 250   # checkpoint + sampled-prediction PNG
+
+use_actions: true
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 12
+
+dynamics_type: flow
+fm_pred: v
+fm_shift: 3.0
+qk_norm: true
+ema_decay: 0.999
+seed: 0
+init_weights: results/zelda_longer_fm/dynamics/checkpoints/dynamics_step_99999   # longer flow matching (EMA), fresh optimizer
+
+sampled_loss_weight: 20   # λ on LPIPS + L1 of the motion box of the 32-step sample; its gradient is ~0.005x the flow loss's before λ (experiments/sampled_lpips/grad_ratio.py), so λ 20 puts it at ~0.1x
+sampled_loss_steps: 32
+sampled_loss_grad_steps: 1
+sampled_loss_batch: 16
+
+video_tokenizer_path: results/zelda_cont_final_tp/video_tokenizer/checkpoints/video_tokenizer_step_29000   # frozen KL c16 temporal
+latent_actions_path: results/como_actions_v1_full   # CoMo IDM + train z stats, models/como.py CoMoActions; encoded online
+action_file:
+
+test_eval_h5: data/zelda_test_frames.h5   # test/* curve (1 Euler step) for watching; the reported number is eval_next_frame.py
+test_eval_interval: 500
+
+# resume: set to a checkpoint dir (…/dynamics/checkpoints/dynamics_step_N)
+checkpoint:

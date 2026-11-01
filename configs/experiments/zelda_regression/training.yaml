@@ -1,0 +1,53 @@
+# Is flow matching better than one-pass regression? Regression dynamics (dynamics_type regression) on the exact recipe of
+# zelda_regularisation/action_token.yaml, the flow-matching twin: frozen KL c16 temporal tokenizer (zelda_cont_final_tp
+# step 29000), frozen CoMo actions, 13M (256/512/12), bs 64, EMA 0.999, seed 0, token shift 4, dropout 0.1, wd 0.05,
+# action token + FiLM. Only the objective differs: MSE on the next latents in one pass instead of flow matching.
+# Sweep (100k lr schedule, stopped at 10k; one dynamics yaml each):
+#   direct regression, lr 3e-4     direct_lr3e-4.yaml      new frame's slot = zeros
+#   direct regression, lr 1e-3     direct_lr1e-3.yaml
+#   residual regression, lr 3e-4   residual_lr3e-4.yaml    slot = the last context frame, output added to it
+#   residual regression, lr 1e-3   residual_lr1e-3.yaml
+# The winner (judge-box LPIPS, then PSNR) resumes from dynamics_step_10000 to 100k (stop_step=null checkpoint=<dir>);
+# the resume re-seeds the data order (seed 0), so steps 10k-20k replay the batch order of 0-10k.
+# Launch on Jean Zay: see cluster/README.md (one H100 job per run, train_dynamics.py with this training yaml).
+use_wandb: true
+wandb_project: tinyworlds
+
+dataset: ZELDA_TRAIN      # zelda_train_frames.h5: all frames minus the 10 held-out test blocks (scripts/data/split_dataset.py)
+preload_ratio: 1.0        # all ~65k train frames (ZeldaDataset defaults to 0.2)
+
+patch_size: 4             # 48 pixel values per token; 1024 tokens per 128px frame
+context_length: 4
+frame_size: 128
+latent_dim: 16            # KL c16 tokenizer (taken from the checkpoint anyway)
+num_bins: 4               # FSQ only
+n_actions: 16             # logging only (full CoMo z)
+
+amp: true
+tf32: true
+compile: true
+
+num_workers: 8
+pin_memory: true
+
+distributed:
+  use_ddp: false
+  use_fsdp: false
+  reshard_after_forward: false
+nproc_per_node: 1
+standalone: true
+
+video_tokenizer_config: configs/experiments/zelda_continuous/tokenizer_final_tp.yaml      # unused (run_video_tokenizer false)
+latent_actions_config: configs/experiments/lam_loop/i4_bal16_seed2.yaml                  # unused (run_latent_actions false)
+dynamics_config: configs/experiments/zelda_regression/direct_lr3e-4.yaml   # per run
+run_video_tokenizer: false   # frozen KL c16 temporal tokenizer: video_tokenizer_path in the dynamics yamls
+run_latent_actions: false    # CoMo actions: path in the dynamics yamls
+run_dynamics: true
+
+optimizer: adamw
+muon_momentum: 0.95
+muon_backend_steps: 5
+use_moe: false
+num_experts: 4
+top_k_experts: 2
+moe_aux_loss_coeff: 0.01

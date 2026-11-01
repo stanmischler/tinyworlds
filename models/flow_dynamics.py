@@ -329,6 +329,50 @@ class FlowDynamicsModel(nn.Module):
                 x = x + self.bridge_noise(x, s_grid[k], s_grid[k + 1], generator)
         return self.round_to_grid(x) if self.round_latents else x
 
+    def sample_next_with_grad(self, context_latents, conditioning, num_steps, grad_steps):
+        # differentiable version of sample_next for the sampled-frame loss (noise source, no guidance, no correction):
+        # the same Euler steps from noise, where only the last grad_steps keep their graph (DRaFT-K, arXiv 2309.17400).
+        # Each of those steps reads its input detached (DRTune, arXiv 2405.00760): x_N = x_start + sum_k dt_k * v(sg(x_k)),
+        # so the gradient reaches the weights through each kept velocity, not through the chain of steps.
+        # context_latents: [B, Tc, P, L] clean; conditioning: [B, Tc, A] or None -> new frame [B, P, L] (not rounded)
+        assert self.fm_source == "noise" and not self.correction and self.guidance_scale == 1 and not self.round_latents, \
+            'sample_next_with_grad: noise source, continuous latents, no correction or guidance'
+        B, Tc, P, L = context_latents.shape
+        dev = context_latents.device
+        x = torch.randn(B, P, L, device=dev)  # [B, P, L]
+        s_grid = shift_noise_level(torch.linspace(1, 0, num_steps + 1, device=dev), self.fm_shift)  # [N+1], 1 -> 0
+        for k in range(num_steps):
+            with torch.set_grad_enabled(k >= num_steps - grad_steps):
+                t = torch.ones(B, Tc + 1, device=dev)  # [B, Tc+1] fresh each step (no in-place edit of a graph input)
+                t[:, -1] = 1 - s_grid[k]
+                inp = torch.cat([context_latents.float(), x.detach()[:, None]], dim=1)  # [B, Tc+1, P, L]
+                v = self.velocity(inp, conditioning, t).float()  # [B, P, L]
+                x = x + (s_grid[k] - s_grid[k + 1]) * v
+        return x
+
+    def clean_guess_with_grad(self, context_latents, conditioning, num_steps):
+        # the sampled-frame loss scored at a random step of the sampler instead of its end: k Euler steps from noise
+        # without gradient (k uniform in 0..num_steps-1, one k for the batch), then the model's one-shot guess of the
+        # clean frame there, x1_hat = x_k + s_k * v(sg(x_k)) as in forward(). The gradient reaches the weights through
+        # that velocity, at every noise level of the eval's grid, including the early ones that fix the layout.
+        # context_latents: [B, Tc, P, L] clean; conditioning: [B, Tc, A] or None -> clean-frame guess [B, P, L]
+        assert self.fm_source == "noise" and not self.correction and self.guidance_scale == 1 and not self.round_latents, \
+            'clean_guess_with_grad: noise source, continuous latents, no correction or guidance'
+        B, Tc, P, L = context_latents.shape
+        dev = context_latents.device
+        s_grid = shift_noise_level(torch.linspace(1, 0, num_steps + 1, device=dev), self.fm_shift)  # [N+1], 1 -> 0
+        k = int(torch.randint(num_steps, ()))  # Euler steps taken before the guess
+        x = torch.randn(B, P, L, device=dev)  # [B, P, L]
+        for j in range(k + 1):
+            with torch.set_grad_enabled(j == k):
+                t = torch.ones(B, Tc + 1, device=dev)  # [B, Tc+1]
+                t[:, -1] = 1 - s_grid[j]
+                inp = torch.cat([context_latents.float(), x.detach()[:, None]], dim=1)  # [B, Tc+1, P, L]
+                v = self.velocity(inp, conditioning, t).float()  # [B, P, L]
+                if j < k:
+                    x = x + (s_grid[j] - s_grid[j + 1]) * v
+        return x.detach() + s_grid[k] * v
+
     @torch.no_grad()
     def forward_inference(self, context_latents, prediction_horizon, num_steps, index_to_latents_fn=None,
                           conditioning=None, schedule_k=None, temperature=None, generator=None):
@@ -477,3 +521,39 @@ class EDMDynamicsModel(FlowDynamicsModel):
             d = (x - D) / sigmas[k]  # [B, P, L] dx/dsigma
             x = x + (sigmas[k + 1] - sigmas[k]) * d  # the last step (sigma -> 0) lands on D
         return x
+
+
+class RegressionDynamicsModel(FlowDynamicsModel):
+    """One-pass regression dynamics, the non-generative baseline for FlowDynamicsModel: same causal ST-transformer (`net`),
+    action token and FiLM, but no noise, no flow time and no sampling loop. The new frame's slot holds zeros (direct
+    regression) or a copy of the last context frame (residual: the output is added to it), and the prediction is trained
+    by MSE against the true next latents. Every frame's flow time is fixed at t = 1, so the FiLM time embedding is a
+    constant and only the action varies. The fm_* / correction / guidance / token_loss options of FlowDynamicsModel are
+    unused (train_dynamics.py asserts them off)."""
+
+    def __init__(self, regression_residual=False, **flow_kwargs):
+        super().__init__(**flow_kwargs)
+        self.residual = bool(regression_residual)
+
+    def predict(self, context, conditioning):
+        # context: [B, Tc, P, L] clean frames; conditioning: [B, Tc, A] or None -> predicted next latents [B, P, L]
+        B, Tc = context.shape[:2]
+        prev = context[:, -1].float()  # [B, P, L]
+        slot = prev if self.residual else torch.zeros_like(prev)  # [B, P, L] input in the new frame's slot
+        inp = torch.cat([context.float(), slot[:, None]], dim=1)  # [B, Tc+1, P, L]
+        t = torch.ones(B, Tc + 1, device=context.device)  # [B, Tc+1] constant time input
+        out = self.net(inp, conditioning, t)[:, -1].float()  # [B, P, L]
+        return prev + out if self.residual else out
+
+    def forward(self, latents, training=True, conditioning=None, targets=None, token_mask=None, loss_mask=None):
+        # latents: [B, T, P, L] clean; conditioning: [B, T-1, A]; loss_mask: [B, P] tokens in the loss (None = all)
+        # -> (x1_hat, (x1_hat, s, {}), loss) like FlowDynamicsModel.forward, s = 0 (no noise)
+        x1 = latents[:, -1].float()  # [B, P, L]
+        x1_hat = self.predict(latents[:, :-1], conditioning)  # [B, P, L]
+        loss = self.token_weighted_loss(x1_hat, x1, loss_mask=loss_mask)  # masked MSE over the latents
+        return x1_hat, (x1_hat, torch.zeros_like(x1[:, 0, 0]), {}), loss
+
+    @torch.no_grad()
+    def sample_next(self, context_latents, conditioning, num_steps, generator=None):
+        # context_latents: [B, Tc, P, L]; conditioning: [B, Tc, A] or None -> new frame [B, P, L]; one pass, num_steps unused
+        return self.predict(context_latents, conditioning)

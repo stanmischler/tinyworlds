@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 
 RUNS = [('zelda_todays_recipe', "today's recipe"), ('zelda_regularised_shifted', 'regularised + shifted'),
         ('zelda_motion_weighted', 'motion-weighted loss'), ('zelda_error_weighted', 'error-weighted loss'),
-        ('zelda_action_token', 'action token')]
+        ('zelda_action_token', 'action token'), ('zelda_longer_fm', 'longer flow matching')]  # last = merged 13M baseline
 
 
 def step_of(path):
@@ -74,6 +74,7 @@ def main():
         ax.set_xlabel('step (k)')
         ax.grid(alpha=0.3)
     axes.flat[0].legend(fontsize=8)
+    axes.flat[-1].axis('off')  # 8 panels on a 3x3 grid
     fig.tight_layout()
     fig.savefig(f'{a.evals}/curves.png', dpi=120)
     print('\n'.join(lines))
