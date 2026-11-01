@@ -58,6 +58,11 @@ continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 
 continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & motion-weighted loss & 32.75 & 0.928 & 0.034 & \pr{47} & + 0.3 per-sample loss on moving tokens; judge-box 0.086 / 36.4 \\
 continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & error-weighted loss & 32.55 & 0.923 & 0.035 & \pr{47} & + focal $\gamma$ 1; most coherent Link in crops but gap 4.5 dB; judge-box 0.088 / 40.3 \\
 \midrule
+\multicolumn{11}{l}{\textit{More data: our 20 min capture + 4 h 49 of YouTube Zelda (ZELDA\_MORE\_TRAIN, equal weight per second), every stage retrained; 32 Euler steps; judge-box = Link's 32 px box, 723 windows}} \\
+\midrule
+continuous temporal KL-VAE, 5 h & 45.07 & 0.996 & CoMo-ViT, full $z$, 5 h & -- & more data flow matching & 33.17 & 0.933 & 0.034 & \pr{51} & tokenizer 60k, CoMo 100k, dynamics 100k; judge-box LPIPS 0.104 / FID 43.4 (longer FM 0.085 / 36.3); YouTube darker, sharper, more static than our capture \\
+continuous temporal KL-VAE, 5 h & 45.07 & 0.996 & CoMo-ViT, full $z$, 5 h & -- & fine-tune on our capture & 33.59 & 0.940 & 0.030 & \pr{51} & row above + 10k steps on our 20 min only, lr 1e-4; judge-box 0.089 / 38.4; Link still breaks on the same windows \\
+\midrule
 \multicolumn{11}{l}{\textit{Previous frame as flow source (FlowC2S from scratch): 13M, 100k, no regularisation, $x_0 = z_t + 0.5\,\epsilon$; 32 Euler steps (longer flow matching rerun: 33.71 / 0.938 / 0.028, judge-box 0.087 / 35.9)}} \\
 continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & FlowC2S from scratch & 33.49 & 0.934 & 0.030 & \pr{49} & $-0.21$ dB vs FM rerun (block CI $[-0.29, -0.14]$); ahead until $\sim$60k; judge-box 0.088 / 37.6 \\
 continuous temporal KL-VAE & \best{44.46} & \best{0.995} & CoMo-ViT, full $z$ & 0.561 & FlowC2S + motion loss & 33.37 & 0.934 & 0.031 & \pr{49} & + 0.1 per-sample loss on moving tokens; judge-box 0.086 / 37.8 \\
