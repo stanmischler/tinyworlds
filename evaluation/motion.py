@@ -143,3 +143,43 @@ def motion_box(last, target, size=32, min_px=MIN_MOVING_PX, max_px=2048, max_cam
     box = torch.stack([best // count.shape[-1], best % count.shape[-1]], 1)  # [B, 2]
     ok = (n_moving >= min_px) & (n_moving <= max_px) & (cam.abs().amax(1) <= max_cam) & (count.flatten(1).amax(1) > 0)
     return torch.where(ok[:, None], box, torch.full_like(box, -1)), n_moving
+
+
+SHIFT_SEARCH = 16  # px searched exhaustively around (0, 0)
+SHIFT_MIN_GAIN = 0.10  # a shift must lower the difference by this fraction over no shift, else the camera is still
+SHIFT_SEARCH_GAIN = 0.25  # the search overrules phase correlation (which can exceed the search range) only if this much better
+SHIFT_MIN_OVERLAP = 0.5  # a phase-correlation shift must keep this fraction of the frame
+
+
+def shift_overlap(dy, dx, H, W):
+    # slices (in t, in t+1) of the pixels both frames share when t+1[y, x] ~ t[y - dy, x - dx], with no wraparound
+    y0, y1, x0, x1 = max(dy, 0), H + min(dy, 0), max(dx, 0), W + min(dx, 0)
+    return (slice(y0 - dy, y1 - dy), slice(x0 - dx, x1 - dx)), (slice(y0, y1), slice(x0, x1))
+
+
+@torch.no_grad()
+def best_shift(a, b):
+    # a, b: uint8 tensors [N, H, W, C] -> long (dy, dx) [N, 2] minimising the mean |t+1 - shifted t| over the shared pixels
+    N, H, W, _ = a.shape
+    a, b = a.float(), b.float()
+    candidates = [(dy, dx) for dy in range(-SHIFT_SEARCH, SHIFT_SEARCH + 1) for dx in range(-SHIFT_SEARCH, SHIFT_SEARCH + 1)]
+
+    def error(n, dy, dx):  # mean difference of pair n under one shift
+        in_a, in_b = shift_overlap(dy, dx, H, W)
+        return float((a[n][in_a] - b[n][in_b]).abs().mean())
+
+    errors = torch.stack([(a[(slice(None), *s_a)] - b[(slice(None), *s_b)]).abs().flatten(1).mean(1)
+                          for s_a, s_b in (shift_overlap(dy, dx, H, W) for dy, dx in candidates)])  # [S, N]
+    phase = global_shift(a.mean(-1).cpu(), b.mean(-1).cpu()).tolist()  # FFT on CPU: phase correlation is exact and MPS lacks it
+    still = errors[candidates.index((0, 0))]  # [N]
+    out = []
+    for n in range(N):
+        k = int(errors[:, n].argmin())
+        shift, err = candidates[k], float(errors[k, n])
+        p = tuple(phase[n])
+        if (H - abs(p[0])) * (W - abs(p[1])) >= SHIFT_MIN_OVERLAP * H * W:
+            phase_err = error(n, *p)
+            if err > (1 - SHIFT_SEARCH_GAIN) * phase_err:
+                shift, err = p, phase_err
+        out.append(shift if err < (1 - SHIFT_MIN_GAIN) * float(still[n]) else (0, 0))  # strict: a black pair stays (0, 0)
+    return torch.tensor(out, dtype=torch.long)  # [N, 2]
