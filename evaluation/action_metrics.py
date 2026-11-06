@@ -39,11 +39,13 @@ def kmeans(z, k, iters=50, seed=0):
     centres = [zc[torch.randint(len(zc), (1,), generator=g)].squeeze(0)]
     for _ in range(1, k):
         d = torch.cdist(zc, torch.stack(centres)).min(1).values.pow(2)
+        if d.sum() == 0:  # fewer distinct vectors than k
+            break
         centres.append(zc[torch.multinomial(d / d.sum(), 1, generator=g)].squeeze(0))
     c = torch.stack(centres)
     for _ in range(iters):
         a = torch.cdist(zc, c).argmin(1)
-        c = torch.stack([zc[a == j].mean(0) if (a == j).any() else c[j] for j in range(k)])
+        c = torch.stack([zc[a == j].mean(0) if (a == j).any() else c[j] for j in range(len(c))])
     return c.to(z.device)
 
 
