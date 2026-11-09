@@ -206,18 +206,21 @@ def block_interval(codes, labels, group, blocks, min_pairs, n_boot=200, n_chance
 
 
 def ridge_fit(X, y, ridge):
-    return np.linalg.solve(X.T @ X + ridge * len(X) * np.eye(X.shape[1]), X.T @ y)
+    # X: [N, A + 1], last column = bias, which is not penalised, so a useless vector falls back on the mean of y
+    penalty = np.eye(X.shape[1])
+    penalty[-1, -1] = 0
+    return np.linalg.solve(X.T @ X + ridge * len(X) * penalty, X.T @ y)
 
 
-def linear_shift_readout(vectors, shift, blocks, ridges=(1e-3, 1e-2, 1e-1, 1, 10, 100)):
-    # vectors [N, A], shift [N, 2] -> predicted shift [N, 2]: ridge regression fit on half the blocks and applied to the other half,
-    # both ways, so every pair is predicted by a map that never saw its block. The ridge is chosen inside the fit half, leaving
-    # one block out at a time, so a useless big vector falls back on the mean instead of overfitting
+def linear_shift_readout(vectors, shift, blocks, valid, ridges=(1e-3, 1e-2, 1e-1, 1, 10, 100)):
+    # vectors [N, A], shift [N, 2], valid [N] (computed shift means something) -> predicted shift [N, 2]: ridge regression fit on the
+    # valid pairs of half the blocks and applied to the other half, both ways, so every pair is predicted by a map that never saw
+    # its block. The ridge is chosen inside the fit half, leaving one block out at a time
     X = (vectors - vectors.mean(0)) / vectors.std(0).clip(min=1e-6)
     X = np.concatenate([X, np.ones((len(X), 1))], 1)
     half = np.isin(blocks, np.unique(blocks)[::2])
     pred = np.zeros_like(shift, dtype=np.float64)
-    for fit, apply in ((half, ~half), (~half, half)):
+    for fit, apply in ((half & valid, ~half), (~half & valid, half)):
         Xf, yf, bf = X[fit], shift[fit], blocks[fit]
         errors = [sum(((Xf[bf == b] @ ridge_fit(Xf[bf != b], yf[bf != b], r) - yf[bf == b]) ** 2).sum() for b in np.unique(bf)) for r in ridges]
         pred[apply] = X[apply] @ ridge_fit(Xf, yf, ridges[int(np.argmin(errors))])

@@ -97,7 +97,7 @@ def action_scores(model, device, limit=0, n_boot=0, subset=None):
     out = {'link': link, 'codes': codes, 'actions': actions, 'predicted_shift': predicted, 'labels': labels, 'group': group,
            'shift_predictor': shift_scores(predicted, measured, group, valid)}
     if not limit:
-        out['shift_from_action'] = shift_scores(linear_shift_readout(actions.astype(np.float64), measured, blocks), measured, group, valid)
+        out['shift_from_action'] = shift_scores(linear_shift_readout(actions.astype(np.float64), measured, blocks, valid), measured, group, valid)
     return out
 
 

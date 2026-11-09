@@ -1,7 +1,7 @@
 """Movement-vs-camera action eval on Zelda: see evaluation/action_eval.py for the protocol.
 
 Usage (repo root, PYTHONPATH=$PWD):
-    python scripts/eval/action_eval.py sample --link-positions positions.npz    # set/pairs.json + 2 judges' sheets
+    python scripts/eval/action_eval.py sample --link-positions positions.npz    # set/pairs.json + 2 judges' sheets; the positions only place the zoom and feed the world motion baseline
     python scripts/eval/action_eval.py consensus labels_a.json labels_b.json    # set/labels.json
     python scripts/eval/action_eval.py score --baseline random --baseline constant --baseline shift --baseline world
     python scripts/eval/action_eval.py score --lam como=<como checkpoint dir>   # vectors saved, later re-scored without a model
@@ -29,7 +29,8 @@ PER_SHEET, PER_PART, N_PLANTED, CONF = 4, 30, 20, 0.5
 
 def sample(args):
     os.makedirs(f'{args.root}/set', exist_ok=True)
-    shutil.copy(args.link_positions, f'{args.root}/set/link_positions.npz')
+    if os.path.abspath(args.link_positions) != os.path.abspath(f'{args.root}/set/link_positions.npz'):
+        shutil.copy(args.link_positions, f'{args.root}/set/link_positions.npz')
     wins = test_windows(H5, SEQ - 1, SKIP, SKIP)  # one judged pair (last transition) every SKIP frames
     with h5py.File(H5) as f:
         frames = f['frames'][:]
@@ -120,7 +121,7 @@ def score_one(name, vectors, own_shift, rows, labels, no_shift, args):
     res['link']['block_95'] = block_interval(codes, labels, group, blocks, args.min_pairs, args.n_boot)
     res['link']['headline_kmeans_seeds'] = [link_scores(codes_of(torch.from_numpy(vectors), seed=s), labels, group, blocks, args.min_pairs)['headline'] for s in range(args.kmeans_seeds)]
     valid = np.array([str(r['id']) not in no_shift for r in rows])
-    pred = own_shift if own_shift is not None else linear_shift_readout(vectors, shift, blocks)
+    pred = own_shift if own_shift is not None else linear_shift_readout(vectors, shift, blocks, valid)
     res['shift'] = shift_scores(pred, shift, group, valid)
     res['shift']['source'] = 'own' if own_shift is not None else 'linear read-out'
     os.makedirs(f'{args.root}/{name}', exist_ok=True)
