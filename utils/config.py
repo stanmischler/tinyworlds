@@ -414,6 +414,10 @@ class DynamicsConfig:
 	# other params
 	fps: Optional[int] = None
 	preload_ratio: Optional[float] = None
+	# multi-file datasets (datasets.data_utils.MULTI_VIDEO): rows between a window's frames on the extra 15 fps files
+	# (YouTube); 1 = every stored frame (old behaviour), 2 = the same scroll per step as the base file's skip 4. action_file
+	# rows must hold the pairs (r, r + this) there (experiments/small_action/dynamics_actions.py --extra-skip)
+	extra_frame_skip: int = 1
 	# dataloader throughput (None = defaults in datasets/data_utils.py: 2 workers, no pin_memory)
 	num_workers: Optional[int] = None
 	pin_memory: Optional[bool] = None

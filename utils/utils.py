@@ -374,6 +374,11 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, i
     """Instantiate LatentActionModel from a checkpoint's saved config and load weights."""
     from models.latent_actions import LatentActionModel
     if not (Path(checkpoint_path) / MODEL_CHECKPOINT).exists() and (Path(checkpoint_path) / STATE).exists():
+        import torch
+        if torch.load(Path(checkpoint_path) / STATE, map_location='cpu', weights_only=False).get('model_type') == 'small_actions':
+            # measured shift + small action model (experiments/small_action/dynamics_actions.py), 10 numbers; a study, so imported here only
+            from experiments.small_action.dynamics_actions import load_small_actions
+            return load_small_actions(checkpoint_path, device)
         return load_como_actions(checkpoint_path, device)  # STA-42 action dir (scripts/actions/como_actions.py): no weights of its own
     model_sd, state_cfg, cfg = _load_checkpoint_files(checkpoint_path)
     if state_cfg.get('model_type') == 'laof':  # LAOF (models/laof.py, experiments/laof/train_laof.py): kwargs saved verbatim

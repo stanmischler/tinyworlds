@@ -254,6 +254,8 @@ def main():
         if getattr(args, k, None) is not None:
             data_overrides[k] = getattr(args, k)
     data_overrides['generator'] = loader_generator
+    if args.extra_frame_skip != 1:  # multi-file datasets only; 1 keeps the old call
+        data_overrides['extra_frame_skip'] = args.extra_frame_skip
     _, _, training_loader, _, _ = load_data_and_data_loaders(
         dataset=args.dataset, 
         batch_size=args.batch_size_per_gpu,

@@ -1,0 +1,6 @@
+# 8 numbers, no InfoNCE, a sampled, information penalty far below the level where a collapses to nothing
+run_name: action_noise_tiny
+action_dim: 8
+contrastive_weight: 0.0
+kl_weight: 1.0e-6
+n_updates: 20000

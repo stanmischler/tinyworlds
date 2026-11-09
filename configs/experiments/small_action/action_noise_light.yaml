@@ -1,0 +1,6 @@
+# 8 numbers, no InfoNCE, a sampled with a penalty on its information: a precise key to memorised frames becomes costly
+run_name: action_noise_light
+action_dim: 8
+contrastive_weight: 0.0
+kl_weight: 1.0e-5
+n_updates: 20000

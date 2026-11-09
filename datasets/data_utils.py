@@ -98,21 +98,21 @@ def load_episode_h5(dataset, num_frames=4, preload_ratio=1):
     return train, train
 
 
-def multi_video_files(dataset):
+def multi_video_files(dataset, extra_skip=1):
     """(h5 path, frame_skip, load_start_index) of every file of a MULTI_VIDEO dataset, in the row order of
-    MultiVideoH5Dataset.data: the base file, then the extra 15 fps files (skip 1, from row 0) in sorted order.
-    Paths are relative to the repo root (the cwd), as in MULTI_VIDEO."""
+    MultiVideoH5Dataset.data: the base file, then the extra 15 fps files (skip extra_skip, default 1, from row 0) in
+    sorted order. Paths are relative to the repo root (the cwd), as in MULTI_VIDEO."""
     (base_path, skip, start), extras_glob = MULTI_VIDEO[dataset]
     extras = sorted(glob.glob(extras_glob.lstrip('/')))
-    return [(base_path.lstrip('/'), skip, start)] + [(path, 1, 0) for path in extras]
+    return [(base_path.lstrip('/'), skip, start)] + [(path, extra_skip, 0) for path in extras]
 
 
-def load_multi_video(dataset, num_frames=4):
-    (base_path, skip, start), *extras = multi_video_files(dataset)
+def load_multi_video(dataset, num_frames=4, extra_skip=1):
+    (base_path, skip, start), *extras = multi_video_files(dataset, extra_skip)
     extras = [path for path, _, _ in extras]
-    train = MultiVideoH5Dataset((base_path, skip, start), extras, num_frames=num_frames)
+    train = MultiVideoH5Dataset((base_path, skip, start), extras, num_frames=num_frames, extra_skip=extra_skip)
     print(f"{dataset}: {train.seconds['base'] / 60:.0f} min base + {train.seconds['extras'] / 60:.0f} min from "
-          f"{len(extras)} extra files")
+          f"{len(extras)} extra files" + (f", extra files at skip {extra_skip}" if extra_skip != 1 else ""))
     return train, train
 
 
@@ -165,11 +165,13 @@ def data_loaders(train_data, val_data, batch_size, distributed=False, rank=0, wo
 
 
 def load_data_and_data_loaders(dataset, batch_size, num_frames=1, distributed=False, rank=0, world_size=1, fps=15, preload_ratio=1,
-                               num_workers=None, pin_memory=None, generator=None):
+                               num_workers=None, pin_memory=None, generator=None, extra_frame_skip=1):
+    # extra_frame_skip: rows between frames on a MULTI_VIDEO dataset's extra files (MultiVideoH5Dataset extra_skip); 1 = old behaviour
+    assert extra_frame_skip == 1 or dataset in MULTI_VIDEO, f'extra_frame_skip {extra_frame_skip}: multi-file datasets only'
     if dataset in EPISODE_H5:
         training_data, validation_data = load_episode_h5(dataset, num_frames=num_frames, preload_ratio=preload_ratio)
     elif dataset in MULTI_VIDEO:
-        training_data, validation_data = load_multi_video(dataset, num_frames=num_frames)
+        training_data, validation_data = load_multi_video(dataset, num_frames=num_frames, extra_skip=extra_frame_skip)
     elif dataset in VIDEO_GAMES:
         dataset_cls, video_rel_path, h5_rel_path, game_fps = VIDEO_GAMES[dataset]
         training_data, validation_data = _load_video_dataset_pair(

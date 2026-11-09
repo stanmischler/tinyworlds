@@ -1,0 +1,5 @@
+# 4 numbers, reconstruction alone trains the action encoder
+run_name: no_contrastive_4
+action_dim: 4
+contrastive_weight: 0.0
+n_updates: 20000

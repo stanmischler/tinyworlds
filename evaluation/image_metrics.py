@@ -32,9 +32,9 @@ def ssim(pred, target, window_size=11):
     return s.flatten(1).mean(1)
 
 
-def try_lpips(device):
+def try_lpips(device, net='alex'):
     try:
         import lpips  # optional dependency
-        return lpips.LPIPS(net='alex', verbose=False).to(device).eval()
+        return lpips.LPIPS(net=net, verbose=False).to(device).eval()
     except Exception:
         return None

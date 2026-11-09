@@ -1,0 +1,9 @@
+# 8 numbers, InfoNCE 10x weaker, 5M decoder: less room to memorise next frames from frame t alone
+run_name: weak_contrastive_small_decoder
+action_dim: 8
+contrastive_weight: 0.0004
+n_updates: 20000
+dec_dim: 256
+dec_depth: 6
+dec_heads: 8
+dec_mlp: 1024

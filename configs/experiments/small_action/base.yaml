@@ -1,0 +1,31 @@
+# Small action model on the 20 min Zelda capture: experiments/small_action/. Recipe as configs/como/zelda.yaml.
+device: cuda
+seed: 0
+
+train_h5: data/zelda_train_frames.h5
+train_shifts: data/zelda_train_shifts.npz
+start_index: 1000
+drop_worst: 0.05       # pairs not sampled, by MSE after the shift
+
+dec_dim: 384
+dec_depth: 8
+dec_heads: 6
+dec_mlp: 1536
+contrastive_weight: 0.004
+temperature: 0.1
+error_weight: 0.0     # > 0: pixel weight 1 + this * error after the shift / the mean of its pair
+kl_weight: 0.0        # > 0: a is sampled, and the information it carries is penalised
+
+batch_size: 256
+n_updates: 50000
+learning_rate: 1.0e-4
+lr_floor: 0.1
+betas: [0.9, 0.99]
+weight_decay: 0.0
+grad_clip: 0.5
+amp: true
+
+log_interval: 100
+ckpt_interval: 5000
+use_wandb: true
+wandb_project: tinyworlds
