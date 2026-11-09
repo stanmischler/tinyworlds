@@ -1,0 +1,17 @@
+# long_late_lpips' last weights (step 60000), then our capture raised to 30% of draws (5.8% in the 5 h mix), same LPIPS term, to 100k; fresh optimisers; learning rate 1.25e-4 x (1 - step / 100000): 5e-5 at the start, floor 1e-5 from 92k
+run_name: ours_heavy_long
+init_from: results/long_late_lpips/small_action/checkpoints/step_60000
+n_updates: 100000
+learning_rate: 1.25e-4
+lr_floor: 0.08
+our_share: 0.3
+action_dim: 8
+contrastive_weight: 0.0
+eval_subset: dev
+ckpt_interval: 5000
+train_h5: data/zelda_five_hours_frames.h5
+train_shifts: data/zelda_five_hours_shifts.npz
+memorisation_h5: data/zelda_train_frames.h5
+memorisation_shifts: data/zelda_train_shifts.npz
+lpips_weight: 0.1
+lpips_crop: 32

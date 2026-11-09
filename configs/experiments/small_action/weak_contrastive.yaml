@@ -1,0 +1,5 @@
+# 8 numbers, InfoNCE 10x weaker: at the CoMo weight it trains the action encoder 3-32x more than reconstruction
+run_name: weak_contrastive
+action_dim: 8
+contrastive_weight: 0.0004
+n_updates: 20000

@@ -20,6 +20,14 @@ def test_windows(h5_path, context, frame_skip, sample_stride):
     return windows
 
 
+def split_windows(windows, split_file, split, context, frame_skip):
+    """The windows whose last context frame (frame t, local_start + (context - 1) * frame_skip) lies in one of the frame ranges
+    of `split` in split_file ({"dev": [[first, last], ...], "confirm": [...]}, e.g. the judged pairs' dev/confirm split)."""
+    ranges = json.load(open(split_file))[split]
+    t = lambda s: s + (context - 1) * frame_skip  # noqa: E731
+    return [w for w in windows if any(lo <= t(w[1]) <= hi for lo, hi in ranges)]
+
+
 def load_window_batch(frames_dset, windows, context, frame_skip):
     # -> uint8 [B, T=context+1, H, W, C]
     idx = np.array([[s + k * frame_skip for k in range(context + 1)] for _, s in windows])

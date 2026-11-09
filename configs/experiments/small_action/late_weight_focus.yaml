@@ -1,0 +1,25 @@
+# The shipped action model. late_weight_long's weights at 140000, then 60k further steps to 200k, everything else as late_weight_long, plus the
+# still sampler: half of each batch from still-camera pairs whose change is a compact patch (motion table of five_hours.py, bounds below);
+# lr 1e-5 constant; fresh optimisers
+run_name: late_weight_focus
+init_from: results/late_weight_long/small_action/checkpoints/step_140000
+n_updates: 200000
+learning_rate: 1.0e-5
+lr_floor: 1.0
+error_weight: 1.0
+our_share: 0.3
+still_fraction: 0.5
+still_motion_table: data/zelda_five_hours_motion.npz
+still_min_px: 80
+still_max_px: 600
+still_min_share: 0.7
+action_dim: 8
+contrastive_weight: 0.0
+eval_subset: dev
+ckpt_interval: 5000
+train_h5: data/zelda_five_hours_frames.h5
+train_shifts: data/zelda_five_hours_shifts.npz
+memorisation_h5: data/zelda_train_frames.h5
+memorisation_shifts: data/zelda_train_shifts.npz
+lpips_weight: 0.1
+lpips_crop: 32

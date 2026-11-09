@@ -1,0 +1,18 @@
+# ours_heavy_long's weights at step 100000, then per-pixel error weights on (strength 1: weight 1 + error after the shift / the pair's mean error), same data, our_share and LPIPS term, 40k further steps to 140k; fresh optimisers; learning rate 1e-5 throughout, the floor ours_heavy_long had reached from 92k
+run_name: late_weight_long
+init_from: results/ours_heavy_long/small_action/checkpoints/step_100000
+n_updates: 140000
+learning_rate: 1.0e-5
+lr_floor: 1.0
+error_weight: 1.0
+our_share: 0.3
+action_dim: 8
+contrastive_weight: 0.0
+eval_subset: dev
+ckpt_interval: 5000
+train_h5: data/zelda_five_hours_frames.h5
+train_shifts: data/zelda_five_hours_shifts.npz
+memorisation_h5: data/zelda_train_frames.h5
+memorisation_shifts: data/zelda_train_shifts.npz
+lpips_weight: 0.1
+lpips_crop: 32

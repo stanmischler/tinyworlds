@@ -1,0 +1,11 @@
+# 8 numbers, no InfoNCE, MSE only (the start of the shipped chain, from scratch) on the 5 h capture (our 20 min + 4 h 49 YouTube, every second equally likely, pairs with the same scroll in px as ours: rows t, t+4 on ours, t, t+2 on YouTube), 20k steps; memorisation scored on our capture
+run_name: five_hours_plain
+action_dim: 8
+contrastive_weight: 0.0
+eval_subset: dev
+n_updates: 20000
+ckpt_interval: 2500
+train_h5: data/zelda_five_hours_frames.h5
+train_shifts: data/zelda_five_hours_shifts.npz
+memorisation_h5: data/zelda_train_frames.h5
+memorisation_shifts: data/zelda_train_shifts.npz

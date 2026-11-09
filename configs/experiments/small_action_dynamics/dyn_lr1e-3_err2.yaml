@@ -1,0 +1,39 @@
+# sweep arm of "flow matching, small action": small_action_dynamics.yaml for 20k steps (own cosine schedule), learning rate 1e-3,
+# error weight exponent focal_gamma 2 (the error-weighted loss has no linear strength: its weight is (e / mean e)^focal_gamma).
+# Scored on the dev half only (dynamics_score.py). Launch: header of training.yaml.
+batch_size_per_gpu: 64
+gradient_accumulation_steps: 1
+n_updates: 20000
+learning_rate: 0.001
+log_interval: 2000   # checkpoint + sampled-prediction PNG
+
+use_actions: true
+
+# YouTube windows: rows (r, r + 2, r + 4, ...), the action model's YouTube pair step (7-8.75 px moving median, as our capture's
+# skip 4); our capture stays at skip 4. Departure from PR #51's 5 h recipe (YouTube skip 1).
+extra_frame_skip: 2
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 12
+
+dynamics_type: flow
+fm_pred: v
+fm_shift: 3.0
+qk_norm: true
+ema_decay: 0.999
+seed: 0
+
+token_loss: focal
+focal_gamma: 2
+focal_exclude_scroll_strip: true
+
+video_tokenizer_path: results/zelda_more_data_tokenizer/video_tokenizer/checkpoints/video_tokenizer_step_59000
+latent_actions_path: results/small_action_actions_late_weight_focus_200000_yt2
+action_file: data/zelda_more_train_small_action_late_weight_focus_200000_yt2.npy
+
+test_eval_h5: data/zelda_test_frames.h5
+test_eval_interval: 0   # off: no held-out curve during the sweep (dev is scored after training, confirm never)
+
+checkpoint:

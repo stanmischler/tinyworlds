@@ -54,7 +54,7 @@ from evaluation.link_box import (overlay_windows, judge_boxes, box_lpips, try_in
                                  motion_weights, motion_weighted_psnr)
 from evaluation.motion import motion_box, MIN_MOVING_PX
 from evaluation.spectrum import radial_power_sum, band_deficits
-from evaluation.windows import test_windows, load_window_batch, to_model_range, to_unit
+from evaluation.windows import test_windows, split_windows, load_window_batch, to_model_range, to_unit
 from utils.inference_utils import load_models, default_num_steps
 from utils.utils import find_latest_checkpoint, dynamics_config
 
@@ -97,6 +97,9 @@ def main():
     p.add_argument('--device', default='mps' if torch.backends.mps.is_available() else ('cuda' if torch.cuda.is_available() else 'cpu'))
     p.add_argument('--seed', type=int, default=0, help='seed for the random actions')
     p.add_argument('--n-seeds', type=int, default=8, help='windows shown in the PNG: first window of the first n blocks')
+    p.add_argument('--split-file', help='json of frame ranges per split (e.g. eval_results/action_eval/zelda/set/split.json): with '
+                                        '--split, only the windows whose frame t lies in that split')
+    p.add_argument('--split', help='split name in --split-file, e.g. dev or confirm')
     p.add_argument('--limit', type=int, help='evaluate only the first N windows (smoke test)')
     p.add_argument('--out-dir', default='eval_results')
     p.add_argument('--name', help='output file stem; default <run-dir basename>_<action-mode>')
@@ -138,6 +141,9 @@ def main():
     rng = torch.Generator(device='cpu').manual_seed(args.seed)
 
     windows = test_windows(args.test_h5, args.context, args.frame_skip, args.sample_stride)
+    assert bool(args.split_file) == bool(args.split), '--split-file and --split go together'
+    if args.split:
+        windows = split_windows(windows, args.split_file, args.split, args.context, args.frame_skip)
     if args.limit:
         windows = windows[:args.limit]
     h5 = h5py.File(args.test_h5, 'r')

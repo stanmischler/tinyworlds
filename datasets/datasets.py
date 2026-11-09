@@ -224,18 +224,21 @@ class MultiVideoH5Dataset(Dataset):
     base: (h5 path, frame_skip, load_start_index), e.g. data/zelda_train_frames.h5 at 60 fps, skip 4, from row 1000.
       One segment, as ZeldaDataset reads it. Its windows are indexed by 15 fps slot (start // frame_skip): __getitem__
       draws the phase inside the slot at random, so a slot weighs as much as one extra-file window.
-    extras: 15 fps .h5 files of scripts/data/build_video_h5.py (frame_skip 1), non-gameplay already removed by
+    extras: 15 fps .h5 files of scripts/data/build_video_h5.py, non-gameplay already removed by
       scripts/data/flag_video_frames.py --apply; their `segment` [N] (id of the contiguous run each frame came from)
-      keeps every window inside one run.
+      keeps every window inside one run. extra_skip: rows between a window's frames there (1 = every stored frame, the
+      old behaviour; 2 = rows (r, r + 2, ...), the same scroll per step as the base file's skip 4, as the small action
+      model's pairs). Every row still starts one window, so the draw per second of video is unchanged.
     All files are concatenated into self.data [N, H, W, C] (one RAM copy; val is the same object).
     Returns (frames [T, C, H, W] in [-1, 1], 0), the same item format as ZeldaDataset; when train_dynamics.py sets
     self.actions [N, A] (row r = action of the pair (r, r + the file's skip), aligned with self.data), the second item is
     the actions [T - 1, A] of the window's first T - 1 rows.
     """
 
-    def __init__(self, base, extras, num_frames=4, load_chunk_size=4096):
+    def __init__(self, base, extras, num_frames=4, load_chunk_size=4096, extra_skip=1):
         base_path, base_skip, base_start = base
         self.num_frames = num_frames
+        self.extra_skip = extra_skip           # every window of an extra file: rows start + extra_skip * arange(T)
         self.frame_skip = base_skip            # the base file's skip: the test curve scores the base video's test split
         self.load_start_index = base_start     # action_file rows: the base .h5 from row 0, then the extras (como_actions.py)
 
@@ -264,7 +267,7 @@ class MultiVideoH5Dataset(Dataset):
         base_starts = self._window_starts(segments[0], base_skip)
         self.base_slots = np.unique(base_starts // base_skip)          # [S] 15 fps slots of the base file
         self.base_starts = set(base_starts.tolist())
-        self.extra_starts = np.concatenate([offset + self._window_starts(seg, 1)
+        self.extra_starts = np.concatenate([offset + self._window_starts(seg, extra_skip)
                                             for offset, seg in zip(offsets[1:-1], segments[1:])] or [np.zeros(0, int)])
         self.seconds = {'base': len(self.base_slots) / 15, 'extras': len(self.extra_starts) / 15}
 
@@ -285,7 +288,7 @@ class MultiVideoH5Dataset(Dataset):
             phases = [p for p in range(self.frame_skip) if slot * self.frame_skip + p in self.base_starts]
             phase = phases[int(torch.randint(len(phases), ()))] if random_phase else phases[0]
             return slot * self.frame_skip + phase + self.frame_skip * np.arange(self.num_frames)
-        return self.extra_starts[index - len(self.base_slots)] + np.arange(self.num_frames)
+        return self.extra_starts[index - len(self.base_slots)] + self.extra_skip * np.arange(self.num_frames)
 
     def __getitem__(self, index: int):
         rows = self.window_rows(index, random_phase=True)                                         # [T]

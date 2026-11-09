@@ -1,0 +1,16 @@
+# five_hours_plain's last weights (step 20000), then an LPIPS term (weight .1, AlexNet, on the 32 px crop holding the most error after the shift), to 60k; fresh optimisers; learning rate .9e-4 x (1 - step / 60000): .6e-4 at the start, floor 1e-5 (as base) from 53.3k
+run_name: long_late_lpips
+init_from: results/five_hours_plain/small_action/checkpoints/step_20000
+n_updates: 60000
+learning_rate: 9.0e-5
+lr_floor: 0.11111
+action_dim: 8
+contrastive_weight: 0.0
+eval_subset: dev
+ckpt_interval: 5000
+train_h5: data/zelda_five_hours_frames.h5
+train_shifts: data/zelda_five_hours_shifts.npz
+memorisation_h5: data/zelda_train_frames.h5
+memorisation_shifts: data/zelda_train_shifts.npz
+lpips_weight: 0.1
+lpips_crop: 32

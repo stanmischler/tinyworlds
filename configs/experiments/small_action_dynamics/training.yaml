@@ -1,0 +1,52 @@
+# "flow matching, small action": 13M latent flow matching on ZELDA_MORE_TRAIN (our 20 min + 4h49 YouTube), the 5 h tokenizer of
+# "more data flow matching", conditioned on our 10-number action (s + a) from a frozen small action model. A 6-arm 20k sweep
+# (dyn_lr{3e-4,1e-3}_err{0.5,1,2}.yaml) picks learning rate and error weight exponent on the dev half; the 100k run
+# (small_action_dynamics.yaml) takes the winner's values. Launched through experiments/small_action/modal_small_action.py, which
+# writes the action dir and action file of the chosen action model ("run@step") into a derived copy of the dynamics yaml:
+#   dynamics_actions --action <run@step>          precompute s + a, mean/std, frame step check
+#   train_dynamics --config <yaml stem> --action <run@step> --run-name <run>
+#   eval_small_dynamics --run <run> --action <run@step> --split dev|confirm   (32 Euler steps, judge boxes)
+#   pick_sweep --runs <run>,<run>,...             selection rule (experiments/small_action/dynamics_score.py)
+# Exact commands: the Runs section of this study's ledger.
+use_wandb: true
+wandb_project: tinyworlds
+
+dataset: ZELDA_MORE_TRAIN  # our train file from row 1000 + data/zelda_youtube/*.h5, every second of gameplay equally likely
+                          # YouTube windows at rows (r, r + 2, ...): extra_frame_skip 2 in the dynamics yamls (our capture: skip 4)
+preload_ratio: 1.0        # ignored by the multi-file dataset (always all frames, ~16 GB)
+
+patch_size: 4             # 48 pixel values per token; 1024 tokens per 128px frame
+context_length: 4
+frame_size: 128
+latent_dim: 16            # KL c16 tokenizer
+num_bins: 4               # FSQ only
+n_actions: 16             # logging only (k-means codes of the 10 numbers)
+
+amp: true
+tf32: true
+compile: true
+
+num_workers: 8
+pin_memory: true
+
+distributed:
+  use_ddp: false
+  use_fsdp: false
+  reshard_after_forward: false
+nproc_per_node: 1
+standalone: true
+
+video_tokenizer_config: configs/experiments/zelda_more_data/tokenizer.yaml   # unused (run_video_tokenizer false)
+latent_actions_config: configs/experiments/lam_loop/i4_bal16_seed2.yaml                  # unused (run_latent_actions false)
+dynamics_config: configs/experiments/small_action_dynamics/small_action_dynamics.yaml   # sweep arms override it
+run_video_tokenizer: false   # frozen 5 h tokenizer: video_tokenizer_path in the dynamics yamls
+run_latent_actions: false    # our actions: latent_actions_path + action_file in the dynamics yamls
+run_dynamics: true
+
+optimizer: adamw
+muon_momentum: 0.95
+muon_backend_steps: 5
+use_moe: false
+num_experts: 4
+top_k_experts: 2
+moe_aux_loss_coeff: 0.01
