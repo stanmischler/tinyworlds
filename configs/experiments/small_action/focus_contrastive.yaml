@@ -1,0 +1,10 @@
+# The simple recipe, one stage from scratch: 8 numbers, MSE on the aligned frame + InfoNCE on the action, half of each batch from the
+# still-camera pairs whose change is a compact patch (most often Link walking). Merged over base.yaml and curated_data.yaml (no text, idle
+# pairs at 5% of the batch); the learning rate is base's: 1e-4, linear to 1e-5. A run's yaml sets run_name, contrastive_weight and n_updates.
+action_dim: 8
+still_fraction: 0.5
+still_min_px: 80
+still_max_px: 600
+still_min_share: 0.7
+eval_subset: dev
+ckpt_interval: 5000

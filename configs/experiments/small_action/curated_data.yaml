@@ -1,0 +1,10 @@
+# The curated 5 h data for the action model: no pair with a dialog box or menu on screen, and the pairs where nothing changes on a still
+# screen (fewer than idle_max_px changed pixels) held to idle_fraction of each batch. Data keys only: a run's yaml is merged over it.
+train_h5: data/zelda_five_hours_frames.h5
+train_shifts: data/zelda_five_hours_shifts.npz
+memorisation_h5: data/zelda_train_frames.h5
+memorisation_shifts: data/zelda_train_shifts.npz
+still_motion_table: data/zelda_five_hours_motion.npz   # changed pixels and dialog flags per pair (experiments/small_action/five_hours.py)
+drop_dialog: true
+idle_fraction: 0.05
+idle_max_px: 20

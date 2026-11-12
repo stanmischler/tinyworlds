@@ -1,0 +1,9 @@
+# Second run of the simple recipe, merged over base.yaml and simple_recipe.yaml. Versus the first run (focus_contrastive_long), three changes:
+#   the stricter focus pool (at least 200 changed pixels; already the default of simple_recipe.yaml),
+#   error weights (a pixel counts 1 + its error after the shift / the mean of its pair),
+#   half of the pairs cut to a 96 px window that follows the shift, as a still camera would.
+# Everything else is simple_recipe.yaml: 8 action numbers, focus pool at 50% of each batch, InfoNCE weight 0.0001, MSE, 200k steps.
+#   bash cluster/lix/run.sh            (or: sbatch cluster/lix/run.sh)
+run_name: weights_and_window
+error_weight: 1.0
+window_fraction: 0.5
