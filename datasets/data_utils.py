@@ -63,6 +63,7 @@ TEST_H5 = {
     'SONIC_TRAIN': 'data/sonic_test_frames.h5',
     'ZELDA_TRAIN': 'data/zelda_test_frames.h5',
     'ZELDA_MORE_TRAIN': 'data/zelda_test_frames.h5',
+    'BIGFISH': 'data/bigfish_test_frames.h5',   # scripts/data/convert_procgen.py: row groups spread over Procgen's test split
 }
 
 # multi-file video datasets (datasets.MultiVideoH5Dataset): base (h5, frame_skip, load_start_index) as the *_TRAIN game
@@ -88,6 +89,7 @@ EPISODE_H5 = {
     'POINTMAZE': '/data/point_maze_frames.h5',   # scripts/data/convert_dinowm.py --env point_maze, 10-D actions
     'WALL': '/data/wall_frames.h5',              # scripts/data/convert_dinowm.py --env wall, 10-D actions
     'OBJ3D': '/data/obj3d_train_frames.h5',      # scripts/data/convert_obj3d.py, no actions
+    'BIGFISH': '/data/bigfish_frames.h5',        # scripts/data/convert_procgen.py, 64 px; true buttons kept apart, not served
 }
 PUSHT_TRAIN_H5 = EPISODE_H5['PUSHT']
 

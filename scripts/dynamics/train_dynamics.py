@@ -286,7 +286,7 @@ def main():
         supported = is_flow and latent_action_model is not None and not args.distributed.use_fsdp
         assert supported or not args.test_eval_h5, \
             'test_eval_h5 needs a flow dynamics model with an action model, without FSDP (it runs on rank 0 only)'
-        assert hasattr(training_loader.dataset, 'frame_skip'), 'test curve: block-split video datasets only (no episode .h5)'
+        assert hasattr(training_loader.dataset, 'frame_skip'), 'test curve: the training dataset must define frame_skip'
         if supported:
             from evaluation.test_curve import TestCurve
             test_curve = TestCurve(test_h5, context=args.context_length - 1, frame_skip=training_loader.dataset.frame_skip,

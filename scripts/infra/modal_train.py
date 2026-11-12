@@ -104,6 +104,23 @@ def convert_pusht():
     data_volume.commit()
 
 
+@app.function(volumes=VOLUMES, cpu=16, memory=32768, timeout=4 * 60 * 60)
+def convert_procgen(game: str = "bigfish", train_frames: int = 1_000_000, test_frames: int = 50_000):
+    """Download one Procgen game's first train file into the data volume and convert it (scripts/data/convert_procgen.py)
+    into data/<game>_frames.h5 and data/<game>_test_frames.h5. The raw parquet file is deleted afterwards."""
+    import shutil
+    import subprocess
+
+    subprocess.run(
+        ["python", "scripts/data/convert_procgen.py", "--game", game, "--train-frames", str(train_frames),
+         "--test-frames", str(test_frames), "--out-dir", "data", "--raw-dir", "data/procgen_raw", "--workers", "16"],
+        cwd=REPO_DIR,
+        check=True,
+    )
+    shutil.rmtree(f"{REPO_DIR}/data/procgen_raw", ignore_errors=True)
+    data_volume.commit()
+
+
 @app.function(gpu=GPU, volumes=VOLUMES, memory=16384, timeout=2 * 60 * 60)
 def eval_pusht(run_dir: str, extra_args: str = ""):
     """Run scripts/eval/eval_pusht.py on a run in the results volume (run_dir relative to results/), e.g.
