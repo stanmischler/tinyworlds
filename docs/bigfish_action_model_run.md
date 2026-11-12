@@ -7,7 +7,21 @@ the pull request "Procgen Bigfish: data, tokenizer, action model".
 Needs: one GPU with 32 GB or more (about 17 GB of frames and cached features sit on the GPU before the model; the
 smoke test prints the real peak as `mem_gb`), Python 3.10 or newer, and internet for step 2 only.
 
-## Steps (any GPU machine)
+## One command
+
+Put `bigfish_tokenizer_100k.zip` (sent separately) in the repo root, then:
+
+```bash
+git fetch origin && git checkout stanmischler/sta-283-look-for-additional-datasets
+bash scripts/infra/run_bigfish_action_model.sh
+```
+
+It builds the data, unzips the checkpoint, runs a 20-step smoke test, trains, writes the report and packs everything
+to send back into `bigfish_action_model_results.tgz`. Run it again after a stop: finished steps are skipped and the
+training resumes. On a cluster whose GPU nodes have no internet, run it once with `--prepare` on a node with
+internet (data and checkpoint), then without the flag in the GPU job.
+
+## The same steps by hand
 
 Run everything from the repo root.
 
