@@ -81,7 +81,7 @@ Each line of `results/bigfish_action_model/como/log.jsonl` (also printed) holds,
 |---|---|---|
 | `check/probe_mlp_acc` | a probe reads the true control (9 classes) from the action, on held-out pairs | well above `check/majority_acc` (about 0.37) and rising |
 | `check/shuffle_gap` | how much worse the decoder gets with another pair's action | clearly above 0 |
-| `button_acc` vs `check/head_acc` | the button head on its 10,000 labelled pairs vs on held-out pairs | close to each other; a wide gap means the labels are memorised |
+| `button_acc` vs `check/head_acc` | the button head on its 25,000 labelled pairs vs on held-out pairs | close to each other; a wide gap means the labels are memorised |
 | `val/recon` vs `val/copy` | decoder error vs the error of copying frame t | `val/recon` below `val/copy` |
 
 ## What to send back

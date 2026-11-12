@@ -43,7 +43,7 @@ judge: false           # the action judge is Zelda-only
 
 contrastive_weight: 0  # off: the positive (action over t..t+2) is what stays constant over two steps = the other fish, not the player
 decoder_frames: 2      # the decoder sees frames t-1 and t: the other fish's speeds are predictable, the player's move is not
-button_labels: 10000   # weak supervision: true control of 10,000 fixed training pairs (1%), linear head on the action
+button_labels: 25000   # weak supervision: true control of 25,000 fixed training pairs (2.5%), linear head on the action
 button_batch: 64       # labelled pairs per step
 button_weight: 0.1     # x cross-entropy (the pixel loss is near 1e-3)
 checkpoint: auto       # a restarted container resumes from the newest checkpoint of this run
