@@ -1,0 +1,21 @@
+# Per-frame KL tokenizer on Procgen Bigfish (64 px): the benchmark recipe (configs/experiments/benchmarks/tokenizer.yaml)
+# unchanged. 16 continuous channels per 4x4 patch -> 16x16 tokens per frame. 30k steps x 256 frames = about 8 passes
+# over the 1M training frames.
+batch_size_per_gpu: 64
+gradient_accumulation_steps: 1
+n_updates: 30000
+learning_rate: 0.0002
+log_interval: 1000        # checkpoint + reconstruction PNG every 1000 steps; the last checkpoint is step 29000
+context_length: 4         # frames per clip (per-frame tokenizer: only the batch size in frames)
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 8
+
+per_frame: true
+bottleneck: kl
+latent_noise: 0.8
+kl_weight: 1.0e-6
+
+checkpoint:

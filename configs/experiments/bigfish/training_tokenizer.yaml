@@ -1,0 +1,42 @@
+# Stage 1 of the Bigfish pipeline: the per-frame KL tokenizer alone. Data: scripts/data/convert_procgen.py
+# (modal run scripts/infra/modal_train.py::convert_procgen). Held-out curve on data/bigfish_test_frames.h5.
+dataset: BIGFISH
+video_tokenizer_config: configs/experiments/bigfish/tokenizer.yaml
+run_video_tokenizer: true
+run_latent_actions: false
+run_dynamics: false
+use_wandb: true
+wandb_project: tinyworlds
+preload_ratio: 1.0
+
+context_length: 4         # frames per clip, as in the tokenizer yaml
+patch_size: 4             # 256 tokens per 64px frame
+frame_size: 64            # the .h5 is 64 px (the Modal launcher re-reads it from the .h5)
+latent_dim: 16            # KL tokenizer: 16 continuous channels per token
+num_bins: 4               # FSQ only (unused)
+n_actions: 16             # unused (no LAM); required by the schema
+
+amp: true
+tf32: true
+compile: true
+
+num_workers: 8
+pin_memory: true
+
+distributed:
+  use_ddp: false
+  use_fsdp: false
+  reshard_after_forward: false
+nproc_per_node: 1
+standalone: true
+
+latent_actions_config: configs/latent_actions.yaml   # not run
+dynamics_config: configs/dynamics.yaml                 # not run
+
+optimizer: adamw
+muon_momentum: 0.95
+muon_backend_steps: 5
+use_moe: false
+num_experts: 4
+top_k_experts: 2
+moe_aux_loss_coeff: 0.01
