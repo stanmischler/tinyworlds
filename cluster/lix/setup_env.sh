@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-off setup for the action-model run on a cluster with internet on the node where this is run. From the repo root:
-#   bash cluster/lix/setup_env.sh                        downloads the data files missing from data/ (private Hugging Face dataset: hf auth login first)
+#   bash cluster/lix/setup_env.sh                        downloads the data files missing from data/ (Hugging Face dataset with approved access: hf auth login first)
 #   DATA_SRC=/path/to/the/7/files bash cluster/lix/setup_env.sh     links the data files from another folder into data/ instead
 #   VENV=/path/to/your/env bash cluster/lix/setup_env.sh  use an environment you built (e.g. on the cluster's PyTorch): nothing is installed in it
 # Without VENV it builds .venv (PYTHON=python3.12 to choose the interpreter) with the package versions the run was developed on
@@ -26,7 +26,7 @@ mkdir -p data results logs  # logs/: Slurm does not create the folder of its out
 if [ -n "${DATA_SRC:-}" ]; then
     while read -r f; do [ -e "data/$f" ] || ln -sfn "$(cd "$DATA_SRC" && pwd)/$f" "data/$f"; done < cluster/lix/data_files.txt
 fi
-# files still missing come from the private Hugging Face dataset (log in first: hf auth login, with an account that has access)
+# files still missing come from the Hugging Face dataset (log in first: hf auth login, with an account approved on the dataset page)
 HF_DATA="${HF_DATA:-stanmischler/zelda-action-model-data}"
 "$VENV/bin/python" - "$HF_DATA" <<'PY'
 import os, sys

@@ -27,7 +27,9 @@ Seven files go into `data/` (listed in `cluster/lix/data_files.txt`, checksums i
 | `zelda_train_frames.h5`, `zelda_train_shifts.npz` | 2.1 GB | our capture alone, for the train-versus-held-out gap |
 | `zelda_test_frames.h5`, `zelda_test_shifts.npz` | 0.25 GB | held-out capture, for the scores |
 
-They are in a private Hugging Face dataset, `stanmischler/zelda-action-model-data`. With an account that has been given access:
+They are in a Hugging Face dataset whose files are only served to approved accounts:
+https://huggingface.co/datasets/stanmischler/zelda-action-model-data . If your account is not approved yet, press "request access"
+on that page. Then log in on the cluster:
 
     pip install huggingface_hub && hf auth login
 
