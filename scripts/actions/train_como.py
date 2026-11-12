@@ -290,13 +290,18 @@ def main():
 
         def featurize(b):
             # (x_t, x_b, x_j[, x_prev]) float [B, C, H, W] -> (f_t, f_b, f_j [B, S, D], x_a, x_b); x_a = x_t, or [x_prev, x_t] on the channel axis
-            return (*[features(x) for x in b[:3]], torch.cat([b[3], b[0]], 1) if two_frames else b[0], b[1])
+            f_t, f_b = features(b[0]), features(b[1])
+            f_j = features(b[2]) if cfg.contrastive_weight > 0 else f_b  # the jittered frame only feeds the contrastive term
+            return f_t, f_b, f_j, torch.cat([b[3], b[0]], 1) if two_frames else b[0], b[1]
     vb = featurize(batch(vframes, vfeats, vstarts, vidx, cfg.gap, cfg.jitter, vgen, device, two_frames))
     check = None  # button_check: N held-out pairs (t, t + gap) with their true buttons, scored every val_interval
     if cfg.get('button_check', 0):
         assert not (joint or drawing), 'button_check: CoMo on frozen features only'
         assert cfg.gap == 1 and cfg.jitter >= 1, 'button_check: the button of row t labels the pair (t, t + 1); jitter >= 1 keeps the duplicated last frame of an episode out of the pairs'
-        t_check = torch.as_tensor(vstarts[torch.randperm(len(vstarts), generator=vgen)[:cfg.button_check].numpy()], device=device)  # [N]
+        rows = np.sort(vstarts[torch.randperm(len(vstarts), generator=vgen)[:cfg.button_check].numpy()])  # [N] in file order
+        half = len(rows) // 2  # the probe is fitted on the first half and scored on the second: keep the two halves in
+        mix = np.concatenate([torch.randperm(half, generator=vgen).numpy(), half + torch.randperm(len(rows) - half, generator=vgen).numpy()])
+        t_check = torch.as_tensor(rows[mix], device=device)  # [N] different parts of the file, shuffled inside each half
         with h5py.File(cfg.test_h5, 'r') as f:
             buttons = torch.from_numpy(f['buttons'][:len(vframes)]).to(device)[t_check]  # [N], read here and nowhere else
         x_a, x_b = to_pixels(vframes[t_check]), to_pixels(vframes[t_check + cfg.gap])  # [N, C, H, W]
@@ -344,6 +349,11 @@ def main():
     if cfg.checkpoint == 'auto':  # newest checkpoint of this run, or a fresh start
         done = [int(d.rsplit('_', 1)[1]) for d in os.listdir(ckpt_dir) if d.startswith('como_step_') and os.path.exists(f'{ckpt_dir}/{d}/{STATE}')]
         cfg.checkpoint = f'{ckpt_dir}/como_step_{max(done)}' if done else None
+        if cfg.checkpoint:  # a leftover run of the same name with other settings must not be continued silently
+            saved = torch.load(f'{cfg.checkpoint}/{STATE}', map_location='cpu', weights_only=False)['config']
+            keys = (*COMO_ARCH_KEYS, 'button_labels', 'button_batch', 'button_weight', 'train_h5', 'tokenizer_path')
+            changed = {k: (saved.get(k), cfg.get(k)) for k in keys if saved.get(k) != cfg.get(k)}
+            assert not changed, f'{cfg.checkpoint} was trained with other settings (saved, now): {changed}; use another run_name or delete it'
     if drawing and model.fm and not cfg.checkpoint:  # unit-RMS pixels for the flow (as the unit-RMS latents of STA-62)
         idx = torch.randperm(len(frames), generator=torch.Generator().manual_seed(0))[:4096].to(frames.device)
         model.pixel_scale.fill_(to_pixels(frames[idx]).pow(2).mean().sqrt().item())
@@ -392,8 +402,9 @@ def main():
         if labelled is not None:  # a separate labelled mini-batch: cross-entropy of the head's control scores, through z into the IDM
             pick = torch.randint(0, len(labelled[0]), (cfg.button_batch,), generator=gen).to(device)
             t, y = labelled[0][pick], labelled[1][pick]
+            f_t, f_n = features(to_pixels(frames[t])), features(to_pixels(frames[t + 1]))  # fp32, as the main batch's
             with amp():
-                scores = como.button_logits(features(to_pixels(frames[t])), features(to_pixels(frames[t + 1])))  # [Bl, 9]
+                scores = como.button_logits(f_t, f_n)  # [Bl, 9]
             ce = F.cross_entropy(scores.float(), y)
             (cfg.button_weight * ce).backward()
             logs['button_ce'], logs['button_acc'] = ce.item(), (scores.argmax(1) == y).float().mean().item()

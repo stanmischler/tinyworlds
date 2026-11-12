@@ -1,7 +1,8 @@
 # Small CoMo-style action model on Procgen Bigfish (64 px): one action vector of 8 numbers, learned from the frozen
 # per-frame KL tokenizer's hidden features (2x2 merged -> 64 tokens x 1024), encoded live per batch. Transitions t -> t+1.
-# The .h5 files record the true buttons; they are used only by the action check (button_check), never as an input.
-# Merged on top of configs/como/zelda.yaml (the CoMo recipe: MSE + 0.004 InfoNCE, Adam, lr 1e-4 -> 1e-5, batch 256):
+# The .h5 files record the true buttons: the held-out ones are read by the action check (button_check) only, and
+# button_labels training pairs supervise a linear head on the action. Never an input of the model.
+# Merged on top of configs/como/zelda.yaml (the CoMo recipe: MSE, Adam, lr 1e-4 -> 1e-5, batch 256; no InfoNCE here):
 #   python scripts/actions/train_como.py --config configs/como/zelda.yaml,configs/como/bigfish.yaml
 run_name: bigfish_action_model
 

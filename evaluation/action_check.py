@@ -1,9 +1,10 @@
 """Action check: how well a learned action matches the true button, on held-out pairs of a dataset that records buttons
-(Procgen, scripts/data/convert_procgen.py). The buttons are read here only; no model is ever trained on them.
+(Procgen, scripts/data/convert_procgen.py). The held-out buttons are read here only; training sees at most the few
+labelled training pairs of train_como's button_labels.
 
 Three readings of the same held-out pairs (t, t+1):
   - probe: predict the true button from the action z. A linear and a small MLP classifier are fitted on the first half of
-    the pairs and scored on the second half. `majority_acc` is the score of always answering the most frequent button.
+    the pairs and scored on the second half (the caller puts different parts of the file in the two halves). `majority_acc` is the score of always answering the most frequent button.
   - shuffle gap: decoder error with z taken from a pair that has a different true button, minus the error with the pair's
     own z = how much the decoder uses z.
   - same-button gap: the same with z taken from another pair that has the same true button. If z held nothing but the
