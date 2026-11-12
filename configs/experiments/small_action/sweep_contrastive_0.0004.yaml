@@ -1,0 +1,4 @@
+# Weight sweep of the simple recipe (base, curated_data, focus_contrastive), 20k steps: InfoNCE weight 0.0004
+run_name: sweep_contrastive_0.0004
+contrastive_weight: 0.0004
+n_updates: 20000

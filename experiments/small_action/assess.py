@@ -113,7 +113,7 @@ def load_group(rows, table, device):
 
 @torch.no_grad()
 def rolled_predict(model, x_a, x_b, s, batch=64):
-    # the prediction when each pair gets the action of the next pair of its group
+    # the prediction when each pair gets the action of the previous pair of its group
     actions = torch.cat([model.encoder(shift_frames(x_a[i:i + batch], s[i:i + batch]), x_b[i:i + batch]) for i in range(0, len(x_a), batch)]).roll(1, 0)
     out = []
     for i in range(0, len(x_a), batch):
@@ -143,7 +143,8 @@ def swapped_predict(encode, decode, x_a, s, pool, donors, batch=64):
 
 
 def link_assessment(model, device, lpips_fn, subset, limit=0):
-    # during training: {link_<group>_lpips, link_<group>_psnr} of one model, flat for the log
+    # during training: {link_<group>_lpips, link_<group>_psnr, link_<group>_gain} of one model, flat for the log; gain = box PSNR with the
+    # pair's own action minus with the previous pair's of its group, in dB: 0 means the decoder does not read the action
     table = np.load(TEST_SHIFTS)['shifts'][:, GAP_ROW].astype(np.float32)
     groups, yx = judged_groups(subset)
     out = {}
@@ -156,6 +157,7 @@ def link_assessment(model, device, lpips_fn, subset, limit=0):
         pred, target = crops(predict(lambda p, q, r: model.predict(p, q, r)[0], x_a, x_b, s), corners), crops(x_b.cpu(), corners)
         out[f'link_{group}_lpips'] = float(box_lpips_values(pred, target, lpips_fn, device).mean())
         out[f'link_{group}_psnr'] = box_psnr(pred, target)
+        out[f'link_{group}_gain'] = out[f'link_{group}_psnr'] - box_psnr(crops(rolled_predict(model, x_a, x_b, s), corners), target)
     return out
 
 

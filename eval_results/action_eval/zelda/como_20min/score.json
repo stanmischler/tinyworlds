@@ -1,0 +1,84 @@
+{
+ "name": "como_20min",
+ "n_codes": 16,
+ "link": {
+  "still": {
+   "n": 541,
+   "n_weighted": 157.0,
+   "labels": {
+    "U": 22,
+    "D": 26,
+    "L": 22,
+    "R": 32,
+    "DR": 8,
+    "STANDING": 416,
+    "TURN": 15
+   },
+   "nmi_adj": 0.2427,
+   "nmi": 0.2882,
+   "nmi_chance": 0.06,
+   "purity": 0.4072,
+   "majority": 0.2038,
+   "codes_used": 6
+  },
+  "moving": {
+   "n": 659,
+   "n_weighted": 659.0,
+   "labels": {
+    "U": 100,
+    "D": 97,
+    "L": 71,
+    "R": 183,
+    "UL": 54,
+    "UR": 57,
+    "DL": 30,
+    "DR": 52,
+    "STANDING": 15
+   },
+   "nmi_adj": 0.7991,
+   "nmi": 0.8165,
+   "nmi_chance": 0.0866,
+   "purity": 0.9256,
+   "majority": 0.2777,
+   "codes_used": 14
+  },
+  "headline": 0.2427,
+  "block_95": {
+   "still": {
+    "low": 0.073,
+    "high": 0.362,
+    "n_resamples": 200
+   },
+   "moving": {
+    "low": 0.696,
+    "high": 0.871,
+    "n_resamples": 200
+   },
+   "headline": {
+    "low": 0.073,
+    "high": 0.362,
+    "n_resamples": 200
+   }
+  },
+  "headline_kmeans_seeds": [
+   0.2427,
+   0.263,
+   0.2329,
+   0.2355,
+   0.2174
+  ]
+ },
+ "shift": {
+  "still": {
+   "n": 801,
+   "median": 1.243,
+   "p90": 2.38
+  },
+  "moving": {
+   "n": 940,
+   "median": 0.138,
+   "p90": 0.419
+  },
+  "source": "linear read-out"
+ }
+}

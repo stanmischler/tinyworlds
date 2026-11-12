@@ -1,0 +1,32 @@
+# The default recipe of the action model, merged over base.yaml: one run from scratch on the curated 5 h data, MSE on the aligned frame
+# + InfoNCE on the action, half of each batch from the focus pool. Launch with a run name, and change a knob without a new file:
+#   modal run --detach experiments/small_action/modal_small_action.py::train_small_action --config simple_recipe --overrides "run_name=...,error_weight=1.0"
+
+# ---- the knobs
+action_dim: 8               # numbers in the action a
+still_fraction: 0.5         # share of each batch from the focus pool (camera still, one compact patch changes)
+contrastive_weight: 0.0001  # InfoNCE weight (picked by the 20k weight sweep)
+error_weight: 0.0           # > 0: a pixel counts 1 + this * its error after the shift / the mean of its pair
+pixel_loss: mse             # mse or l1
+edge_weight: 0.0            # > 0: adds this * the edge loss on the 32 px window holding the most error (no network)
+window_fraction: 0.0        # > 0: each pair is cut with this probability to a 96 px window that follows the shift, as a still camera would
+
+# ---- the focus pool: at least 200 changed pixels, which leaves out most pairs where Link stays in place (80 kept them)
+still_min_px: 200
+still_max_px: 600
+still_min_share: 0.7        # share of the changed pixels inside one 32 px window
+
+# ---- the curated 5 h data: no pair with a text box or a menu, pairs where nothing changes held to 5% of each batch
+train_h5: data/zelda_five_hours_frames.h5
+train_shifts: data/zelda_five_hours_shifts.npz
+memorisation_h5: data/zelda_train_frames.h5
+memorisation_shifts: data/zelda_train_shifts.npz
+still_motion_table: data/zelda_five_hours_motion.npz   # changed pixels and dialog flags per pair (experiments/small_action/five_hours.py)
+drop_dialog: true
+idle_fraction: 0.05
+idle_max_px: 20
+
+# ---- length and scoring; the learning rate is base's: 1e-4, linear to 1e-5
+n_updates: 200000
+eval_subset: dev
+ckpt_interval: 10000
