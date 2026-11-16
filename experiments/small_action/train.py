@@ -24,7 +24,7 @@ from datasets.split import segments
 from evaluation.image_metrics import try_lpips
 from experiments.small_action.action_pca import still_walk_picture
 from experiments.small_action.assess import link_assessment, visual_sheets
-from experiments.small_action.eval import GAP_ROW, TEST_H5, evaluate, model_kwargs, subset_windows, to_pixels
+from experiments.small_action.eval import GAP_ROW, TEST_H5, TEST_SHIFTS, evaluate, model_kwargs, subset_windows, to_pixels
 from experiments.small_action.model import WHOLE, WINDOW, SmallActionModel
 from experiments.small_action.probe import probe
 from experiments.small_action.shift import SIZE, shift_frames
@@ -161,7 +161,7 @@ def prediction_sheet(path, model, device, n=8, subset=None):
     # rows: frame t | aligned frame t | prediction | frame t+4 | |prediction - frame t+4| x 3, on evenly spaced held-out windows
     windows = subset_windows(subset)
     picks = windows[:: max(1, len(windows) // n)][:n]
-    table = np.load('data/zelda_test_shifts.npz')['shifts'][:, GAP_ROW].astype(np.float32)
+    table = np.load(TEST_SHIFTS)['shifts'][:, GAP_ROW].astype(np.float32)
     with h5py.File(TEST_H5, 'r') as f:
         x_a = to_pixels(np.stack([f['frames'][s + 8] for _, s in picks]), device)
         x_b = to_pixels(np.stack([f['frames'][s + 12] for _, s in picks]), device)
