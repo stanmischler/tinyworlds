@@ -104,12 +104,18 @@ def revealed_strip_tokens(last, target, patch_size, tol=1):
     return tokens.flatten(1) > 0  # [B, P]
 
 
-def overlay_intervals(frames, max_px=2048):
+def overlay_intervals(frames, max_px=2048, batch=None):
     # frames: [N, C, H, W] in [0, 1], consecutive frames of one clip -> list of (start, end): frames start..end-1 show an
     # overlay (dialog box, menu) drawn over a paused game. An overlay opens with a large change (> max_px moving px) at
     # `start` and closes at the next large change `end` that brings back the frame before `start` (<= max_px moving px
-    # vs frames[start - 1]). A scene cut or fade never brings back the old frame, so it opens no overlay
-    n = moving_pixel_mask(frames[:-1], frames[1:])[0].flatten(1).sum(1)  # [N-1] moving px between frames k and k+1
+    # vs frames[start - 1]). A scene cut or fade never brings back the old frame, so it opens no overlay.
+    # batch: frame pairs compared at once, for a clip too long for one pass (None = all)
+    last = len(frames) - 1
+    if last < 1:
+        return []
+    batch = batch or last
+    n = torch.cat([moving_pixel_mask(frames[i:min(i + batch, last)], frames[i + 1:i + 1 + batch])[0].flatten(1).sum(1)
+                   for i in range(0, last, batch)])  # [N-1] moving px between frames k and k+1
     events = [k + 1 for k in torch.nonzero(n > max_px).flatten().tolist()]  # first frame after each large change
     intervals, i = [], 0
     while i < len(events) - 1:

@@ -1,0 +1,4 @@
+# Weight sweep of the simple recipe (base, curated_data, focus_contrastive), 20k steps: reference: no InfoNCE
+run_name: sweep_no_contrastive
+contrastive_weight: 0
+n_updates: 20000

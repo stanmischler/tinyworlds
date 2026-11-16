@@ -4,8 +4,9 @@ The pair must span the same game motion as the held-out pairs. On our files (60 
 8.75 px. On the YouTube files (15 fps stored) the same 1/15 s moves only 3.5 to 5.25 px, in steps of 1.75 px; rows (t, t + 2) move 8.75 px
 (7 px on two slower files), so a pair there is rows (t, t + 2). Row t of the tables holds its pair's gap (`pair_gap`), its file (`source`)
 and how many times it enters the draw (`row_weight`: 1 on our rows, 4 on YouTube rows, so every second of video is equally likely, as the
-ZELDA_MORE_TRAIN loader draws). Our rows keep their shifts from data/zelda_train_shifts.npz; on YouTube rows only the pair's shift is
-measured, so these tables serve runs without InfoNCE only. Then a report: per file, errors, shift sizes, the motion filter, and sheets.
+ZELDA_MORE_TRAIN loader draws). The motion table also flags the pairs with a dialog or menu on screen (`dialog`), which training can leave out (drop_dialog): a frame
+is flagged when the game is paused under an overlay (over time, `dialog_rows`) or when it shows the text box or the pause menu by itself (`text_box_rows`). Our rows keep their shifts from data/zelda_train_shifts.npz; on YouTube rows this script measures
+only the pair's shift; experiments/small_action/positive_shifts.py then adds the shifts to the InfoNCE positives (rows t + 1 and t + 3). Then a report: per file, errors, shift sizes, the motion filter, and sheets.
 
     python experiments/small_action/five_hours.py --stage merge
     python experiments/small_action/five_hours.py --stage tables --out results/small_action_images/five_hours_data
@@ -26,6 +27,7 @@ import torch.nn.functional as F
 from PIL import Image
 
 from datasets.split import segments
+from evaluation.motion import overlay_intervals
 from experiments.small_action.eval import GAP_ROW
 from experiments.small_action.shift import GAPS, SEARCH, best_shift, known_mse, shift_frames
 
@@ -36,7 +38,18 @@ OUR_GAP, EXTRA_GAP = 4, 2  # stored frames of a pair, the same scroll in px in b
 EXTRA_WEIGHT = 4  # one YouTube row is as much video as 4 of our rows
 START_INDEX, DROP_WORST = 1000, 0.05  # configs/experiments/small_action/base.yaml
 STILL_MIN_PX, STILL_MAX_PX, STILL_MIN_SHARE = 80, 600, 0.7  # the still sampler's bounds, configs/experiments/small_action/late_weight_focus.yaml
+IDLE_MAX_PX = 20  # camera still and fewer changed pixels than this: nothing happens (idle_max_px of the sampler; evaluation/motion.py MIN_MOVING_PX)
 CHANGE, WINDOW = 0.1, 32  # a pixel changed: max over channels of |aligned t - t+n| > CHANGE (pixels in [0, 1]); window side in px
+DIALOG_BATCH = 512  # frame pairs compared at once when looking for dialogs
+BOX_LINES_LOW = [74, 126, 127]  # rows of the yellow border lines of the text box at the bottom of the 128 px frame: the upper line, and the lower one, which falls on either row
+BOX_LINE_HIGH, BOX_INSIDE_HIGH = 31, 27  # the same box at the top of the frame: its lower border line (the upper one is above the frame) and a row inside the box
+YELLOW = 70  # a pixel is border yellow: red >= green > blue + YELLOW (8-bit values)
+DARK = 60  # a row inside the box is dark: its mean 8-bit value is under this
+MENU_BAR_ROWS = [104, 105, 116, 117]  # rows of the grey label bar every pause menu page shows, above and below its text
+GREY_SPREAD, GREY_LOW, GREY_HIGH = 14, 110, 200  # the bar is grey: its three channels within GREY_SPREAD of each other, their mean between the two levels
+FLAT = 16  # a pixel has the bar's colour: every channel within this of the bar's median colour
+ROW_SHARE = 0.8  # a row is a border line, or the bar is there, when this share of the pixels pass (the frame cuts the ends, the compression blurs some)
+TEXT_BOX_BATCH = 4096  # frames tested at once for a text box
 DEVICE = 'cuda'
 
 
@@ -56,6 +69,43 @@ def motion_table(frames, s, gap, batch=1024):
         best = F.avg_pool2d(moved, WINDOW, stride=1).flatten(1).amax(1) * WINDOW ** 2  # [B], changed pixels in the best window
         moving[r], peak[r] = count.cpu().numpy(), (best / count.clamp(min=1)).cpu().numpy()
     return moving, peak
+
+
+@torch.no_grad()
+def dialog_rows(frames, run, source):
+    # frames uint8 [N, H, W, C], run [N]: stretch of each row, source [N]: its file -> [N] bool: rows showing a dialog box or menu over a
+    # paused game (evaluation/motion.py overlay_intervals, as the held-out scores find them), looked for inside each stretch on frames
+    # 1/15 s apart: every 4th row of our capture, every row of a YouTube file
+    inside = np.zeros(len(frames), bool)
+    cuts = [0, *(np.flatnonzero(np.diff(run) != 0) + 1).tolist(), len(frames)]
+    for lo, hi in zip(cuts[:-1], cuts[1:]):
+        rows = np.arange(lo, hi, OUR_GAP if source[lo] == 0 else 1)
+        if len(rows) < 3:  # an overlay needs a frame before it and one after
+            continue
+        clip = torch.from_numpy(frames[rows]).to(DEVICE).permute(0, 3, 1, 2).float() / 255  # [K, 3, H, W]
+        for start, end in overlay_intervals(clip, batch=DIALOG_BATCH):
+            inside[rows[start]:rows[end]] = True  # the rows between two compared frames included
+    return inside
+
+
+def text_box_rows(frames):
+    # frames uint8 [N, H, W, C], H = 128 -> [N] bool: rows showing the text box (dialog, item message) or a pause menu page, from the frame
+    # alone: the box and the bar sit at fixed rows of the screen. It finds what dialog_rows misses (text being typed, an animation
+    # over the box, a world that changed under it, a box cut by the end of a stretch)
+    found = np.zeros(len(frames), bool)
+    for i in range(0, len(frames), TEXT_BOX_BATCH):
+        x = frames[i:i + TEXT_BOX_BATCH]  # [B, H, W, C]
+        lines = x[:, BOX_LINES_LOW + [BOX_LINE_HIGH]].astype(np.int16)  # [B, 4, W, C]
+        yellow = (lines[..., 0] >= lines[..., 1]) & (lines[..., 1] > lines[..., 2] + YELLOW)  # [B, 4, W]
+        upper, lower_a, lower_b, high = (yellow.mean(2) >= ROW_SHARE).T  # [B] each: the row is a yellow line
+        box_low = upper & (lower_a | lower_b)  # both border lines of the box at the bottom
+        box_high = high & (x[:, BOX_INSIDE_HIGH].mean((1, 2)) < DARK)  # the one visible line of the box at the top, dark above it
+        bar = x[:, MENU_BAR_ROWS].astype(np.int16).reshape(len(x), -1, x.shape[3])  # [B, 4 W, C]
+        colour = np.median(bar, 1)  # [B, C]
+        grey = (colour.max(1) - colour.min(1) <= GREY_SPREAD) & (colour.mean(1) >= GREY_LOW) & (colour.mean(1) <= GREY_HIGH)  # [B]
+        flat = (np.abs(bar - colour[:, None]).max(2) <= FLAT).mean(1) >= ROW_SHARE  # [B]: the bar is one flat colour
+        found[i:i + TEXT_BOX_BATCH] = box_low | box_high | (grey & flat)
+    return found
 
 
 def merge():
@@ -103,7 +153,7 @@ def measure_extra_shifts(frames, rows, batch):
 def tables(batch):
     # -> SHIFTS, MOTION; both also return what the report reads
     with h5py.File(MERGED_H5, 'r') as f:
-        frames, source = f['frames'][:], f['source'][:]
+        frames, source, run = f['frames'][:], f['source'][:], f['segment'][:]
     N, ours = len(frames), source == 0
     pair_gap = np.where(ours, OUR_GAP, EXTRA_GAP).astype(np.uint8)
     if not os.path.exists(SHIFTS):
@@ -117,8 +167,10 @@ def tables(batch):
     table = np.load(SHIFTS)
     s = np.nan_to_num(table['shifts'][:, GAP_ROW].astype(np.float32))
     moving, peak = motion_table(frames, s, pair_gap.astype(np.int64))
-    np.savez_compressed(MOTION, moving_px=moving, peak_share=peak)
-    return frames, table, moving, peak
+    in_dialog = dialog_rows(frames, run, source) | text_box_rows(frames)  # [N]: paused under an overlay, or the frame alone shows a text box or menu
+    dialog = in_dialog | in_dialog[np.minimum(np.arange(N) + pair_gap, N - 1)]  # [N]: frame t or the pair's later frame shows a dialog
+    np.savez_compressed(MOTION, moving_px=moving, peak_share=peak, dialog=dialog)
+    return frames, table, moving, peak, dialog
 
 
 def kept_rows(table, n):
@@ -138,7 +190,7 @@ def kept_rows(table, n):
     return usable, kept, limits
 
 
-def report(frames, table, moving, peak, out):
+def report(frames, table, moving, peak, dialog, out):
     os.makedirs(out, exist_ok=True)
     with h5py.File(MERGED_H5, 'r') as f:
         names, source = json.loads(f.attrs['sources']), f['source'][:]
@@ -155,7 +207,9 @@ def report(frames, table, moving, peak, out):
         row = {'file': os.path.basename(name), 'seconds': round(int((source == k).sum()) / (60 if k == 0 else 15)), 'usable': int(here.sum()), 'kept': int(on_kept.sum()),
                'error_p50': float(np.quantile(errors[here], .5)), 'error_p95_limit': limits[k], 'error_p99': float(np.quantile(errors[here], .99)), 'still': round(float(still.sum() / on_kept.sum()), 3),
                'exact_repeat': round(float((errors[here] < 1e-6).mean()), 3), 'moving_shift_px_p50_p95': [float(np.quantile(size[moved], q)) for q in (.5, .95)], 'at_search_edge': round(float((size[here] >= SEARCH - 1).mean()), 4),
-               'focus_pool': int(focus.sum()), 'focus_of_still': round(float(focus.sum() / max(still.sum(), 1)), 3), 'changed_px_on_still_p50_p90': [float(np.quantile(moving[still], q)) for q in (.5, .9)]}
+               'focus_pool': int(focus.sum()), 'focus_of_still': round(float(focus.sum() / max(still.sum(), 1)), 3),
+               'focus_pool_in_dialog': int((focus & dialog).sum()), 'still_in_dialog': int((still & dialog).sum()), 'kept_in_dialog': int((on_kept & dialog).sum()),
+               'idle': int((still & (moving < IDLE_MAX_PX)).sum()), 'idle_not_in_dialog': int((still & (moving < IDLE_MAX_PX) & ~dialog).sum()), 'changed_px_on_still_p50_p90': [float(np.quantile(moving[still], q)) for q in (.5, .9)]}
         if k:
             with h5py.File(name, 'r') as f:
                 step, spacing, run = int(f.attrs['frame_step']), np.diff(f['source_frame'][:]), f['segment'][:]

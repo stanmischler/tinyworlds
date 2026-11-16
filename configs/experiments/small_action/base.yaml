@@ -15,6 +15,10 @@ contrastive_weight: 0.004
 temperature: 0.1
 error_weight: 0.0     # > 0: pixel weight 1 + this * error after the shift / the mean of its pair
 kl_weight: 0.0        # > 0: a is sampled, and the information it carries is penalised
+pixel_loss: mse       # mse or l1: the exponent of the pixel loss (2 or 1)
+edge_weight: 0.0      # > 0: adds this * the edge loss on the edge_crop px window holding the most error (model.py edge_term; no network)
+edge_crop: 32
+window_fraction: 0.0  # > 0: each pair of a batch is cut with this probability to a 96 px window that follows the shift (model.py window_corner)
 
 batch_size: 256
 n_updates: 50000
