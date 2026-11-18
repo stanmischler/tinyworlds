@@ -4,6 +4,7 @@
 #   bash cluster/jeanzay/sync.sh ../other-tree   # another one
 #   DATA_FILES="a.h5 b.npy" bash cluster/jeanzay/sync.sh   # other data files to upload (default: the Zelda set)
 #   INPUTS=<local dir> bash cluster/jeanzay/sync.sh        # also upload checkpoints laid out as results/ (see below)
+#   JZ_PROJECT=<project> bash cluster/jeanzay/sync.sh      # the IDRIS project whose $WORK is used (default: ehr)
 # Needs `Host jeanzay` in ~/.ssh/config (see cluster/README.md). Run it again after each change: only
 # modified files are sent, and the checkpoints, results and logs of runs on Jean Zay are left alone.
 #
@@ -15,7 +16,9 @@ set -euo pipefail
 
 SRC="$(cd "${1:-$(dirname "$0")/../..}" && pwd)"
 NAME="$(basename "$SRC")"
-WORK="$(ssh jeanzay 'bash -lc "echo \$WORK"')"  # $WORK only exists in a login shell
+# $WORK only exists in a login shell, and is the login's default project's until idrenv switches it
+WORK="$(ssh jeanzay "bash -lc 'eval \"\$(idrenv -d ${JZ_PROJECT:-ehr})\"; echo \$WORK'")"
+[[ "$WORK" == */"${JZ_PROJECT:-ehr}"/* ]] || { echo "unexpected \$WORK on Jean Zay: $WORK"; exit 1; }
 RUN="$WORK/runs/$NAME"
 DATA="$WORK/tinyworlds_data"
 INPUT_RESULTS="$WORK/tinyworlds_results"

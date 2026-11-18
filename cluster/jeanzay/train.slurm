@@ -19,6 +19,11 @@
 #SBATCH --output=logs/%x_%j.out
 set -euo pipefail
 
+# $WORK and $SCRATCH follow the login's default project: point them at the project that pays for this job (account <project>@<gpu>)
+PROJECT="${SLURM_JOB_ACCOUNT%@*}"
+[[ "$WORK" == */"$PROJECT"/* ]] || eval "$(idrenv -d "$PROJECT")"
+[[ "$WORK" == */"$PROJECT"/* ]] || { echo "\$WORK is $WORK, not project $PROJECT's"; exit 1; }
+
 module purge
 case "$SLURM_JOB_PARTITION" in  # each GPU type has its own software stack, and its own venv
     gpu_p5*) ARCH=a100 ;;

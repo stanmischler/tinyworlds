@@ -4,8 +4,10 @@
 # Builds one venv per GPU type, $WORK/envs/tinyworlds-{a100,h100}, on top of IDRIS's PyTorch module, and
 # downloads the pretrained weights the code fetches at run time into the shared caches under $WORK. Safe to
 # re-run. GPU nodes have no internet, so everything a run needs must be fetched here first.
+# JZ_PROJECT=<project> picks the IDRIS project whose $WORK is used (default: ehr; a login's $WORK is its default project's).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+eval "$(idrenv -d "${JZ_PROJECT:-ehr}")"
 
 export HF_HOME="$WORK/hf_home" TORCH_HOME="$WORK/torch_home"  # same caches as train.slurm
 

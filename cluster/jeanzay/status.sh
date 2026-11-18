@@ -7,6 +7,7 @@
 set -euo pipefail
 
 ssh jeanzay "bash -lc '
+eval \"\$(idrenv -d ${JZ_PROJECT:-ehr})\"  # \$WORK of the project (default: ehr), not of the login default
 echo \"== queue\"
 squeue -u \$USER -o \"%.10i %.24j %.8T %.10M %.10l %R\"
 echo \"== last 2 days\"

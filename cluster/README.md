@@ -43,3 +43,13 @@ offline and `PYTHONPATH` set; logs go to `logs/`. Its header lists the variants:
 (`--dependency=afterany:<id>`) to resume past 20 h. Copy results back with
 `rsync -rltz jeanzay:/lustre/fswork/projects/rech/hsq/<idris login>/runs/<folder>/results/<run> results/`
 (the full path: `$WORK` is unset in rsync's shell).
+
+`$WORK` and `$SCRATCH` of a login shell are those of the login's default project, which is not always the one that pays:
+`sync.sh`, `setup_env.sh` and `status.sh` switch to `JZ_PROJECT` (default `ehr`) with `idrenv -d`, and `train.slurm` to the
+project of the job's account (`-A <project>@a100`), so everything lives under that project's `$WORK`.
+
+A run longer than 20 h is a chain of jobs that each continue from the last checkpoint. For a dynamics model, give `train.slurm`
+`cluster/jeanzay/resume_dynamics.py <run name> --config … --training_config …` in place of `scripts/dynamics/train_dynamics.py …`:
+outputs go to `results/<run name>/dynamics/`, and a job that finds a checkpoint there continues from it (step count, optimizer,
+schedule, EMA; new batch and noise draws). `run_still_walks_oversampled.sh a100|h100` checks the inputs and submits such a chain
+for the run "still walks oversampled" (`TEST_ONLY=1` submits nothing and prints Slurm's estimated start).
