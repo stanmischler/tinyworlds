@@ -130,7 +130,8 @@ def dataset_action_dim(dataset):
 
 
 def data_loaders(train_data, val_data, batch_size, distributed=False, rank=0, world_size=1,
-                 num_workers=None, pin_memory=None, generator=None):
+                 num_workers=None, pin_memory=None, generator=None, train_batch_sampler=None):
+    # train_batch_sampler: callable(train_data) -> batch sampler of the train loader, instead of shuffled batches (datasets/focus.py)
     # num_workers / pin_memory: None keeps the module defaults (2 workers, no pinning)
     # generator: seeded torch.Generator for a reproducible batch order (the default sampler reseeds every epoch)
     num_workers = DEFAULT_NUM_WORKERS if num_workers is None else int(num_workers)
@@ -143,29 +144,30 @@ def data_loaders(train_data, val_data, batch_size, distributed=False, rank=0, wo
         train_sampler = DistributedSampler(train_data, num_replicas=world_size, rank=rank, shuffle=True, drop_last=True)
         val_sampler = DistributedSampler(val_data, num_replicas=world_size, rank=rank, shuffle=False, drop_last=True)
 
-    def loader(data, sampler, **kw):
+    def loader(data, sampler, batch_sampler=None, **kw):
+        batching = dict(batch_sampler=batch_sampler) if batch_sampler is not None else dict(
+            batch_size=batch_size, shuffle=False if sampler is not None else True, sampler=sampler, drop_last=True)
         return DataLoader(
             data,
-            batch_size=batch_size,
-            shuffle=False if sampler is not None else True,
-            sampler=sampler,
+            **batching,
             num_workers=num_workers,
             pin_memory=pin_memory,
             persistent_workers=persistent_workers,
             prefetch_factor=prefetch_factor,
-            drop_last=True,
             # macOS defaults to spawn, which pickles the dataset (its whole in-memory array) into every worker
             multiprocessing_context='fork' if num_workers > 0 and sys.platform == 'darwin' else None,
             **kw,
         )
 
-    train_loader = loader(train_data, train_sampler, generator=generator)
+    assert train_batch_sampler is None or not distributed, 'train_batch_sampler: one process only'
+    train_loader = loader(train_data, train_sampler, generator=generator,
+                          batch_sampler=train_batch_sampler(train_data) if train_batch_sampler is not None else None)
     val_loader = loader(val_data, val_sampler)
     return train_loader, val_loader
 
 
 def load_data_and_data_loaders(dataset, batch_size, num_frames=1, distributed=False, rank=0, world_size=1, fps=15, preload_ratio=1,
-                               num_workers=None, pin_memory=None, generator=None, extra_frame_skip=1):
+                               num_workers=None, pin_memory=None, generator=None, extra_frame_skip=1, train_batch_sampler=None):
     # extra_frame_skip: rows between frames on a MULTI_VIDEO dataset's extra files (MultiVideoH5Dataset extra_skip); 1 = old behaviour
     assert extra_frame_skip == 1 or dataset in MULTI_VIDEO, f'extra_frame_skip {extra_frame_skip}: multi-file datasets only'
     if dataset in EPISODE_H5:
@@ -183,7 +185,7 @@ def load_data_and_data_loaders(dataset, batch_size, num_frames=1, distributed=Fa
     training_loader, validation_loader = data_loaders(
         training_data, validation_data, batch_size,
         distributed=distributed, rank=rank, world_size=world_size,
-        num_workers=num_workers, pin_memory=pin_memory, generator=generator,
+        num_workers=num_workers, pin_memory=pin_memory, generator=generator, train_batch_sampler=train_batch_sampler,
     )
     # np.var materialises a float64 copy: subsample to ~10k frames past 100k (Push-T's 23 GB would need ~180 GB);
     # exact (unchanged) for the smaller games

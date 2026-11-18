@@ -1,0 +1,56 @@
+# "still walks oversampled": small_action_dynamics.yaml (flow matching on the small action model's actions, 100k steps) with one
+# change: half of every batch is drawn from the focus pool, the windows whose predicted frame follows a still camera and a compact
+# patch of change, most often Link walking (datasets/focus.py). They are about 7% of the windows the default loader draws, and
+# Link's box holds half of the squared error there. The other half of the batch is uniform over all windows. Everything below is that
+# file's, but the still_* keys at the end. Not trained yet. Launch (H100, about 13.5 h for the 100k steps of the first run):
+#   TINYWORLDS_GPU=H100 modal run --detach experiments/small_action/modal_small_action.py::train_dynamics --config still_walks_oversampled
+# then eval_small_dynamics --run still_walks_oversampled --split dev, and confirm once.
+# Target: Link's box LPIPS on confirm still walks under .098 at 32 Euler steps, with at most 0.3 dB of PSNR lost on confirm (32.20).
+batch_size_per_gpu: 64
+gradient_accumulation_steps: 1
+n_updates: 100000
+learning_rate: 0.001   # sweep winner
+log_interval: 1000   # checkpoint + sampled-prediction PNG
+
+use_actions: true
+
+# YouTube windows: rows (r, r + 2, r + 4, ...), the action model's YouTube pair step (7-8.75 px moving median, as our capture's
+# skip 4); our capture stays at skip 4. Departure from PR #51's 5 h recipe (YouTube skip 1).
+extra_frame_skip: 2
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 12
+
+dynamics_type: flow
+fm_pred: v
+fm_shift: 3.0
+qk_norm: true
+ema_decay: 0.999
+seed: 0
+
+# error-weighted loss (zelda_regularisation/error_weighted.yaml, without its token shift / dropout / weight decay, which the 5 h recipe has not)
+token_loss: focal         # mean(sg((e / per-sample mean e)^focal_gamma) * e) over the tokens in the loss
+focal_gamma: 1.0          # sweep winner
+focal_exclude_scroll_strip: true   # the strip revealed by the camera scroll is left out (unpredictable)
+
+video_tokenizer_path: results/zelda_more_data_tokenizer/video_tokenizer/checkpoints/video_tokenizer_step_59000   # frozen, 5 h
+latent_actions_path: results/small_action_actions_late_weight_focus_200000_yt2        # action dir: action model + mean/std; train_dynamics --action replaces both
+action_file: data/zelda_more_train_small_action_late_weight_focus_200000_yt2.npy      # raw (s, a) per row: base .h5 from row 0, then YouTube
+
+test_eval_h5: data/zelda_test_frames.h5
+test_eval_interval: 0   # off: the curve would score the confirm half every 2k steps; report numbers come from eval_next_frame.py
+
+# focus pool: the action model's still sampler, on the dynamics windows' last pair. At least 200 changed pixels, which leaves out
+# most pairs where Link stays in place (the shipped action model's pool: 80), and no dialog box or menu: 23,052 windows of the 5 h data
+still_fraction: 0.5
+still_shift_table: data/zelda_five_hours_shifts.npz
+still_motion_table: data/zelda_five_hours_motion.npz
+still_min_px: 200
+still_max_px: 600
+still_min_share: 0.7
+still_drop_dialog: true
+
+# resume: set to a checkpoint dir (…/dynamics/checkpoints/dynamics_step_N)
+checkpoint:

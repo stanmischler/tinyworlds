@@ -20,6 +20,7 @@ import torch
 from omegaconf import OmegaConf
 from PIL import Image
 
+from datasets.focus import focus_pairs
 from datasets.split import segments
 from evaluation.image_metrics import try_lpips
 from experiments.small_action.assess import link_assessment, visual_sheets
@@ -49,10 +50,8 @@ def still_pools(cfg, starts, shifts):
     # still_fraction set: (pool of pairs with camera still, by |s| < 1 px alone; every other pair). still_motion_table narrows the pool to
     # pairs whose changed pixels form a compact patch (experiments/small_action/five_hours.py motion_table; pixels only); the still pairs left out, Link
     # standing among them, stay in the other part of the batch
-    still = np.abs(shifts[starts, GAP_ROW]).max(1) < 1
-    if cfg.get('still_motion_table'):
-        motion = np.load(cfg.still_motion_table)
-        still &= (motion['moving_px'][starts] >= cfg.still_min_px) & (motion['moving_px'][starts] <= cfg.still_max_px) & (motion['peak_share'][starts] >= cfg.still_min_share)
+    motion = np.load(cfg.still_motion_table) if cfg.get('still_motion_table') else None
+    still = focus_pairs(shifts[:, GAP_ROW], motion, cfg.get('still_min_px'), cfg.get('still_max_px'), cfg.get('still_min_share'))[starts]
     return starts[still], starts[~still]
 
 

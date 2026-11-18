@@ -418,6 +418,18 @@ class DynamicsConfig:
 	# (YouTube); 1 = every stored frame (old behaviour), 2 = the same scroll per step as the base file's skip 4. action_file
 	# rows must hold the pairs (r, r + this) there (experiments/small_action/dynamics_actions.py --extra-skip)
 	extra_frame_skip: int = 1
+	# focus pool (datasets/focus.py; multi-file datasets): this share of every batch is drawn from the windows whose last pair,
+	# the predicted frame, has a still camera (shift under 1 px) and a compact patch of change, most often Link walking; the
+	# rest of the batch is uniform over all windows. 0 = off (the default loader, same batches as before). The tables are those of
+	# experiments/small_action/five_hours.py, one row per frame of the base .h5 from row 0 then the extra files, pairs at
+	# the loader's skips; the bounds are the small action trainer's still_* keys
+	still_fraction: float = 0.0
+	still_shift_table: Optional[str] = None    # shifts [N, 3, 2], gaps, pair_gap
+	still_motion_table: Optional[str] = None   # moving_px [N], peak_share [N], dialog [N]
+	still_min_px: int = 80                     # changed pixels of the pair, lower and upper bound
+	still_max_px: int = 600
+	still_min_share: float = 0.7               # share of the changed pixels inside one 32 px window
+	still_drop_dialog: bool = False            # leave out the pairs with a dialog box or menu on screen
 	# dataloader throughput (None = defaults in datasets/data_utils.py: 2 workers, no pin_memory)
 	num_workers: Optional[int] = None
 	pin_memory: Optional[bool] = None

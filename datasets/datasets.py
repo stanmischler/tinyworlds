@@ -233,6 +233,8 @@ class MultiVideoH5Dataset(Dataset):
     Returns (frames [T, C, H, W] in [-1, 1], 0), the same item format as ZeldaDataset; when train_dynamics.py sets
     self.actions [N, A] (row r = action of the pair (r, r + the file's skip), aligned with self.data), the second item is
     the actions [T - 1, A] of the window's first T - 1 rows.
+    An index past len(self) is a window picked by its first row, phase included: index len(self) + k = self.focus_starts[k]
+    (set by datasets/focus.py for train_dynamics.py's still_fraction; never drawn by the default loader).
     """
 
     def __init__(self, base, extras, num_frames=4, load_chunk_size=4096, extra_skip=1):
@@ -256,6 +258,7 @@ class MultiVideoH5Dataset(Dataset):
 
         # preallocate: building a list first would double the peak RAM
         self.data = np.empty((sum(sizes),) + shape, dtype=np.uint8)   # [N, H, W, C]
+        self.base_rows = sizes[0]              # rows of self.data from the base file; the extras follow
         offsets = np.cumsum([0] + sizes)
         for path, offset, size, start in zip([base_path] + list(extras), offsets, sizes, [base_start] + [0] * len(extras)):
             with h5py.File(path, 'r') as f:
@@ -283,6 +286,9 @@ class MultiVideoH5Dataset(Dataset):
     def window_rows(self, index, random_phase=False):
         """Rows [T] of self.data in window `index`. A base slot's phase is drawn at random (training) or is its first
         valid one (fixed windows, e.g. the test curve's train_fixed/loss)."""
+        if index >= len(self):
+            start = self.focus_starts[index - len(self)]
+            return start + (self.frame_skip if start < self.base_rows else self.extra_skip) * np.arange(self.num_frames)
         if index < len(self.base_slots):
             slot = self.base_slots[index]
             phases = [p for p in range(self.frame_skip) if slot * self.frame_skip + p in self.base_starts]

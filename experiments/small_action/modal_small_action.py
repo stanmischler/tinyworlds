@@ -140,7 +140,7 @@ def dynamics_actions(action: str = DEFAULT_ACTION, limit: int = 0, extra_skip: i
 
 @app.function(gpu=GPU, cpu=8, memory=49152, volumes=VOLUMES, secrets=SECRETS, timeout=24 * 60 * 60)
 def train_dynamics(config: str, action: str = DEFAULT_ACTION, run_name: str = "", overrides: str = ""):
-    """config: a dynamics yaml in configs/experiments/small_action_dynamics (dyn_lr3e-4_err1, small_action_dynamics, ...), trained through
+    """config: a dynamics yaml in configs/experiments/small_action_dynamics (dyn_lr3e-4_err1, small_action_dynamics, still_walks_oversampled, ...), trained through
     full_train.py with that study's training.yaml; the action dir and action file are those of `action`. overrides: "k=v,k=v" on the
     dynamics yaml. Outputs results/<run_name, default config>/dynamics."""
     from omegaconf import OmegaConf
@@ -153,6 +153,8 @@ def train_dynamics(config: str, action: str = DEFAULT_ACTION, run_name: str = ""
         f'run dynamics_actions --action {action} --extra-skip {extra_skip} first'
     assert torch.load(f'{action_dir}/state.pt', map_location='cpu', weights_only=False).get('extra_skip', 1) == extra_skip, action_dir
     dyn.latent_actions_path, dyn.action_file = action_dir, action_file
+    for table in ('still_shift_table', 'still_motion_table') if dyn.get('still_fraction') else ():  # before the 16 GB of frames are read
+        assert os.path.exists(dyn[table]), f'{dyn[table]}: run five_hours_data first'
     derived = f'{DYN_CONFIGS}/derived_dynamics.yaml'
     OmegaConf.save(dyn, derived)
     training = OmegaConf.load(f'{DYN_CONFIGS}/training.yaml')
