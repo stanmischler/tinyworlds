@@ -53,3 +53,8 @@ A run longer than 20 h is a chain of jobs that each continue from the last check
 outputs go to `results/<run name>/dynamics/`, and a job that finds a checkpoint there continues from it (step count, optimizer,
 schedule, EMA; new batch and noise draws). `run_still_walks_oversampled.sh a100|h100` checks the inputs and submits such a chain
 for the run "still walks oversampled" (`TEST_ONLY=1` submits nothing and prints Slurm's estimated start).
+
+When that training has ended, `eval_still_walks_oversampled.sh dev|confirm [run] [a100|h100]` submits its held-out eval as one job
+(`eval_dynamics.py`: the 32-step next-frame eval on that half, then the split scores; the numbers are the `RESULT` line of the log
+and `results/evals/next_frame/<run>_<split>_s32_score.json`). With `small_action_dynamics` as run it scores the run it is compared
+to, whose confirm numbers are known (still-walk LPIPS .098, PSNR 32.20): run that first, to check the eval on Jean Zay.
