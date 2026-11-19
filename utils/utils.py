@@ -367,6 +367,7 @@ def load_videotokenizer_from_checkpoint(checkpoint_path, device, model = None, i
     model_sd, state_cfg, cfg = _load_checkpoint_files(checkpoint_path)
     if model is None:
         model = VideoTokenizer(**video_tokenizer_kwargs(cfg))
+    model.clip_length = cfg.get('context_length')  # frames per training clip (evaluation/rollout.py windows by it)
     return _set_weights(model, model_sd, device, is_distributed), state_cfg
 
 

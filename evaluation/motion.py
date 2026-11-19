@@ -183,3 +183,22 @@ def best_shift(a, b):
                 shift, err = p, phase_err
         out.append(shift if err < (1 - SHIFT_MIN_GAIN) * float(still[n]) else (0, 0))  # strict: a black pair stays (0, 0)
     return torch.tensor(out, dtype=torch.long)  # [N, 2]
+
+
+def revealed_strip(shift, H, W):
+    # shift: (dy, dx) [B, 2], whole or fractional px (target[y, x] ~ last[y - dy, x - dx]) -> [B, H, W] bool: the band of
+    # ceil(|shift|) px the camera scroll reveals, per axis (top rows if dy > 0, bottom if dy < 0, same for columns);
+    # empty when the shift is under 1 px
+    cam = torch.where(shift.abs() < 1, 0, shift.sign() * shift.abs().ceil()).long()  # [B, 2]
+    return revealed_mask(cam, H, W, tol=0)
+
+
+def revealed_strip_scores(pred, target, shift):
+    # pred, target: [B, C, H, W] in [0, 1], shift [B, 2] (camera shift from the frame before the target to the target)
+    # -> (psnr [B] on the revealed strip, NaN when it is empty; the strip's share of the pixels [B]; its share of the
+    # frame's squared error [B])
+    strip = revealed_strip(shift.to(target.device), *target.shape[-2:]).flatten(1).float()  # [B, H*W]
+    sq_err = ((pred - target) ** 2).mean(1).flatten(1)  # [B, H*W], mean over channels
+    n, se = strip.sum(1), (strip * sq_err).sum(1)  # [B]
+    psnr = torch.where(n > 0, 10 * torch.log10(1.0 / (se / n.clamp_min(1)).clamp_min(1e-10)), float('nan'))
+    return psnr, strip.mean(1), se / sq_err.sum(1).clamp_min(1e-12)
