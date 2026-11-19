@@ -1,0 +1,47 @@
+# Stage 3 of the Bigfish pipeline: latent flow-matching dynamics on the frozen tokenizer (stage 1) and the frozen action
+# model (stage 2), one run split over several GPUs (DDP). Launch (Jean Zay, from the run folder; N GPUs, global batch 64):
+#   export NG_RUN_ROOT_DIR=$PWD/results/bigfish_dynamics
+#   sbatch --gres=gpu:N --cpus-per-task=$((8*N)) cluster/jeanzay/train.slurm scripts/dynamics/train_dynamics.py \
+#       --config configs/experiments/bigfish/dynamics.yaml --training_config configs/experiments/bigfish/training_dynamics.yaml \
+#       -- batch_size_per_gpu=$((64/N))
+# Actions first: scripts/actions/como_actions.py --live (header of dynamics.yaml).
+dataset: BIGFISH
+use_wandb: true
+wandb_project: tinyworlds
+preload_ratio: 1.0
+
+context_length: 4         # 3 context frames + the predicted one
+patch_size: 4             # 256 tokens per 64px frame
+frame_size: 64
+latent_dim: 16            # KL tokenizer: 16 continuous channels per token
+num_bins: 4               # FSQ only (unused)
+n_actions: 16             # logging only: k-means codes of the 8-number action
+
+amp: true
+tf32: true
+compile: true
+
+num_workers: 8
+pin_memory: true
+
+distributed:
+  use_ddp: true           # one process per GPU (torchrun), gradients averaged: the single-GPU step on the global batch
+  use_fsdp: false
+  reshard_after_forward: false
+nproc_per_node: 1         # full_train.py only; on Jean Zay the GPU count comes from sbatch --gres
+standalone: true
+
+video_tokenizer_config: configs/experiments/bigfish/tokenizer_long.yaml   # not run
+latent_actions_config: configs/latent_actions.yaml                         # not run
+dynamics_config: configs/experiments/bigfish/dynamics.yaml
+run_video_tokenizer: false
+run_latent_actions: false
+run_dynamics: true
+
+optimizer: adamw
+muon_momentum: 0.95
+muon_backend_steps: 5
+use_moe: false
+num_experts: 4
+top_k_experts: 2
+moe_aux_loss_coeff: 0.01

@@ -1,5 +1,0 @@
-scripts/actions/train_como.py --config configs/como/zelda.yaml,configs/como/bigfish.yaml -- run_name=bigfish_action_model
-scripts/actions/train_como.py --config configs/como/zelda.yaml,configs/como/bigfish.yaml -- run_name=bigfish_action_no_labels button_labels=0
-scripts/actions/train_como.py --config configs/como/zelda.yaml,configs/como/bigfish.yaml -- run_name=bigfish_action_one_frame decoder_frames=1
-scripts/actions/train_como.py --config configs/como/zelda.yaml,configs/como/bigfish.yaml -- run_name=bigfish_action_contrastive contrastive_weight=0.004
-scripts/actions/train_como.py --config configs/como/zelda.yaml,configs/como/bigfish.yaml -- run_name=bigfish_action_four_numbers latent_dim=4

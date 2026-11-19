@@ -40,6 +40,8 @@ def main():
     args: DynamicsConfig = load_stage_config_merged(DynamicsConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'dynamics.yaml'))
     # DDP setup
     dist_setup = init_distributed_from_env()
+    assert not dist_setup['is_distributed'] or args.distributed.use_ddp or args.distributed.use_fsdp, \
+        'several processes (torchrun) need distributed.use_ddp or use_fsdp: otherwise each GPU trains its own copy'
 
     # run save dir if it doesn't exist (running not from full train)
     is_main = dist_setup['is_main']

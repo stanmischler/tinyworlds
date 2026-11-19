@@ -1,0 +1,39 @@
+# "bigfish dynamics": the 13M latent flow-matching recipe of "flow matching, small action" (small_action_dynamics.yaml:
+# 12 blocks, 256 wide, flow v-prediction, fm_shift 3, EMA .999, error-weighted loss gamma 1, lr 1e-3 cosine, global batch 64,
+# 100k steps) on Bigfish. Inputs, both frozen: the 100k-step tokenizer, and the action model "bigfish action model" (step
+# 100,000) as 8 numbers per frame pair, precomputed once and standardised with the training pairs' mean/std:
+#   python scripts/actions/como_actions.py --live --como-ckpt results/bigfish_action_model/como/checkpoints/como_step_100000 \
+#       --out-dir results/bigfish_action_model_actions --splits bigfish,bigfish_test --fit-split bigfish --start-index 0 --gap 1 --k 16
+# Departures from the Zelda recipe: no scroll strip to leave out (still camera); 64 px, so 256 tokens per frame.
+batch_size_per_gpu: 16    # global batch 64 = 16 x 4 GPUs; set batch_size_per_gpu=64/N on the command line for N GPUs
+gradient_accumulation_steps: 1
+n_updates: 100000
+learning_rate: 0.001
+log_interval: 2000        # checkpoint + sampled-prediction PNG
+
+use_actions: true
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 12
+
+dynamics_type: flow
+fm_pred: v
+fm_shift: 3.0
+qk_norm: true
+ema_decay: 0.999
+seed: 0
+
+token_loss: focal         # error-weighted loss: mean(sg((e / per-sample mean e)^focal_gamma) * e)
+focal_gamma: 1.0
+focal_exclude_scroll_strip: false   # still camera: nothing is revealed at the edges
+
+video_tokenizer_path: results/bigfish_tokenizer_long/video_tokenizer/checkpoints/video_tokenizer_step_99000
+latent_actions_path: results/bigfish_action_model_actions_full   # action dir: mean/std of the training pairs' actions
+action_file: data/bigfish_como_z.npy                              # raw action per .h5 row (row t: frames t -> t+1)
+
+test_eval_h5: data/bigfish_test_frames.h5
+test_eval_interval: 5000  # held-out curve, for watching only; report numbers come from eval_next_frame.py at 32 steps
+
+checkpoint:

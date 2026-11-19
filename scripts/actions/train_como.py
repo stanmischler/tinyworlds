@@ -9,6 +9,9 @@ Each sample is a transition (t, t+gap) inside one contiguous stretch of the .h5 
 {-jitter..jitter} minus 0) for the InfoNCE positive. The feature table and the frames sit on the GPU, so a step is a
 gather + the IDM/decoder; no dataloader.
 
+Several GPUs: launch with `torchrun --standalone --nproc_per_node N scripts/actions/train_como.py ...` (start_data_parallel):
+the same steps and the same batch_size, split over the GPUs.
+
 dataset: <name of a datasets.data_utils.MULTI_VIDEO entry> trains on all of its files instead of train_h5 (load_files): the
 base file at `gap` from start_index, the 15 fps extras at gap 1, every second of gameplay equally likely.
 
@@ -56,6 +59,7 @@ import time
 import h5py
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 from omegaconf import OmegaConf
 from PIL import Image
@@ -236,15 +240,45 @@ def judge(ckpt, run_dir, step, cfg):
     return res
 
 
+def start_data_parallel(cfg):
+    """Several GPUs (launched with torchrun, WORLD_SIZE > 1): one process per GPU, each draws batch_size / world of the
+    step's pairs (and button_batch / world labelled pairs); average_gradients averages the gradients over the GPUs before
+    every optimizer step, so a step equals the single-GPU step on the whole batch. Rank 0 alone validates, logs and
+    saves. Returns (rank, world) and points cfg.device at this process's GPU; plain python: (0, 1)."""
+    world = int(os.environ.get('WORLD_SIZE', 1))
+    if world == 1:
+        return 0, 1
+    rank, local = int(os.environ['RANK']), int(os.environ['LOCAL_RANK'])
+    if cfg.device.startswith('cuda'):
+        torch.cuda.set_device(local)
+        cfg.device = f'cuda:{local}'
+    dist.init_process_group('nccl' if cfg.device.startswith('cuda') else 'gloo')
+    assert cfg.batch_size % world == 0 and cfg.get('button_batch', 0) % world == 0, \
+        f'batch_size {cfg.batch_size} and button_batch {cfg.get("button_batch", 0)} must split evenly over {world} GPUs'
+    return rank, world
+
+
+def average_gradients(model, world):
+    # mean over the GPUs of every gradient, in one all-reduce of a flat buffer
+    grads = [p.grad for p in model.parameters() if p.grad is not None]
+    flat = torch.cat([g.reshape(-1) for g in grads])  # [n_params]
+    dist.all_reduce(flat)
+    flat /= world
+    for g, part in zip(grads, flat.split([g.numel() for g in grads])):
+        g.copy_(part.view_as(g))
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--config', default='configs/como/zelda.yaml', help='yaml, or comma-separated yamls merged left to right')
     p.add_argument('overrides', nargs='*')
     a = p.parse_args()
     cfg = OmegaConf.merge(*[OmegaConf.load(c) for c in a.config.split(',')], OmegaConf.from_dotlist([o for o in a.overrides if o != '--']))
+    rank, world = start_data_parallel(cfg)
     device = cfg.device
     torch.manual_seed(cfg.seed)
-    gen = torch.Generator().manual_seed(cfg.seed)
+    gen = torch.Generator().manual_seed(cfg.seed + 10 ** 6 * rank)  # each GPU draws its own pairs
+    local_batch, local_button_batch = cfg.batch_size // world, cfg.get('button_batch', 0) // world
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     run_dir = f'results/{cfg.run_name}'
@@ -295,7 +329,7 @@ def main():
             return f_t, f_b, f_j, torch.cat([b[3], b[0]], 1) if two_frames else b[0], b[1]
     vb = featurize(batch(vframes, vfeats, vstarts, vidx, cfg.gap, cfg.jitter, vgen, device, two_frames))
     check = None  # button_check: N held-out pairs (t, t + gap) with their true buttons, scored every val_interval
-    if cfg.get('button_check', 0):
+    if cfg.get('button_check', 0) and rank == 0:
         assert not (joint or drawing), 'button_check: CoMo on frozen features only'
         assert cfg.gap == 1 and cfg.jitter >= 1, 'button_check: the button of row t labels the pair (t, t + 1); jitter >= 1 keeps the duplicated last frame of an episode out of the pairs'
         rows = np.sort(vstarts[torch.randperm(len(vstarts), generator=vgen)[:cfg.button_check].numpy()])  # [N] in file order
@@ -370,23 +404,26 @@ def main():
         step0 = st['step']
         if ema is not None:
             ema.load_state_dict(torch.load(f'{cfg.checkpoint}/{EMA_CHECKPOINT}', map_location=device, weights_only=True))
-        gen.manual_seed(cfg.seed + step0)
+        gen.manual_seed(cfg.seed + step0 + 10 ** 6 * rank)
         print(f'resumed from {cfg.checkpoint} at step {step0}', flush=True)
+    if world > 1:  # every GPU starts from rank 0's weights
+        for t in model.state_dict().values():
+            dist.broadcast(t, 0)
     amp = (lambda: torch.autocast('cuda', dtype=torch.bfloat16)) if cfg.amp and device.startswith('cuda') else contextlib.nullcontext
     fwd = torch.compile(model) if cfg.compile else model
 
     wb = None
-    if cfg.use_wandb:
+    if cfg.use_wandb and rank == 0:
         import wandb
         wb = wandb.init(project=cfg.wandb_project, name=cfg.run_name, config=OmegaConf.to_container(cfg), resume='allow', id=cfg.run_name)
-    log = open(f'{run_dir}/como/log.jsonl', 'a')
+    log = open(f'{run_dir}/como/log.jsonl', 'a') if rank == 0 else None
     model.train()
     tl = time.time()
     for step in range(step0, cfg.n_updates + 1):
         if weights is None:
-            idx = torch.randint(0, len(starts), (cfg.batch_size,), generator=gen).numpy()
+            idx = torch.randint(0, len(starts), (local_batch,), generator=gen).numpy()
         else:
-            idx = torch.multinomial(weights, cfg.batch_size, replacement=True, generator=gen).numpy()
+            idx = torch.multinomial(weights, local_batch, replacement=True, generator=gen).numpy()
         b = featurize(batch(frames, feats, starts, idx, gaps, cfg.jitter, gen, device, two_frames))
         x_a, x_b = b[-2:] if len(b) == 5 else b[:2]
         opt.zero_grad(set_to_none=True)
@@ -400,7 +437,7 @@ def main():
                 if k in out:
                     logs[k] = logs.get(k, 0.0) + out[k].item() / acc
         if labelled is not None:  # a separate labelled mini-batch: cross-entropy of the head's control scores, through z into the IDM
-            pick = torch.randint(0, len(labelled[0]), (cfg.button_batch,), generator=gen).to(device)
+            pick = torch.randint(0, len(labelled[0]), (local_button_batch,), generator=gen).to(device)
             t, y = labelled[0][pick], labelled[1][pick]
             f_t, f_n = features(to_pixels(frames[t])), features(to_pixels(frames[t + 1]))  # fp32, as the main batch's
             with amp():
@@ -408,6 +445,8 @@ def main():
             ce = F.cross_entropy(scores.float(), y)
             (cfg.button_weight * ce).backward()
             logs['button_ce'], logs['button_acc'] = ce.item(), (scores.argmax(1) == y).float().mean().item()
+        if world > 1:
+            average_gradients(model, world)
         gn = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         opt.step()
         sched.step()
@@ -416,7 +455,7 @@ def main():
                 torch._foreach_lerp_(list(ema.parameters()), [p.detach() for p in model.parameters()], 1 - cfg.ema_decay)
                 for b_e, b_m in zip(ema.buffers(), model.buffers()):
                     b_e.copy_(b_m)
-        if step % cfg.log_interval == 0:
+        if step % cfg.log_interval == 0 and rank == 0:  # train losses: rank 0's share of the batch
             rec = {'step': step, 'loss': logs['loss'], **({k: logs[k] for k in ('predict', 'redraw')} if drawing else {'recon': logs['recon']}),
                    'nce': logs.get('nce', 0.0), **({'tok_recon': logs['tok_recon']} if joint else {}),
                    'copy': F.mse_loss(x_a[:, -x_b.shape[1]:], x_b).item(), 'grad_norm': gn.item(), 'lr': sched.get_last_lr()[0],
@@ -447,7 +486,7 @@ def main():
             log.flush()
             if wb:
                 wb.log(rec, step=step)
-        if step > step0 and (step % cfg.ckpt_interval == 0 or step == cfg.n_updates):
+        if rank == 0 and step > step0 and (step % cfg.ckpt_interval == 0 or step == cfg.n_updates):
             ck = f'{ckpt_dir}/como_step_{step}'
             os.makedirs(ck, exist_ok=True)
             torch.save(model.state_dict(), f'{ck}/{MODEL_CHECKPOINT}')
@@ -472,7 +511,11 @@ def main():
                     log.flush()
                     if wb:
                         wb.log({kk: vv for kk, vv in rec.items() if kk != 'step' and vv is not None}, step=step)
-    print(f'DONE {cfg.n_updates} steps in {(time.time() - t0) / 60:.1f} min', flush=True)
+    if world > 1:
+        dist.barrier()  # the other GPUs wait for rank 0's last checkpoint
+        dist.destroy_process_group()
+    if rank == 0:
+        print(f'DONE {cfg.n_updates} steps in {(time.time() - t0) / 60:.1f} min', flush=True)
 
 
 if __name__ == '__main__':
