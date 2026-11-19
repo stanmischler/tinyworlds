@@ -193,6 +193,10 @@ def main():
             video_tokenizer = torch.compile(video_tokenizer, mode="default", fullgraph=False, dynamic=True)
         if latent_action_model is not None and not args.action_file:
             latent_action_model = torch.compile(latent_action_model, mode="default", fullgraph=False, dynamic=True)
+        if dist_setup['is_distributed']:
+            # Dynamo's DDP graph splitting fails on these dynamic shapes (torch 2.8: "'int' object has no attribute 'meta'");
+            # off, the model compiles as one graph and DDP still averages the gradients
+            torch._dynamo.config.optimize_ddp = False
         dynamics_model = torch.compile(dynamics_model, mode="default", fullgraph=False, dynamic=True)
         print("Compiled all models for training.")
     dynamics_model = prepare_model_for_distributed(
