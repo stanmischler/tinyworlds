@@ -5,6 +5,13 @@
 # file's, but the still_* keys at the end. Not trained yet. Launch (H100, about 13.5 h for the 100k steps of the first run):
 #   TINYWORLDS_GPU=H100 modal run --detach experiments/small_action/modal_small_action.py::train_dynamics --config still_walks_oversampled
 # then eval_small_dynamics --run still_walks_oversampled --split dev, and confirm once.
+# On Jean Zay, one GPU: bash cluster/jeanzay/run_still_walks_oversampled.sh a100|h100 (chained jobs).
+# On several GPUs of one node (DistributedDataParallel, torchrun): a training yaml with distributed.use_ddp true, and
+# batch_size_per_gpu = the batch of ONE process (8 on 8 GPUs for the same 64); n_updates and the learning rate are not rescaled.
+# Each process draws half of its own batch from the pool, with its own generator (seed, rank, step the job starts at). Checked on
+# CPU with 2 processes only, never on a GPU:
+#   sbatch --gres=gpu:8 --cpus-per-task=64 <account, constraint, qos> cluster/jeanzay/train.slurm cluster/jeanzay/resume_dynamics.py \
+#       still_walks_oversampled --config <this file> --training_config <training yaml with use_ddp> -- batch_size_per_gpu=8
 # Target: Link's box LPIPS on confirm still walks under .098 at 32 Euler steps, with at most 0.3 dB of PSNR lost on confirm (32.20).
 batch_size_per_gpu: 64
 gradient_accumulation_steps: 1

@@ -262,17 +262,21 @@ def main():
     data_overrides['generator'] = loader_generator
     if args.extra_frame_skip != 1:  # multi-file datasets only; 1 keeps the old call
         data_overrides['extra_frame_skip'] = args.extra_frame_skip
+    rank = dist_setup['device_mesh'].get_rank() if dist_setup['device_mesh'] is not None else 0
+    world_size = dist_setup['world_size'] if dist_setup['is_distributed'] else 1
     if args.still_fraction > 0:  # part of every batch from the focus pool; 0 keeps the old call
-        from datasets.focus import focus_batch_sampler
+        from datasets.focus import focus_batch_sampler, rank_generator
+        # alone: the loader's generator, as before. Several processes: each draws its batch_size_per_gpu with its own generator
+        focus_generator = loader_generator if world_size == 1 else rank_generator(args.seed, rank, start_step)
         data_overrides['train_batch_sampler'] = lambda data: focus_batch_sampler(
             data, args.batch_size_per_gpu, args.still_fraction, args.still_shift_table, args.still_motion_table, args.still_min_px,
-            args.still_max_px, args.still_min_share, args.still_drop_dialog, generator=loader_generator)
+            args.still_max_px, args.still_min_share, args.still_drop_dialog, generator=focus_generator, rank=rank, world_size=world_size)
     _, _, training_loader, _, _ = load_data_and_data_loaders(
         dataset=args.dataset, 
         batch_size=args.batch_size_per_gpu,
         num_frames=args.context_length,
         distributed=dist_setup['is_distributed'],
-        rank=dist_setup['device_mesh'].get_rank() if dist_setup['device_mesh'] is not None else 0,
+        rank=rank,
         world_size=dist_setup['world_size'],
         **data_overrides,
     )
@@ -531,21 +535,23 @@ def main():
                 masked_frames = x * (1 - pixel_mask_expanded)
             
             hyperparameters = args.__dict__
-            ckpt_path = save_training_state(dynamics_model, optimizers[0], schedulers[0], hyperparameters, checkpoints_dir, prefix='dynamics', step=i)
-            if ema_model is not None:
-                from utils.utils import EMA_CHECKPOINT
-                torch.save(ema_model.state_dict(), os.path.join(ckpt_path, EMA_CHECKPOINT))
-            # save secondary optimizer/scheduler state when using split optimizers (Muon+AdamW)
-            if len(optimizers) > 1:
-                import pathlib
-                torch.save(
-                    {f'optimizer_{i}': o.state_dict() for i, o in enumerate(optimizers)},
-                    pathlib.Path(ckpt_path) / 'all_optimizers.pt',
-                )
-                torch.save(
-                    {f'scheduler_{i}': s.state_dict() for i, s in enumerate(schedulers)},
-                    pathlib.Path(ckpt_path) / 'all_schedulers.pt',
-                )
+            # FSDP gathers the full state on every rank; under DDP rank 0 alone writes (the other ranks' full state dict is empty)
+            if is_main or isinstance(dynamics_model, FSDPModule):
+                ckpt_path = save_training_state(dynamics_model, optimizers[0], schedulers[0], hyperparameters, checkpoints_dir, prefix='dynamics', step=i)
+                if ema_model is not None:
+                    from utils.utils import EMA_CHECKPOINT
+                    torch.save(ema_model.state_dict(), os.path.join(ckpt_path, EMA_CHECKPOINT))
+                # save secondary optimizer/scheduler state when using split optimizers (Muon+AdamW)
+                if len(optimizers) > 1:
+                    import pathlib
+                    torch.save(
+                        {f'optimizer_{i}': o.state_dict() for i, o in enumerate(optimizers)},
+                        pathlib.Path(ckpt_path) / 'all_optimizers.pt',
+                    )
+                    torch.save(
+                        {f'scheduler_{i}': s.state_dict() for i, s in enumerate(schedulers)},
+                        pathlib.Path(ckpt_path) / 'all_schedulers.pt',
+                    )
             if is_main:
                 save_path = os.path.join(visualizations_dir, f'dynamics_prediction_step_{i}.png')
                 visualize_reconstruction(masked_frames[:16].cpu(), predicted_frames[:16].cpu(), save_path)

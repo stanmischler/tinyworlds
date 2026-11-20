@@ -38,13 +38,16 @@ def focus_window_starts(data, focus):
 class FocusBatchSampler(Sampler):
     """Batches of window indices [batch_size] of a MultiVideoH5Dataset: round(fraction * batch_size) of them from data.focus_starts
     (index len(data) + k), the others uniform over all windows as the default loader draws them (so they hold the pool's natural
-    share), in a random order. Draws are with replacement; an epoch is len(data) // batch_size batches."""
+    share), in a random order. Draws are with replacement; an epoch is len(data) // batch_size batches. On several processes
+    (world_size > 1) each one has its own sampler, with its own generator (rank_generator) and its own batch size, the share
+    holding in each; an epoch is then as long as the DistributedSampler's, len(data) // world_size // batch_size batches."""
 
-    def __init__(self, data, batch_size, fraction, generator=None):
+    def __init__(self, data, batch_size, fraction, generator=None, world_size=1):
         self.data, self.batch_size, self.n_focus, self.generator = data, batch_size, round(fraction * batch_size), generator
+        self.world_size = world_size
 
     def __len__(self):
-        return len(self.data) // self.batch_size
+        return len(self.data) // self.world_size // self.batch_size
 
     def __iter__(self):
         n, g = len(self.data), self.generator
@@ -54,8 +57,18 @@ class FocusBatchSampler(Sampler):
             yield torch.cat([focus, others])[torch.randperm(self.batch_size, generator=g)].tolist()
 
 
-def focus_batch_sampler(data, batch_size, fraction, shift_table, motion_table, min_px, max_px, min_share, drop_dialog, generator=None):
-    """The dynamics trainer's still_fraction: sets data.focus_starts from the two tables and returns the batch sampler."""
+def rank_generator(seed, rank, start_step=0):
+    """Generator of one process's FocusBatchSampler when several train together: a stream of its own per (seed, rank, step the
+    job starts at), so the processes draw different batches and a resumed job does not replay the first ones. seed None -> None
+    (the global generator, which every process seeds by itself)."""
+    if seed is None:
+        return None
+    return torch.Generator().manual_seed(int(np.random.SeedSequence([seed, rank, start_step]).generate_state(1)[0]))
+
+
+def focus_batch_sampler(data, batch_size, fraction, shift_table, motion_table, min_px, max_px, min_share, drop_dialog, generator=None, rank=0, world_size=1):
+    """The dynamics trainer's still_fraction: sets data.focus_starts from the two tables and returns the batch sampler. batch_size
+    is the process's own (batch_size_per_gpu); rank, world_size: this process among those training together (1 = alone)."""
     assert hasattr(data, 'extra_starts'), 'still_fraction: multi-file datasets only (MultiVideoH5Dataset)'
     assert shift_table and motion_table, 'still_fraction needs still_shift_table and still_motion_table'
     table, motion = np.load(shift_table), np.load(motion_table)
@@ -69,6 +82,8 @@ def focus_batch_sampler(data, batch_size, fraction, shift_table, motion_table, m
     data.focus_starts = focus_window_starts(data, focus)
     n_base = int((data.focus_starts < data.base_rows).sum())
     assert len(data.focus_starts) > 0, 'empty focus pool'
-    print(f'batch: {fraction} from {n_base + (len(data.focus_starts) - n_base) // data.frame_skip} focus windows '
-          f'({n_base} of the base file, {n_base / len(data.focus_starts):.4f} of the focus draws), the rest from all {len(data)} windows')
-    return FocusBatchSampler(data, batch_size, fraction, generator)
+    if rank == 0:
+        print(f'batch: {fraction} from {n_base + (len(data.focus_starts) - n_base) // data.frame_skip} focus windows '
+              f'({n_base} of the base file, {n_base / len(data.focus_starts):.4f} of the focus draws), the rest from all {len(data)} windows'
+              + (f', in each of the {world_size} processes' if world_size > 1 else ''))
+    return FocusBatchSampler(data, batch_size, fraction, generator, world_size)

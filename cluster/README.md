@@ -51,8 +51,10 @@ project of the job's account (`-A <project>@a100`), so everything lives under th
 A run longer than 20 h is a chain of jobs that each continue from the last checkpoint. For a dynamics model, give `train.slurm`
 `cluster/jeanzay/resume_dynamics.py <run name> --config … --training_config …` in place of `scripts/dynamics/train_dynamics.py …`:
 outputs go to `results/<run name>/dynamics/`, and a job that finds a checkpoint there continues from it (step count, optimizer,
-schedule, EMA; new batch and noise draws). `run_still_walks_oversampled.sh a100|h100` checks the inputs and submits such a chain
-for the run "still walks oversampled" (`TEST_ONLY=1` submits nothing and prints Slurm's estimated start).
+schedule, EMA; new batch and noise draws). The same command runs on several GPUs of a node (`sbatch --gres=gpu:8 …`: `train.slurm`
+starts it through torchrun, and every process continues from the same checkpoint); the training yaml then needs
+`distributed.use_ddp: true` and `batch_size_per_gpu` is the batch of one process. `run_still_walks_oversampled.sh a100|h100` checks the inputs and submits such a chain
+for the run "still walks oversampled" on one GPU (`TEST_ONLY=1` submits nothing and prints Slurm's estimated start).
 
 When that training has ended, `eval_still_walks_oversampled.sh dev|confirm [run] [a100|h100]` submits its held-out eval as one job
 (`eval_dynamics.py`: the 32-step next-frame eval on that half, then the split scores; the numbers are the `RESULT` line of the log

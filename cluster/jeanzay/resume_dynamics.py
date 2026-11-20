@@ -7,6 +7,7 @@ Runs scripts/dynamics/train_dynamics.py with the same arguments and outputs in r
 there, adds checkpoint=<the last complete one> (weights, EMA, optimizer, schedule and step count continue) and
 seed=<the run's seed + the step it continues at>: the trainer seeds its batch and noise draws from `seed` alone, so the same
 seed would replay the batches and noise of the run's first steps. Exits at once when the last step is already saved.
+Under torchrun (several GPUs) every process runs this file and continues from the same checkpoint.
 """
 
 import os

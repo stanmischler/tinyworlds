@@ -133,7 +133,8 @@ def dataset_action_dim(dataset):
 
 def data_loaders(train_data, val_data, batch_size, distributed=False, rank=0, world_size=1,
                  num_workers=None, pin_memory=None, generator=None, train_batch_sampler=None):
-    # train_batch_sampler: callable(train_data) -> batch sampler of the train loader, instead of shuffled batches (datasets/focus.py)
+    # train_batch_sampler: callable(train_data) -> batch sampler of the train loader, instead of shuffled batches (datasets/focus.py);
+    # when distributed it replaces the train DistributedSampler, so it must draw this rank's batches itself
     # num_workers / pin_memory: None keeps the module defaults (2 workers, no pinning)
     # generator: seeded torch.Generator for a reproducible batch order (the default sampler reseeds every epoch)
     num_workers = DEFAULT_NUM_WORKERS if num_workers is None else int(num_workers)
@@ -143,7 +144,8 @@ def data_loaders(train_data, val_data, batch_size, distributed=False, rank=0, wo
     train_sampler = None
     val_sampler = None
     if distributed:
-        train_sampler = DistributedSampler(train_data, num_replicas=world_size, rank=rank, shuffle=True, drop_last=True)
+        if train_batch_sampler is None:
+            train_sampler = DistributedSampler(train_data, num_replicas=world_size, rank=rank, shuffle=True, drop_last=True)
         val_sampler = DistributedSampler(val_data, num_replicas=world_size, rank=rank, shuffle=False, drop_last=True)
 
     def loader(data, sampler, batch_sampler=None, **kw):
@@ -161,7 +163,6 @@ def data_loaders(train_data, val_data, batch_size, distributed=False, rank=0, wo
             **kw,
         )
 
-    assert train_batch_sampler is None or not distributed, 'train_batch_sampler: one process only'
     train_loader = loader(train_data, train_sampler, generator=generator,
                           batch_sampler=train_batch_sampler(train_data) if train_batch_sampler is not None else None)
     val_loader = loader(val_data, val_sampler)
