@@ -187,6 +187,7 @@ class EpisodeH5Dataset(Dataset):
     the .h5 has no actions (train_dynamics.py can replace self.actions with precomputed CoMo z, one row per frame).
     """
     load_start_index = 0  # rows of an action_file line up with the .h5 rows from 0 (train_dynamics.py)
+    frame_skip = 1  # consecutive rows, so the held-out curves (evaluation/test_curve.py) cut their windows at stride 1
 
     def __init__(self, h5_path: str, num_frames: int = 4, preload_ratio: Optional[float] = None, load_chunk_size: int = 4096):
         self.num_frames = num_frames
@@ -206,6 +207,10 @@ class EpisodeH5Dataset(Dataset):
 
     def __len__(self) -> int:
         return len(self.starts)
+
+    def window_rows(self, index):
+        """Rows [T] of self.data in clip `index` (the held-out curve's fixed training windows)."""
+        return self.starts[index] + np.arange(self.num_frames)
 
     def __getitem__(self, index: int):
         s = self.starts[index]

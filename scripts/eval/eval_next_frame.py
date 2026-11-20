@@ -150,7 +150,9 @@ def main():
     if args.limit:
         windows = windows[:args.limit]
     h5 = h5py.File(args.test_h5, 'r')
-    frames_dset, source_index = h5['frames'], h5['source_index'][:]
+    frames_dset = h5['frames']
+    # row of each frame in its source video; files without one (Procgen episodes) use their own rows
+    source_index = h5['source_index'][:] if 'source_index' in h5 else np.arange(len(frames_dset))
     n_blocks = len(json.loads(h5.attrs['test_blocks_local']))
     in_overlay = overlay_windows(args.test_h5, windows, args.context, args.frame_skip)  # [N] bool
     judge = judge_boxes(args.link_boxes, windows, frames_dset.shape[1]) if args.link_boxes else None  # [N, 2] or None

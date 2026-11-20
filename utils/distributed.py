@@ -19,6 +19,7 @@ def init_distributed_from_env() -> Dict[str, object]:
     is_distributed = world_size > 1 and torch.cuda.is_available()
 
     if is_distributed:
+        torch.cuda.set_device(int(os.environ['LOCAL_RANK']))  # each process on its own GPU (tensors go to 'cuda')
         device_mesh = init_device_mesh("cuda", (world_size,), mesh_dim_names=('fsdp',))
     else:
         device_mesh = None
