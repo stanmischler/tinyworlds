@@ -111,7 +111,7 @@ def main():
     test_curve = None
     test_h5 = held_out_test_h5(args.dataset, args.test_eval_h5) if args.test_eval_interval > 0 else None
     if test_h5 and is_main and not args.distributed.use_fsdp:
-        assert hasattr(training_data, 'frame_skip'), 'test curve: block-split video datasets only (no episode .h5)'
+        assert hasattr(training_data, 'frame_skip'), 'test curve: the training dataset must define frame_skip'
         from evaluation.test_curve import TokenizerTestCurve
         test_curve = TokenizerTestCurve(test_h5, training_data, context=args.context_length - 1,
                                         frame_skip=training_data.frame_skip, limit=args.test_eval_limit)

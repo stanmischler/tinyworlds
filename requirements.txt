@@ -16,3 +16,5 @@ lpips==0.1.4
 pytorch-fid==0.3.0
 # CoMo motion IDM (models/como.py): frozen MAE ViT-L/16 encoder
 transformers>=4.46
+# Procgen parquet files (scripts/data/convert_procgen.py)
+pyarrow>=15

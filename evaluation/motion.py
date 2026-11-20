@@ -109,6 +109,8 @@ def overlay_intervals(frames, max_px=2048):
     # overlay (dialog box, menu) drawn over a paused game. An overlay opens with a large change (> max_px moving px) at
     # `start` and closes at the next large change `end` that brings back the frame before `start` (<= max_px moving px
     # vs frames[start - 1]). A scene cut or fade never brings back the old frame, so it opens no overlay
+    if len(frames) < 2:  # a one-frame block (Procgen: an episode ending at a block's first row) has no change to read
+        return []
     n = moving_pixel_mask(frames[:-1], frames[1:])[0].flatten(1).sum(1)  # [N-1] moving px between frames k and k+1
     events = [k + 1 for k in torch.nonzero(n > max_px).flatten().tolist()]  # first frame after each large change
     intervals, i = [], 0

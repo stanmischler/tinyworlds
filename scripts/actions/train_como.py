@@ -9,12 +9,21 @@ Each sample is a transition (t, t+gap) inside one contiguous stretch of the .h5 
 {-jitter..jitter} minus 0) for the InfoNCE positive. The feature table and the frames sit on the GPU, so a step is a
 gather + the IDM/decoder; no dataloader.
 
+Several GPUs: launch with `torchrun --standalone --nproc_per_node N scripts/actions/train_como.py ...` (start_data_parallel):
+the same steps and the same batch_size, split over the GPUs.
+
 dataset: <name of a datasets.data_utils.MULTI_VIDEO entry> trains on all of its files instead of train_h5 (load_files): the
 base file at `gap` from start_index, the 15 fps extras at gap 1, every second of gameplay equally likely.
 
 Logged: train recon MSE, InfoNCE, copy-frame-t MSE (the baseline a motion-blind decoder can reach), and on a fixed
 held-out batch from the test .h5: recon / copy / recon with z shuffled across the batch (shuffle gap = how much the
-decoder uses z), z spread (mean per-dim std, mean pairwise cosine). Every ckpt_every steps: checkpoint
+decoder uses z), z spread (mean per-dim std, mean pairwise cosine). button_check: N (datasets whose .h5 records the true
+buttons, e.g. Procgen Bigfish): the action check of evaluation/action_check.py on N held-out pairs at every val_interval
+(check/* keys: probe accuracy to the true button, shuffle gap, same-button gap). decoder_frames: 2 gives the decoder frames
+t-1 and t (what moves at constant speed is then predictable without z). button_labels: N adds weak supervision: a linear
+head on z predicts the true control of N fixed training pairs (a labelled mini-batch of button_batch pairs per step,
+cross-entropy x button_weight; logged button_ce / button_acc on the labelled pairs, check/head_acc held-out); these N rows
+are the only true buttons training ever reads. Every ckpt_every steps: checkpoint
 (results/<run>/como/checkpoints/como_step_N, loadable by utils.utils.load_latent_actions_from_checkpoint), a
 prediction PNG, and the held-out LAM judge (scripts/eval/lam_judge.py, k-means k = n_actions, and k = 8).
 
@@ -50,12 +59,14 @@ import time
 import h5py
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 from omegaconf import OmegaConf
 from PIL import Image
 
 from datasets.data_utils import multi_video_files
 from datasets.split import segments
+from evaluation.action_check import N_CLASSES, action_check, button_classes
 from models.como import CoMo, JointCoMo, TokenizerFeatures, MAE_TOKENS, MAE_DIM, mae_feature_path
 from models.drawing import DrawingModel
 from models.video_tokenizer import VideoTokenizer
@@ -138,21 +149,22 @@ def to_pixels(fr):
     return fr.permute(0, 3, 1, 2).float() / 127.5 - 1
 
 
-def batch(frames, feats, starts, idx, gap, jitter, gen, device):
-    # gap: one int, or [M] per start (multi-file: 4 rows in a 60 fps file, 1 in a 15 fps one)
+def batch(frames, feats, starts, idx, gap, jitter, gen, device, prev=False):
+    # prev (pixels-only layout): also return frame t-1, last. gap: one int, or [M] per start (multi-file: 4 rows in a 60 fps file, 1 in a 15 fps one)
     t = torch.as_tensor(starts[idx], device=device)  # [B]
     g = torch.as_tensor(gap[idx] if np.ndim(gap) else gap, device=device)  # [B] or scalar
     d = torch.randint(1, jitter + 1, (len(t),), generator=gen, device='cpu').to(device)
     sign = torch.randint(0, 2, (len(t),), generator=gen, device='cpu').to(device) * 2 - 1
     d = torch.where(g > jitter, d * sign, d)  # +-1..jitter; forward only when a backward jitter could reach frame t (gap 1)
     b, j = t + g, t + g + d
-    if feats is None:  # joint: pixels of t, t+n, t+n+delta
-        return tuple(to_pixels(frames[i]) for i in (t, b, j))
+    if feats is None:  # joint: pixels of t, t+n, t+n+delta (+ t-1)
+        return tuple(to_pixels(frames[i]) for i in (t, b, j, *([t - 1] if prev else [])))
     f = [feats[i.to(feats.device)].to(device, non_blocking=True).float() for i in (t, b, j)]  # [B, S, D] x3
     return *f, to_pixels(frames[t]), to_pixels(frames[b])
 
 
 def save_png(path, x_a, x_b, pred, n=8):
+    x_a = x_a[:, -3:]  # frame t (the last one when the decoder also sees t-1)
     rows = torch.cat([torch.cat([x_a[i], x_b[i], pred[i].clamp(-1, 1)], 2) for i in range(min(n, len(x_a)))], 1)  # [C, nH, 3W]
     Image.fromarray(((rows + 1) * 127.5).round().byte().permute(1, 2, 0).cpu().numpy()).save(path)
 
@@ -207,7 +219,7 @@ def held_out(model, vb, amp):
         tok = {'val/tok_recon': out['tok_recon'].item(), 'val/tok_psnr': (-10 * torch.log10(mse)).item()}
     zn = F.normalize(z, dim=1)
     cos = (zn @ zn.T)[~torch.eye(len(z), dtype=torch.bool, device=z.device)].mean()
-    return {'val/recon': out['recon'].item(), 'val/copy': F.mse_loss(x_a, x_b).item(), 'val/shuffled': shuf.item(),
+    return {'val/recon': out['recon'].item(), 'val/copy': F.mse_loss(x_a[:, -x_b.shape[1]:], x_b).item(), 'val/shuffled': shuf.item(),
             'val/shuffle_gap': shuf.item() - out['recon'].item(), 'val/nce': out.get('nce', torch.zeros(())).item(),
             'val/z_std': z.std(0).mean().item(), 'val/z_cos': cos.item(), **tok}, out['pred']
 
@@ -228,15 +240,45 @@ def judge(ckpt, run_dir, step, cfg):
     return res
 
 
+def start_data_parallel(cfg):
+    """Several GPUs (launched with torchrun, WORLD_SIZE > 1): one process per GPU, each draws batch_size / world of the
+    step's pairs (and button_batch / world labelled pairs); average_gradients averages the gradients over the GPUs before
+    every optimizer step, so a step equals the single-GPU step on the whole batch. Rank 0 alone validates, logs and
+    saves. Returns (rank, world) and points cfg.device at this process's GPU; plain python: (0, 1)."""
+    world = int(os.environ.get('WORLD_SIZE', 1))
+    if world == 1:
+        return 0, 1
+    rank, local = int(os.environ['RANK']), int(os.environ['LOCAL_RANK'])
+    if cfg.device.startswith('cuda'):
+        torch.cuda.set_device(local)
+        cfg.device = f'cuda:{local}'
+    dist.init_process_group('nccl' if cfg.device.startswith('cuda') else 'gloo')
+    assert cfg.batch_size % world == 0 and cfg.get('button_batch', 0) % world == 0, \
+        f'batch_size {cfg.batch_size} and button_batch {cfg.get("button_batch", 0)} must split evenly over {world} GPUs'
+    return rank, world
+
+
+def average_gradients(model, world):
+    # mean over the GPUs of every gradient, in one all-reduce of a flat buffer
+    grads = [p.grad for p in model.parameters() if p.grad is not None]
+    flat = torch.cat([g.reshape(-1) for g in grads])  # [n_params]
+    dist.all_reduce(flat)
+    flat /= world
+    for g, part in zip(grads, flat.split([g.numel() for g in grads])):
+        g.copy_(part.view_as(g))
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--config', default='configs/como/zelda.yaml', help='yaml, or comma-separated yamls merged left to right')
     p.add_argument('overrides', nargs='*')
     a = p.parse_args()
     cfg = OmegaConf.merge(*[OmegaConf.load(c) for c in a.config.split(',')], OmegaConf.from_dotlist([o for o in a.overrides if o != '--']))
+    rank, world = start_data_parallel(cfg)
     device = cfg.device
     torch.manual_seed(cfg.seed)
-    gen = torch.Generator().manual_seed(cfg.seed)
+    gen = torch.Generator().manual_seed(cfg.seed + 10 ** 6 * rank)  # each GPU draws its own pairs
+    local_batch, local_button_batch = cfg.batch_size // world, cfg.get('button_batch', 0) // world
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     run_dir = f'results/{cfg.run_name}'
@@ -264,6 +306,10 @@ def main():
         gaps, parts = cfg.gap, f'{len(segs)} segments'
     vframes, vfeats, vsegs = load_split(cfg, cfg.test_h5, None if pixels_only else cfg.test_features, device, cfg.fake_features, 'cpu')  # only the val batch is used
     vstarts = valid_starts(vsegs, span)
+    two_frames = cfg.get('decoder_frames', 1) == 2  # the decoder also sees frame t-1
+    if two_frames:  # t-1 must be in t's segment: drop each segment's first row
+        assert live and not cfg.get('dataset'), 'decoder_frames 2: live tokenizer features on one train file only'
+        starts, vstarts = (s[~np.isin(s, [first for first, _ in sg])] for s, sg in ((starts, segs), (vstarts, vsegs)))
     vgen = torch.Generator().manual_seed(1)
     vidx = torch.randperm(len(vstarts), generator=vgen)[:cfg.val_batch].numpy()
     featurize = lambda b: b  # noqa: E731
@@ -272,10 +318,42 @@ def main():
         assert cfg.get('history', 0) == 0, 'live_features: per-frame features only'
 
         @torch.no_grad()
+        def features(x):
+            # pixels [B, C, H, W] -> frozen tokenizer features [B, S, D]
+            return torch.cat([tok_feats(x[i:i + 64, None]).float() for i in range(0, len(x), 64)])
+
         def featurize(b):
-            # (x_t, x_b, x_j) float [B, C, H, W] -> (f_t, f_b, f_j [B, S, D], x_t, x_b)
-            return (*[torch.cat([tok_feats(x[i:i + 64, None]).float() for i in range(0, len(x), 64)]) for x in b], b[0], b[1])
-    vb = featurize(batch(vframes, vfeats, vstarts, vidx, cfg.gap, cfg.jitter, vgen, device))
+            # (x_t, x_b, x_j[, x_prev]) float [B, C, H, W] -> (f_t, f_b, f_j [B, S, D], x_a, x_b); x_a = x_t, or [x_prev, x_t] on the channel axis
+            f_t, f_b = features(b[0]), features(b[1])
+            f_j = features(b[2]) if cfg.contrastive_weight > 0 else f_b  # the jittered frame only feeds the contrastive term
+            return f_t, f_b, f_j, torch.cat([b[3], b[0]], 1) if two_frames else b[0], b[1]
+    vb = featurize(batch(vframes, vfeats, vstarts, vidx, cfg.gap, cfg.jitter, vgen, device, two_frames))
+    check = None  # button_check: N held-out pairs (t, t + gap) with their true buttons, scored every val_interval
+    if cfg.get('button_check', 0) and rank == 0:
+        assert not (joint or drawing), 'button_check: CoMo on frozen features only'
+        assert cfg.gap == 1 and cfg.jitter >= 1, 'button_check: the button of row t labels the pair (t, t + 1); jitter >= 1 keeps the duplicated last frame of an episode out of the pairs'
+        rows = np.sort(vstarts[torch.randperm(len(vstarts), generator=vgen)[:cfg.button_check].numpy()])  # [N] in file order
+        half = len(rows) // 2  # the probe is fitted on the first half and scored on the second: keep the two halves in
+        mix = np.concatenate([torch.randperm(half, generator=vgen).numpy(), half + torch.randperm(len(rows) - half, generator=vgen).numpy()])
+        t_check = torch.as_tensor(rows[mix], device=device)  # [N] different parts of the file, shuffled inside each half
+        with h5py.File(cfg.test_h5, 'r') as f:
+            buttons = torch.from_numpy(f['buttons'][:len(vframes)]).to(device)[t_check]  # [N], read here and nowhere else
+        x_a, x_b = to_pixels(vframes[t_check]), to_pixels(vframes[t_check + cfg.gap])  # [N, C, H, W]
+        if live:  # features kept in half precision: N x 2 x [S, D]
+            f_a, f_b = (torch.cat([tok_feats(x[i:i + 64, None]).half() for i in range(0, len(x), 64)]) for x in (x_a, x_b))
+        else:
+            f_a, f_b = (vfeats[i.to(vfeats.device)].to(device) for i in (t_check, t_check + cfg.gap))
+        if two_frames:
+            x_a = torch.cat([to_pixels(vframes[t_check - 1]), x_a], 1)  # [N, 2C, H, W]
+        check = (f_a, f_b, x_a, x_b, buttons)
+    labelled = None  # button_labels: a fixed set of N training pairs (t, t + 1) whose true control supervises a linear head on z
+    if cfg.get('button_labels', 0):
+        assert live and cfg.gap == 1 and not cfg.get('dataset'), 'button_labels: live tokenizer features, gap 1, one train file'
+        rows = np.sort(starts[torch.randperm(len(starts), generator=torch.Generator().manual_seed(0))[:cfg.button_labels].numpy()])  # [N]
+        with h5py.File(cfg.train_h5, 'r') as f:  # the only training read of the true buttons: these N rows
+            labels = button_classes(torch.from_numpy(f['buttons'][rows])).to(device)  # [N] control class
+        labelled = (torch.as_tensor(rows, device=device), labels)
+        cfg.n_buttons = N_CLASSES
     print(f'train: {len(frames)} frames, {parts}, {len(starts)} transitions; held-out {len(vstarts)} '
           f'(batch {len(vidx)}); loaded in {time.time() - t0:.0f} s', flush=True)
 
@@ -305,6 +383,11 @@ def main():
     if cfg.checkpoint == 'auto':  # newest checkpoint of this run, or a fresh start
         done = [int(d.rsplit('_', 1)[1]) for d in os.listdir(ckpt_dir) if d.startswith('como_step_') and os.path.exists(f'{ckpt_dir}/{d}/{STATE}')]
         cfg.checkpoint = f'{ckpt_dir}/como_step_{max(done)}' if done else None
+        if cfg.checkpoint:  # a leftover run of the same name with other settings must not be continued silently
+            saved = torch.load(f'{cfg.checkpoint}/{STATE}', map_location='cpu', weights_only=False)['config']
+            keys = (*COMO_ARCH_KEYS, 'button_labels', 'button_batch', 'button_weight', 'train_h5', 'tokenizer_path')
+            changed = {k: (saved.get(k), cfg.get(k)) for k in keys if saved.get(k) != cfg.get(k)}
+            assert not changed, f'{cfg.checkpoint} was trained with other settings (saved, now): {changed}; use another run_name or delete it'
     if drawing and model.fm and not cfg.checkpoint:  # unit-RMS pixels for the flow (as the unit-RMS latents of STA-62)
         idx = torch.randperm(len(frames), generator=torch.Generator().manual_seed(0))[:4096].to(frames.device)
         model.pixel_scale.fill_(to_pixels(frames[idx]).pow(2).mean().sqrt().item())
@@ -321,24 +404,27 @@ def main():
         step0 = st['step']
         if ema is not None:
             ema.load_state_dict(torch.load(f'{cfg.checkpoint}/{EMA_CHECKPOINT}', map_location=device, weights_only=True))
-        gen.manual_seed(cfg.seed + step0)
+        gen.manual_seed(cfg.seed + step0 + 10 ** 6 * rank)
         print(f'resumed from {cfg.checkpoint} at step {step0}', flush=True)
+    if world > 1:  # every GPU starts from rank 0's weights
+        for t in model.state_dict().values():
+            dist.broadcast(t, 0)
     amp = (lambda: torch.autocast('cuda', dtype=torch.bfloat16)) if cfg.amp and device.startswith('cuda') else contextlib.nullcontext
     fwd = torch.compile(model) if cfg.compile else model
 
     wb = None
-    if cfg.use_wandb:
+    if cfg.use_wandb and rank == 0:
         import wandb
         wb = wandb.init(project=cfg.wandb_project, name=cfg.run_name, config=OmegaConf.to_container(cfg), resume='allow', id=cfg.run_name)
-    log = open(f'{run_dir}/como/log.jsonl', 'a')
+    log = open(f'{run_dir}/como/log.jsonl', 'a') if rank == 0 else None
     model.train()
     tl = time.time()
     for step in range(step0, cfg.n_updates + 1):
         if weights is None:
-            idx = torch.randint(0, len(starts), (cfg.batch_size,), generator=gen).numpy()
+            idx = torch.randint(0, len(starts), (local_batch,), generator=gen).numpy()
         else:
-            idx = torch.multinomial(weights, cfg.batch_size, replacement=True, generator=gen).numpy()
-        b = featurize(batch(frames, feats, starts, idx, gaps, cfg.jitter, gen, device))
+            idx = torch.multinomial(weights, local_batch, replacement=True, generator=gen).numpy()
+        b = featurize(batch(frames, feats, starts, idx, gaps, cfg.jitter, gen, device, two_frames))
         x_a, x_b = b[-2:] if len(b) == 5 else b[:2]
         opt.zero_grad(set_to_none=True)
         acc = cfg.get('grad_accum', 1)  # micro-batches: exact here (per-sample InfoNCE, mean losses over equal chunks)
@@ -350,6 +436,17 @@ def main():
             for k in ('loss', 'recon', 'nce', 'tok_recon', 'predict', 'redraw'):
                 if k in out:
                     logs[k] = logs.get(k, 0.0) + out[k].item() / acc
+        if labelled is not None:  # a separate labelled mini-batch: cross-entropy of the head's control scores, through z into the IDM
+            pick = torch.randint(0, len(labelled[0]), (local_button_batch,), generator=gen).to(device)
+            t, y = labelled[0][pick], labelled[1][pick]
+            f_t, f_n = features(to_pixels(frames[t])), features(to_pixels(frames[t + 1]))  # fp32, as the main batch's
+            with amp():
+                scores = como.button_logits(f_t, f_n)  # [Bl, 9]
+            ce = F.cross_entropy(scores.float(), y)
+            (cfg.button_weight * ce).backward()
+            logs['button_ce'], logs['button_acc'] = ce.item(), (scores.argmax(1) == y).float().mean().item()
+        if world > 1:
+            average_gradients(model, world)
         gn = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         opt.step()
         sched.step()
@@ -358,10 +455,11 @@ def main():
                 torch._foreach_lerp_(list(ema.parameters()), [p.detach() for p in model.parameters()], 1 - cfg.ema_decay)
                 for b_e, b_m in zip(ema.buffers(), model.buffers()):
                     b_e.copy_(b_m)
-        if step % cfg.log_interval == 0:
+        if step % cfg.log_interval == 0 and rank == 0:  # train losses: rank 0's share of the batch
             rec = {'step': step, 'loss': logs['loss'], **({k: logs[k] for k in ('predict', 'redraw')} if drawing else {'recon': logs['recon']}),
                    'nce': logs.get('nce', 0.0), **({'tok_recon': logs['tok_recon']} if joint else {}),
-                   'copy': F.mse_loss(x_a, x_b).item(), 'grad_norm': gn.item(), 'lr': sched.get_last_lr()[0],
+                   'copy': F.mse_loss(x_a[:, -x_b.shape[1]:], x_b).item(), 'grad_norm': gn.item(), 'lr': sched.get_last_lr()[0],
+                   **{k: logs[k] for k in ('button_ce', 'button_acc') if k in logs},
                    'it_s': cfg.log_interval / max(time.time() - tl, 1e-6) if step > step0 else 0.0}
             if device.startswith('cuda'):
                 rec['mem_gb'] = torch.cuda.max_memory_allocated() / 2 ** 30  # peak since start (training + held-out)
@@ -372,6 +470,15 @@ def main():
                 else:
                     v, pred = held_out(model, vb, amp)
                 rec.update(v)
+                if check is not None:
+                    model.eval()
+                    rec.update(action_check(como.idm, como.decoder, *check, amp))
+                    if como.button_head is not None:  # the trained head on held-out pairs, next to its labelled-train accuracy (button_acc)
+                        with torch.no_grad(), amp():
+                            head = torch.cat([como.button_logits(check[0][i:i + 1024].float(), check[1][i:i + 1024].float()).argmax(1)
+                                              for i in range(0, len(check[0]), 1024)])
+                        rec['check/head_acc'] = (head == button_classes(check[4])).float().mean().item()
+                    model.train()
                 if step % cfg.ckpt_interval == 0:
                     save_png(f'{viz_dir}/pred_step_{step}.png', *(vb[-2:] if len(vb) == 5 else vb[:2]), pred)
             print(' '.join(f'{k} {v:.4g}' if isinstance(v, float) else f'{k} {v}' for k, v in rec.items()), flush=True)
@@ -379,7 +486,7 @@ def main():
             log.flush()
             if wb:
                 wb.log(rec, step=step)
-        if step > step0 and (step % cfg.ckpt_interval == 0 or step == cfg.n_updates):
+        if rank == 0 and step > step0 and (step % cfg.ckpt_interval == 0 or step == cfg.n_updates):
             ck = f'{ckpt_dir}/como_step_{step}'
             os.makedirs(ck, exist_ok=True)
             torch.save(model.state_dict(), f'{ck}/{MODEL_CHECKPOINT}')
@@ -404,7 +511,11 @@ def main():
                     log.flush()
                     if wb:
                         wb.log({kk: vv for kk, vv in rec.items() if kk != 'step' and vv is not None}, step=step)
-    print(f'DONE {cfg.n_updates} steps in {(time.time() - t0) / 60:.1f} min', flush=True)
+    if world > 1:
+        dist.barrier()  # the other GPUs wait for rank 0's last checkpoint
+        dist.destroy_process_group()
+    if rank == 0:
+        print(f'DONE {cfg.n_updates} steps in {(time.time() - t0) / 60:.1f} min', flush=True)
 
 
 if __name__ == '__main__':
