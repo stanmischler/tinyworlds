@@ -369,6 +369,9 @@ class DynamicsConfig:
 	# token_loss "focal" only: leave out of the loss the tokens of the strip revealed by the camera scroll (new content,
 	# unpredictable from the context, so they would get the largest weights)
 	focal_exclude_scroll_strip: bool = False
+	# token_loss "focal" only, instead of leaving the strip out: keep it in the loss with its error weight capped at 1, the
+	# mean error of the weights taken over the tokens outside it. The strip is learned like an ordinary token without taking the loss
+	focal_strip_clip: bool = False
 	# Action token (flow only): each frame's action also enters as one extra token appended to the frame's tokens
 	# (zero-init Linear(A -> embed_dim)), through every block, dropped before the output head; FiLM is kept.
 	# False = FiLM only (original)

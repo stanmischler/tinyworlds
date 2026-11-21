@@ -181,9 +181,21 @@ def main():
     p.add_argument('overrides', nargs='*')
     a = p.parse_args()
     cfg = OmegaConf.merge(*[OmegaConf.load(c) for c in a.config.split(',')], OmegaConf.from_dotlist([o for o in a.overrides if o != '--']))
+    # several GPUs: launched as `python -m torch.distributed.run --nproc_per_node=G experiments/small_action/train.py ...`, one process per
+    # GPU. Each draws batch_size / G pairs of its own and the gradients are averaged, so a step is the same batch_size-pair step as on one
+    # GPU, G times faster. Process 0 logs, saves and scores; the others wait for it at the next gradient exchange
+    rank, world = int(os.environ.get('RANK', 0)), int(os.environ.get('WORLD_SIZE', 1))
     device = cfg.device
+    if world > 1:
+        torch.distributed.init_process_group('nccl' if cfg.device.startswith('cuda') else 'gloo')
+        if cfg.device.startswith('cuda'):
+            device = f"cuda:{os.environ['LOCAL_RANK']}"
+        assert cfg.batch_size % world == 0, (cfg.batch_size, world)
+    first = rank == 0
+    batch_size = cfg.batch_size // world
+    seed_at = lambda step: cfg.seed + step + 7919 * rank  # noqa: E731  each process draws its own pairs; process 0 as a single-GPU run
     torch.manual_seed(cfg.seed)
-    gen = torch.Generator().manual_seed(cfg.seed)
+    gen = torch.Generator().manual_seed(seed_at(0))
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     run_dir = f'results/{cfg.run_name}/small_action'
@@ -237,7 +249,7 @@ def main():
 
     step0 = init_step
     if init_step:
-        gen.manual_seed(cfg.seed + init_step)
+        gen.manual_seed(seed_at(init_step))
     done = [int(d.rsplit('_', 1)[1]) for d in os.listdir(ckpt_dir) if os.path.exists(f'{ckpt_dir}/{d}/state.pt')]
     if done:  # relaunching the same command continues the run
         ck = f'{ckpt_dir}/step_{max(done)}'
@@ -246,15 +258,16 @@ def main():
         opt.load_state_dict(state['opt']), opt_shift.load_state_dict(state['opt_shift'])
         sched.load_state_dict(state['sched']), sched_shift.load_state_dict(state['sched_shift'])
         step0 = state['step'] + 1
-        gen.manual_seed(cfg.seed + step0)
+        gen.manual_seed(seed_at(step0))
         print(f'resumed at step {step0}', flush=True)
+    net = torch.nn.parallel.DistributedDataParallel(model, device_ids=[int(os.environ['LOCAL_RANK'])] if device.startswith('cuda') else None) if world > 1 else model
 
     amp = (lambda: torch.autocast('cuda', dtype=torch.bfloat16)) if cfg.amp and device.startswith('cuda') else contextlib.nullcontext
     wb = None
-    if cfg.use_wandb:
+    if cfg.use_wandb and first:
         import wandb
         wb = wandb.init(project=cfg.wandb_project, name=cfg.run_name, config=OmegaConf.to_container(cfg), resume='allow', id=cfg.run_name)
-    log = open(f'{run_dir}/log.jsonl', 'a')
+    log = open(f'{run_dir}/log.jsonl', 'a') if first else None
     lpips_fn = try_lpips(device)
     assert lpips_fn is not None, 'the Link score needs the lpips package and its AlexNet weights (cached under TORCH_HOME; no download on an offline node)'
     lpips_fn.requires_grad_(False)  # the training term and the scorer are the same network (AlexNet LPIPS)
@@ -281,25 +294,25 @@ def main():
         if wb:
             wb.log({k: v for k, v in flat.items() if v is not None}, step=step)
 
-    if done and not checkpoint_scored(f'{run_dir}/log.jsonl', max(done)):  # the run stopped between saving that checkpoint and scoring it
+    if first and done and not checkpoint_scored(f'{run_dir}/log.jsonl', max(done)):  # the run stopped between saving that checkpoint and scoring it
         score_checkpoint(max(done))
     tick = time.time()
-    window_gen = torch.Generator().manual_seed(cfg.seed + step0 + 10 ** 6)  # its own stream: a run with windows draws the same batches as one without
+    window_gen = torch.Generator().manual_seed(seed_at(step0) + 10 ** 6)  # its own stream: a run with windows draws the same batches as one without
     model.train()
     for step in range(step0, cfg.n_updates + 1):
         opt.zero_grad(set_to_none=True)
         opt_shift.zero_grad(set_to_none=True)
-        batch = sample_batch(frames, shifts, starts, pools, cfg, gen, device, cfg.batch_size, pair_gaps)  # x_t, x_b, x_j [B, 3, 128, 128], s_b, s_j [B, 2]
+        batch = sample_batch(frames, shifts, starts, pools, cfg, gen, device, batch_size, pair_gaps)  # x_t, x_b, x_j [B, 3, 128, 128], s_b, s_j [B, 2]
         window = window_jitter(batch[3], batch[4], cfg.window_fraction, window_gen) if cfg.get('window_fraction') else None  # None: every pair whole
         with amp():
-            out = model(*batch, window=window)
-        pulls = encoder_gradient_norms(model, out, cfg.contrastive_weight) if step % cfg.log_interval == 0 else {}
+            out = net(*batch, window=window)
+        pulls = encoder_gradient_norms(model, out, cfg.contrastive_weight) if first and step % cfg.log_interval == 0 else {}
         (out['loss'] + out['shift_error']).backward()  # the shift predictor reads a.detach(): its loss reaches only its own weights
         grad_norm = torch.nn.utils.clip_grad_norm_(action_params, cfg.grad_clip)
         torch.nn.utils.clip_grad_norm_(shift_params, cfg.grad_clip)
         opt.step(), opt_shift.step()
         sched.step(), sched_shift.step()
-        if step % cfg.log_interval == 0:
+        if first and step % cfg.log_interval == 0:
             rec = {'step': step, 'recon': out['recon'].item(), 'nce': out['nce'].item(), 'kl_bits': out['kl'].item() / 0.6931, 'shift_error': out['shift_error'].item(),
                    'grad_norm': grad_norm.item(), 'a_std': out['a'].float().std(0).mean().item(), 'lr': sched.get_last_lr()[0],
                    'it_s': cfg.log_interval / max(time.time() - tick, 1e-6) if step > step0 else 0.0}
@@ -316,7 +329,7 @@ def main():
             log.flush()
             if wb:
                 wb.log(rec, step=step)
-        if step > 0 and (step % cfg.ckpt_interval == 0 or step == cfg.n_updates):
+        if first and step > 0 and (step % cfg.ckpt_interval == 0 or step == cfg.n_updates):
             ck = f'{ckpt_dir}/step_{step}'
             os.makedirs(ck, exist_ok=True)
             torch.save(model.state_dict(), f'{ck}/model_state_dict.pt')
@@ -325,7 +338,10 @@ def main():
             os.replace(f'{ck}/state.pt.saving', f'{ck}/state.pt')  # state.pt appears only once complete: a job killed mid-save resumes from the checkpoint before
             score_checkpoint(step)
             tick = time.time()
-    print('DONE', flush=True)
+    if first:
+        print('DONE', flush=True)
+    if world > 1:
+        torch.distributed.destroy_process_group()
 
 
 if __name__ == '__main__':
