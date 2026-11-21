@@ -1,0 +1,11 @@
+# Test of a stricter focus pool (base, curated_data, focus_contrastive): the pool keeps pairs with at least 200 changed pixels (80 before), which
+# removes most pairs where Link stays in place. focus_contrastive_long's weights at 100000, then 20k further steps with nothing else changed:
+# InfoNCE weight 0.0001, learning rate constant at 5e-5 (the value that run had at 100k), fresh optimisers. Compare with that run at 110k and 120k.
+run_name: strict_focus_pool
+init_from: results/focus_contrastive_long/small_action/checkpoints/step_100000
+contrastive_weight: 0.0001
+still_min_px: 200
+n_updates: 120000
+learning_rate: 5.0e-5
+lr_floor: 1.0
+ckpt_interval: 5000

@@ -10,3 +10,5 @@ setup.sh
 .venv/
 configs/dev/dev_training_cpu.yaml
 docs/*.pdf
+logs/
+.cache/

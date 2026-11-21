@@ -175,7 +175,7 @@ def load_model(ckpt, device):
 
 def model_kwargs(cfg):
     # keys missing from a config take the model's default (off), so old checkpoints load as they trained
-    optional = ('kl_weight', 'error_weight', 'lpips_weight', 'lpips_crop')
+    optional = ('kl_weight', 'error_weight', 'lpips_weight', 'lpips_crop', 'pixel_loss', 'edge_weight', 'edge_crop')
     return {**{k: cfg[k] for k in ('action_dim', 'dec_dim', 'dec_depth', 'dec_heads', 'dec_mlp', 'contrastive_weight', 'temperature')},
             **{k: cfg[k] for k in optional if cfg.get(k) is not None}}
 

@@ -137,6 +137,9 @@ def main():
         args.dynamics_type in ('flow', 'regression') and args.fm_source != 'bridge' and not args.fm_random_context), \
         'token_shift / focal_exclude_scroll_strip need dynamics_type flow or regression, no bridge, no fm_random_context (loss mask of the last frame)'
     assert not args.focal_exclude_scroll_strip or args.token_loss == 'focal', 'focal_exclude_scroll_strip needs token_loss focal'
+    assert not args.focal_strip_clip or (args.token_loss == 'focal' and not args.focal_exclude_scroll_strip and args.dynamics_type == 'flow'
+                                         and args.fm_source != 'bridge' and not args.fm_random_context), \
+        'focal_strip_clip needs token_loss focal, dynamics_type flow (no bridge, no fm_random_context), and replaces focal_exclude_scroll_strip'
     assert not (args.dropout or args.action_token) or args.dynamics_type in ('flow', 'regression'), \
         'dropout / action_token need dynamics_type flow or regression'
     assert args.sampled_loss_weight == 0 or (args.dynamics_type == 'flow' and args.fm_source == 'noise' and args.continuous_latents
@@ -284,6 +287,10 @@ def main():
         train_data.actions = acts
         if is_main:
             print(f"actions from {args.action_file}: {acts.shape}")
+    epoch = 0  # a DistributedSampler reshuffles only when told the epoch (the 1-GPU RandomSampler reshuffles at every new iterator)
+    set_epoch = getattr(training_loader.sampler, 'set_epoch', None)
+    if set_epoch is not None:
+        set_epoch(epoch)
     train_iter = iter(training_loader)
 
     test_curve = None
@@ -313,6 +320,10 @@ def main():
             with open(os.path.join(stage_dir, name), 'a') as f:
                 f.write(json.dumps(record) + '\n')
 
+    if dist_setup['is_distributed'] and args.seed is not None:
+        # every process draws its own noise and masks (the same seed would give the 8 GPUs the same noise draws);
+        # set here, after the models are built, so the weights and the EMA are the same on every process
+        torch.manual_seed(args.seed + 1 + dist_setup['device_mesh'].get_rank())
     for i in tqdm(range(start_step, end_step), initial=start_step, total=end_step, disable=not is_main):
         for opt in optimizers:
             opt.zero_grad(set_to_none=True)
@@ -324,6 +335,9 @@ def main():
             try:
                 x, gt_actions = next(train_iter)
             except StopIteration:
+                epoch += 1
+                if set_epoch is not None:
+                    set_epoch(epoch)
                 train_iter = iter(training_loader)  # reset iterator when epoch ends
                 x, gt_actions = next(train_iter)
 
@@ -350,18 +364,20 @@ def main():
             extra = {}
             video_latents_raw = video_latents  # [B, T, P, L] unshifted, for the sampled-prediction PNG and metric
             with torch.no_grad():
-                if args.token_loss == 'motion' or args.focal_exclude_scroll_strip:
+                if args.token_loss == 'motion' or args.focal_exclude_scroll_strip or args.focal_strip_clip:
                     unit = (x[:, -2:].float() + 1) / 2  # [B, 2, C, H, W] last context frame and target in [0, 1]
                 if args.token_loss == 'motion':
                     extra['token_mask'] = moving_token_mask(unit[:, 0], unit[:, 1], args.patch_size)
                 if args.focal_exclude_scroll_strip:
                     extra['loss_mask'] = ~revealed_strip_tokens(unit[:, 0], unit[:, 1], args.patch_size)
+                if args.focal_strip_clip:
+                    extra['strip_mask'] = revealed_strip_tokens(unit[:, 0], unit[:, 1], args.patch_size)  # [B, P], weight capped at 1
                 if args.token_shift > 0:
                     # move the whole clip (latents and masks) by the same random number of tokens per sample
                     grid = (args.frame_size // args.patch_size,) * 2  # (Hp, Wp)
                     shifts = random_token_shifts(x.shape[0], args.token_shift, x.device)  # [B, 2]
                     video_latents, inside = shift_token_grid(video_latents, shifts, grid)  # [B, T, P, L], [B, P]
-                    for k in ('token_mask', 'loss_mask'):
+                    for k in ('token_mask', 'loss_mask', 'strip_mask'):
                         if k in extra:
                             extra[k] = shift_token_mask(extra[k], shifts, grid)
                     extra['loss_mask'] = inside & extra.get('loss_mask', inside)
@@ -526,21 +542,23 @@ def main():
                 masked_frames = x * (1 - pixel_mask_expanded)
             
             hyperparameters = args.__dict__
-            ckpt_path = save_training_state(dynamics_model, optimizers[0], schedulers[0], hyperparameters, checkpoints_dir, prefix='dynamics', step=i)
-            if ema_model is not None:
-                from utils.utils import EMA_CHECKPOINT
-                torch.save(ema_model.state_dict(), os.path.join(ckpt_path, EMA_CHECKPOINT))
-            # save secondary optimizer/scheduler state when using split optimizers (Muon+AdamW)
-            if len(optimizers) > 1:
-                import pathlib
-                torch.save(
-                    {f'optimizer_{i}': o.state_dict() for i, o in enumerate(optimizers)},
-                    pathlib.Path(ckpt_path) / 'all_optimizers.pt',
-                )
-                torch.save(
-                    {f'scheduler_{i}': s.state_dict() for i, s in enumerate(schedulers)},
-                    pathlib.Path(ckpt_path) / 'all_schedulers.pt',
-                )
+            # FSDP gathers the full state on every rank; under DDP rank 0 alone writes (the other ranks' full state dict is empty)
+            if is_main or isinstance(dynamics_model, FSDPModule):
+                ckpt_path = save_training_state(dynamics_model, optimizers[0], schedulers[0], hyperparameters, checkpoints_dir, prefix='dynamics', step=i)
+                if ema_model is not None:
+                    from utils.utils import EMA_CHECKPOINT
+                    torch.save(ema_model.state_dict(), os.path.join(ckpt_path, EMA_CHECKPOINT))
+                # save secondary optimizer/scheduler state when using split optimizers (Muon+AdamW)
+                if len(optimizers) > 1:
+                    import pathlib
+                    torch.save(
+                        {f'optimizer_{i}': o.state_dict() for i, o in enumerate(optimizers)},
+                        pathlib.Path(ckpt_path) / 'all_optimizers.pt',
+                    )
+                    torch.save(
+                        {f'scheduler_{i}': s.state_dict() for i, s in enumerate(schedulers)},
+                        pathlib.Path(ckpt_path) / 'all_schedulers.pt',
+                    )
             if is_main:
                 save_path = os.path.join(visualizations_dir, f'dynamics_prediction_step_{i}.png')
                 visualize_reconstruction(masked_frames[:16].cpu(), predicted_frames[:16].cpu(), save_path)

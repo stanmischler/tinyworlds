@@ -1,0 +1,49 @@
+# Training config of dynamics_strip_clipped: the shipped training.yaml (ZELDA_MORE_TRAIN, frozen 5 h tokenizer) on the 8 GPUs of one node
+# (DistributedDataParallel; train.slurm starts one process per GPU with torchrun). On Jean Zay, from the run folder:
+#   export NG_RUN_ROOT_DIR=$PWD/results/dynamics_strip_clipped
+#   sbatch --gres=gpu:8 --cpus-per-task=64 --time=20:00:00 cluster/jeanzay/train.slurm scripts/dynamics/train_dynamics.py \
+#       --config configs/experiments/small_action_dynamics/dynamics_strip_clipped.yaml \
+#       --training_config configs/experiments/small_action_dynamics/training_eight_gpus_strip_clipped.yaml
+# (The runs in PR #55 went through scripts/pipeline/full_train.py with nproc_per_node 8, before train.slurm started torchrun itself.)
+use_wandb: true
+wandb_project: tinyworlds
+
+dataset: ZELDA_MORE_TRAIN  # our train file from row 1000 + data/zelda_youtube/*.h5, every second of gameplay equally likely
+                          # YouTube windows at rows (r, r + 2, ...): extra_frame_skip 2 in the dynamics yamls (our capture: skip 4)
+preload_ratio: 1.0        # ignored by the multi-file dataset (always all frames, ~16 GB)
+
+patch_size: 4             # 48 pixel values per token; 1024 tokens per 128px frame
+context_length: 4
+frame_size: 128
+latent_dim: 16            # KL c16 tokenizer
+num_bins: 4               # FSQ only
+n_actions: 16             # logging only (k-means codes of the 10 numbers)
+
+amp: true
+tf32: true
+compile: true
+
+num_workers: 6            # per GPU process (8 processes on a 64-CPU allocation)
+pin_memory: true
+
+distributed:
+  use_ddp: true
+  use_fsdp: false
+  reshard_after_forward: false
+nproc_per_node: 1         # full_train.py only; on Jean Zay the GPU count comes from sbatch --gres
+standalone: true
+
+video_tokenizer_config: configs/experiments/zelda_more_data/tokenizer.yaml   # unused (run_video_tokenizer false)
+latent_actions_config: configs/experiments/lam_loop/i4_bal16_seed2.yaml                  # unused (run_latent_actions false)
+dynamics_config: configs/experiments/small_action_dynamics/dynamics_strip_clipped.yaml
+run_video_tokenizer: false   # frozen 5 h tokenizer: video_tokenizer_path in the dynamics yamls
+run_latent_actions: false    # our actions: latent_actions_path + action_file in the dynamics yamls
+run_dynamics: true
+
+optimizer: adamw
+muon_momentum: 0.95
+muon_backend_steps: 5
+use_moe: false
+num_experts: 4
+top_k_experts: 2
+moe_aux_loss_coeff: 0.01
