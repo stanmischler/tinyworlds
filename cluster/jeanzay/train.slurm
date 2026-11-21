@@ -5,6 +5,8 @@
 #   sbatch -A hsq@h100 -C h100 --qos=qos_gpu_h100-t3 --cpus-per-task=24 cluster/jeanzay/train.slurm …   # H100
 #   sbatch --array=0-3 cluster/jeanzay/train.slurm --lines sweep.txt                       # sweep: task i runs line i+1
 #   sbatch --dependency=afterany:<jobid> cluster/jeanzay/train.slurm …                    # chain past the 20 h limit
+#   sbatch --gres=gpu:4 --cpus-per-task=32 cluster/jeanzay/train.slurm …                  # one run on 4 GPUs of a node (torchrun;
+#                                                                                          the script must support it)
 # Options given to sbatch override the defaults below. Logs go to logs/<job name>_<job id>.out (each array task has its own job id).
 #SBATCH --job-name=tinyworlds
 #SBATCH --account=hsq@a100
@@ -37,5 +39,10 @@ if [ "${1:-}" = "--lines" ]; then  # one sweep setting per line of the file
     set -- $(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "$2")
 fi
 
-echo "job $SLURM_JOB_ID${SLURM_ARRAY_TASK_ID:+ task $SLURM_ARRAY_TASK_ID} on $(hostname): python $*"
-srun python -u "$@"
+NGPU="${SLURM_GPUS_ON_NODE:-1}"
+echo "job $SLURM_JOB_ID${SLURM_ARRAY_TASK_ID:+ task $SLURM_ARRAY_TASK_ID} on $(hostname), $NGPU GPU(s): python $*"
+if [ "$NGPU" -gt 1 ]; then  # one process per GPU, all training the same run
+    PYTHONUNBUFFERED=1 srun torchrun --standalone --nproc_per_node "$NGPU" "$@"
+else
+    srun python -u "$@"
+fi

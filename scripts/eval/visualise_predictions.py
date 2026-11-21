@@ -74,7 +74,7 @@ def main():
     device = torch.device(args.device)
     picked, n_windows = pick_windows(args.test_h5, args.context, args.frame_skip, args.sample_stride, args.n, args.seed)
     with h5py.File(args.test_h5, 'r') as h5:
-        source_index = h5['source_index'][:]
+        source_index = h5['source_index'][:] if 'source_index' in h5 else np.arange(len(h5['frames']))  # Procgen: own rows
         x = to_model_range(load_window_batch(h5['frames'], [w for _, w in picked], args.context, args.frame_skip),
                            device)  # [N, T, C, H, W] in [-1, 1]
     last, target = to_unit(x[:, -2]), to_unit(x[:, -1])  # [N, C, H, W] last context frame, target

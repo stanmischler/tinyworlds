@@ -367,6 +367,7 @@ def load_videotokenizer_from_checkpoint(checkpoint_path, device, model = None, i
     model_sd, state_cfg, cfg = _load_checkpoint_files(checkpoint_path)
     if model is None:
         model = VideoTokenizer(**video_tokenizer_kwargs(cfg))
+    model.clip_length = cfg.get('context_length')  # frames per training clip (evaluation/rollout.py windows by it)
     return _set_weights(model, model_sd, device, is_distributed), state_cfg
 
 
@@ -394,7 +395,8 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, i
 
 
 COMO_ARCH_KEYS = ('frame_size', 'patch_size', 'idm_dim', 'idm_depth', 'idm_heads', 'idm_mlp', 'n_queries', 'latent_dim',
-                  'dec_dim', 'dec_depth', 'dec_heads', 'dec_mlp', 'contrastive_weight', 'temperature', 'feat_dim', 'feat_tokens')
+                  'dec_dim', 'dec_depth', 'dec_heads', 'dec_mlp', 'contrastive_weight', 'temperature', 'feat_dim', 'feat_tokens',
+                  'decoder_frames', 'n_buttons')
 
 DRAWING_ARCH_KEYS = ('frame_size', 'enc_patch_size', 'enc_dim', 'enc_heads', 'enc_mlp', 'enc_depth', 'merge', 'idm_dim', 'idm_depth',
                      'idm_heads', 'idm_mlp', 'n_queries', 'latent_dim', 'dec_dim', 'dec_depth', 'dec_heads', 'dec_mlp', 'decoder_type',

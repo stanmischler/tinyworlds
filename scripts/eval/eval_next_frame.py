@@ -24,6 +24,9 @@ Protocol (fixed, deterministic):
       per box: LPIPS on the crops (mean over boxed windows) and FID of the crop set vs the target crops
       motion-weighted PSNR on the motion-boxed windows, w = camera-compensated |target - last context frame|;
       still windows (< 20 moving px, no overlay) get plain PSNR on their own line
+      revealed strip = the band the camera scroll uncovers between the last context frame and the target (whole-pixel
+                   shift, evaluation.motion.best_shift): PSNR on it and its share of the frame's squared error, mean over
+                   the windows with a strip; content the context does not hold
     thresholds are tuned on Zelda at 128 px; on other games read the link metrics with care
     windows without a box are dropped from that box's metrics; model, copy and recon use the same windows
   - spectrum: radially averaged power of the predicted frames vs the tokenizer reconstruction (and of the
@@ -52,7 +55,7 @@ import torch
 from evaluation.image_metrics import psnr, ssim, try_lpips
 from evaluation.link_box import (overlay_windows, judge_boxes, box_lpips, try_inception, box_inception_features, fid,
                                  motion_weights, motion_weighted_psnr)
-from evaluation.motion import motion_box, MIN_MOVING_PX
+from evaluation.motion import motion_box, best_shift, revealed_strip_scores, MIN_MOVING_PX
 from evaluation.spectrum import radial_power_sum, band_deficits
 from evaluation.windows import test_windows, split_windows, load_window_batch, to_model_range, to_unit
 from utils.inference_utils import load_models, default_num_steps
@@ -147,7 +150,9 @@ def main():
     if args.limit:
         windows = windows[:args.limit]
     h5 = h5py.File(args.test_h5, 'r')
-    frames_dset, source_index = h5['frames'], h5['source_index'][:]
+    frames_dset = h5['frames']
+    # row of each frame in its source video; files without one (Procgen episodes) use their own rows
+    source_index = h5['source_index'][:] if 'source_index' in h5 else np.arange(len(frames_dset))
     n_blocks = len(json.loads(h5.attrs['test_blocks_local']))
     in_overlay = overlay_windows(args.test_h5, windows, args.context, args.frame_skip)  # [N] bool
     judge = judge_boxes(args.link_boxes, windows, frames_dset.shape[1]) if args.link_boxes else None  # [N, 2] or None
@@ -168,9 +173,9 @@ def main():
     per = {k: [] for k in ('block', 'source_start', 'psnr', 'ssim', 'lpips', 'token_acc',
                            'copy_psnr', 'copy_ssim', 'copy_lpips', 'copy_token_acc',
                            'recon_psnr', 'recon_ssim', 'recon_lpips', 'action', 'lam_code',
-                           'motion_box', 'judge_box', 'motion_group', 'n_moving')}
+                           'motion_box', 'judge_box', 'motion_group', 'n_moving', 'camera_shift', 'strip_pixel_share')}
     for pre in ('', 'copy_', 'recon_'):
-        for m in ('judge_box_lpips', 'motion_box_lpips', 'motion_psnr', 'still_psnr'):
+        for m in ('judge_box_lpips', 'motion_box_lpips', 'motion_psnr', 'still_psnr', 'strip_psnr', 'strip_error_share'):
             per[pre + m] = []
     box_feats = {f'{b}_{k}': [] for b in ('judge', 'motion') for k in ('pred', 'copy', 'recon', 'target')}  # Inception
     seed_rows = []  # (context frames, target, prediction, copy) for the PNG
@@ -259,8 +264,17 @@ def main():
             per['motion_box'] += mbox.tolist(); per['judge_box'] += jbox.tolist(); per['n_moving'] += n_moving.tolist()
             per['motion_group'] += ['moving' if m else 'still' if s else 'overlay' if o else 'dropped'
                                     for m, s, o in zip(moving.tolist(), still.tolist(), overlay.tolist())]
+            to_u8 = lambda f: (f * 255).round().permute(0, 2, 3, 1)  # noqa: E731  [B, H, W, C]
+            shift = best_shift(to_u8(last_c), to_u8(tgt_c))  # [B, 2] (dy, dx) px, last context frame -> target
+            per['camera_shift'] += shift.tolist()
             for pre, img in (('', pred), ('copy_', copy), ('recon_', recon)):
                 img_c = img.float().cpu()
+                strip_psnr, strip_px, strip_err = revealed_strip_scores(img_c, tgt_c, shift)  # [B] each
+                has_strip = strip_px > 0  # [B]
+                per[pre + 'strip_psnr'] += strip_psnr.tolist()
+                per[pre + 'strip_error_share'] += torch.where(has_strip, strip_err, float('nan')).tolist()
+                if not pre:
+                    per['strip_pixel_share'] += strip_px.tolist()
                 per[pre + 'judge_box_lpips'] += box_lpips(lpips_fn, img, tgt, jbox).tolist()
                 per[pre + 'motion_box_lpips'] += box_lpips(lpips_fn, img, tgt, mbox).tolist()
                 per[pre + 'motion_psnr'] += torch.where(moving, motion_weighted_psnr(img_c, tgt_c, weights), float('nan')).tolist()
@@ -283,7 +297,7 @@ def main():
         return None if len(v) == 0 or np.all(np.isnan(v)) else float(np.nanmean(v))
 
     groups = {'model': '', 'copy_baseline': 'copy_', 'tokenizer_recon': 'recon_'}
-    link = ['judge_box_lpips', 'motion_box_lpips', 'motion_psnr', 'still_psnr']
+    link = ['judge_box_lpips', 'motion_box_lpips', 'motion_psnr', 'still_psnr', 'strip_psnr', 'strip_error_share']
     metric_names = {'': ['psnr', 'ssim', 'lpips', 'token_acc'] + link, 'copy_': ['psnr', 'ssim', 'lpips', 'token_acc'] + link,
                     'recon_': ['psnr', 'ssim', 'lpips'] + link}
     blocks_arr = np.array(per['block'])
@@ -293,6 +307,8 @@ def main():
         for b in ('judge', 'motion'):
             summary[g][f'{b}_box_fid'] = fid(feats[f'{b}_{k}'], feats[f'{b}_target']) if inception is not None else None
     groups_n = {g: per['motion_group'].count(g) for g in ('moving', 'still', 'overlay', 'dropped')}
+    strip_px = np.array(per['strip_pixel_share'])
+    revealed = {'n_windows': int((strip_px > 0).sum()), 'pixel_share': float(strip_px[strip_px > 0].mean()) if (strip_px > 0).any() else None}
     n_link = {'judge_box': int(sum(b[0] >= 0 for b in per['judge_box'])), 'motion_box': groups_n['moving'],
               'still': groups_n['still'], 'overlay': groups_n['overlay'], 'dropped': groups_n['dropped']}
     per_block = {int(b): {g: {m: mean(pre + m, blocks_arr == b) for m in metric_names[pre]} for g, pre in groups.items()}
@@ -300,12 +316,12 @@ def main():
     result = {
         'name': name, 'n_windows': len(windows), 'test_h5': args.test_h5,
         'config': {k: v for k, v in vars(args).items() if k not in ('out_dir', 'name')},
-        'summary': summary, 'n_link_windows': n_link, 'per_block': per_block,
+        'summary': summary, 'n_link_windows': n_link, 'revealed_strip': revealed, 'per_block': per_block,
         'spectrum': {'pred_vs_recon': band_deficits(power['pred'], power['recon'], pred.shape[-1]),
                      'recon_vs_target': band_deficits(power['recon'], power['target'], pred.shape[-1])},
         'windows': {k: per[k] for k in ('block', 'source_start', 'action', 'lam_code', 'psnr', 'ssim', 'token_acc',
                                         'copy_psnr', 'copy_ssim', 'copy_token_acc', 'lpips', 'copy_lpips',
-                                        'judge_box', 'motion_box', 'motion_group', 'n_moving',
+                                        'judge_box', 'motion_box', 'motion_group', 'n_moving', 'camera_shift', 'strip_pixel_share',
                                         *(pre + m for pre in ('', 'copy_', 'recon_') for m in link))},
     }
     if args.save_predictions:
@@ -349,6 +365,7 @@ def main():
     for g, vals in summary.items():
         print(f'  {g:16s} ' + '  '.join(f'{m} {v:.4f}' for m, v in vals.items() if v is not None))
     print('  link windows: ' + '  '.join(f'{k} {v}' for k, v in n_link.items()))
+    print(f"  revealed strip: {revealed['n_windows']} windows" + (f", {100 * revealed['pixel_share']:.1f}% of their pixels" if revealed['n_windows'] else ''))
     for k, bands in result['spectrum'].items():
         print(f'  power {k:15s} ' + '  '.join(f'{b} {v:+.1f}%' for b, v in bands.items()))
     print(f'saved {json_path}' + (f' and {png_path}' if png_path else ''))

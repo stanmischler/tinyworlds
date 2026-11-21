@@ -40,6 +40,8 @@ def main():
     args: DynamicsConfig = load_stage_config_merged(DynamicsConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'dynamics.yaml'))
     # DDP setup
     dist_setup = init_distributed_from_env()
+    assert not dist_setup['is_distributed'] or args.distributed.use_ddp or args.distributed.use_fsdp, \
+        'several processes (torchrun) need distributed.use_ddp or use_fsdp: otherwise each GPU trains its own copy'
 
     # run save dir if it doesn't exist (running not from full train)
     is_main = dist_setup['is_main']
@@ -297,7 +299,7 @@ def main():
         supported = is_flow and latent_action_model is not None and not args.distributed.use_fsdp
         assert supported or not args.test_eval_h5, \
             'test_eval_h5 needs a flow dynamics model with an action model, without FSDP (it runs on rank 0 only)'
-        assert hasattr(training_loader.dataset, 'frame_skip'), 'test curve: block-split video datasets only (no episode .h5)'
+        assert hasattr(training_loader.dataset, 'frame_skip'), 'test curve: the training dataset must define frame_skip'
         if supported:
             from evaluation.test_curve import TestCurve
             test_curve = TestCurve(test_h5, context=args.context_length - 1, frame_skip=training_loader.dataset.frame_skip,

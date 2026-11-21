@@ -1,7 +1,10 @@
-# Training config of dynamics_strip_clipped: the shipped training.yaml (ZELDA_MORE_TRAIN, frozen 5 h tokenizer, only the dynamics stage runs)
-# on the 8 GPUs of one node (DistributedDataParallel through full_train.py and torchrun). On Jean Zay, from the run folder:
-#   sbatch --gres=gpu:8 --cpus-per-task=64 --time=20:00:00 --export=ALL,NG_RUN_NAME=dynamics_strip_clipped \
-#       cluster/jeanzay/train.slurm scripts/pipeline/full_train.py --config configs/experiments/small_action_dynamics/training_eight_gpus_strip_clipped.yaml
+# Training config of dynamics_strip_clipped: the shipped training.yaml (ZELDA_MORE_TRAIN, frozen 5 h tokenizer) on the 8 GPUs of one node
+# (DistributedDataParallel; train.slurm starts one process per GPU with torchrun). On Jean Zay, from the run folder:
+#   export NG_RUN_ROOT_DIR=$PWD/results/dynamics_strip_clipped
+#   sbatch --gres=gpu:8 --cpus-per-task=64 --time=20:00:00 cluster/jeanzay/train.slurm scripts/dynamics/train_dynamics.py \
+#       --config configs/experiments/small_action_dynamics/dynamics_strip_clipped.yaml \
+#       --training_config configs/experiments/small_action_dynamics/training_eight_gpus_strip_clipped.yaml
+# (The runs in PR #55 went through scripts/pipeline/full_train.py with nproc_per_node 8, before train.slurm started torchrun itself.)
 use_wandb: true
 wandb_project: tinyworlds
 
@@ -27,7 +30,7 @@ distributed:
   use_ddp: true
   use_fsdp: false
   reshard_after_forward: false
-nproc_per_node: 8
+nproc_per_node: 1         # full_train.py only; on Jean Zay the GPU count comes from sbatch --gres
 standalone: true
 
 video_tokenizer_config: configs/experiments/zelda_more_data/tokenizer.yaml   # unused (run_video_tokenizer false)

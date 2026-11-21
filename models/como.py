@@ -141,13 +141,16 @@ class MotionIDM(nn.Module):
 
 
 class MotionDecoder(nn.Module):
-    """Forward dynamics model: frame t [B, C, H, W] + z [B, Q, L] -> frame t+n [B, C, H, W] (pixels in [-1, 1] scale)."""
+    """Forward dynamics model: frame t [B, C, H, W] + z [B, Q, L] -> frame t+n [B, C, H, W] (pixels in [-1, 1] scale).
+    in_frames > 1: the input is the last in_frames frames up to t, stacked on the channel axis oldest first
+    [B, in_frames * C, H, W], so what moves at constant speed is predictable without z."""
 
-    def __init__(self, frame_size=128, patch_size=8, dim=768, depth=12, heads=12, mlp=3072, n_queries=8, latent_dim=16, channels=3):
+    def __init__(self, frame_size=128, patch_size=8, dim=768, depth=12, heads=12, mlp=3072, n_queries=8, latent_dim=16, channels=3,
+                 in_frames=1):
         super().__init__()
         self.patch_size, self.hp = patch_size, frame_size // patch_size
         self.up = nn.Sequential(nn.Linear(latent_dim, latent_dim), nn.Tanh(), nn.Linear(latent_dim, dim))
-        self.patch_embed = nn.Conv2d(channels, dim, patch_size, patch_size)
+        self.patch_embed = nn.Conv2d(in_frames * channels, dim, patch_size, patch_size)
         self.query_pool = nn.Linear(n_queries * dim, dim)  # CoMo's "pooling": one vector added to every patch
         self.pos = nn.Parameter(torch.zeros(1, self.hp * self.hp, dim))
         self.transformer = _encoder(dim, heads, mlp, depth)
@@ -177,15 +180,19 @@ class CoMo(nn.Module):
 
     def __init__(self, frame_size=128, patch_size=8, idm_dim=768, idm_depth=4, idm_heads=12, idm_mlp=3072, n_queries=8,
                  latent_dim=16, dec_dim=768, dec_depth=12, dec_heads=12, dec_mlp=3072, contrastive_weight=0.004,
-                 temperature=0.1, feat_dim=MAE_DIM, feat_tokens=MAE_TOKENS):
+                 temperature=0.1, feat_dim=MAE_DIM, feat_tokens=MAE_TOKENS, decoder_frames=1, n_buttons=0):
         super().__init__()
         # feat_dim / feat_tokens: the frozen feature extractor's output [S, D] (MAE default; TokenizerFeatures for STA-43)
         self.idm = MotionIDM(feat_dim, feat_tokens, idm_dim, n_queries, idm_depth, idm_heads, idm_mlp, latent_dim)
-        self.decoder = MotionDecoder(frame_size, patch_size, dec_dim, dec_depth, dec_heads, dec_mlp, n_queries, latent_dim)
+        self.decoder = MotionDecoder(frame_size, patch_size, dec_dim, dec_depth, dec_heads, dec_mlp, n_queries, latent_dim,
+                                     in_frames=decoder_frames)
+        # weak supervision (train_como button_labels): a linear read-out of the true control from z, on a few labelled pairs
+        self.button_head = nn.Linear(n_queries * latent_dim, n_buttons) if n_buttons else None
         self.contrastive_weight, self.temperature = contrastive_weight, temperature
 
     def forward(self, f_a, f_b, f_j, x_a, x_b):
         # f_a, f_b, f_j: frozen features [B, S, D] (MAE: S 197, D 1024) of frames t, t+n, t+n+delta; x_a, x_b: pixels [B, C, H, W] of t, t+n
+        # (decoder_frames 2: x_a is frames t-1 and t on the channel axis [B, 2C, H, W])
         z = self.idm(f_a, f_b)  # [B, Q, L]
         pred = self.decoder(x_a, z)
         recon = F.mse_loss(pred, x_b)
@@ -201,6 +208,10 @@ class CoMo(nn.Module):
             loss = loss + self.contrastive_weight * nce
         out['loss'] = loss
         return out
+
+    def button_logits(self, f_a, f_b):
+        # f_a, f_b: frozen features [B, S, D] of frames t, t+n -> scores of the true control [B, n_buttons]
+        return self.button_head(self.idm(f_a, f_b).flatten(1))
 
 
 class JointCoMo(nn.Module):

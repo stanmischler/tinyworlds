@@ -1,0 +1,49 @@
+# Small CoMo-style action model on Procgen Bigfish (64 px): one action vector of 8 numbers, learned from the frozen
+# per-frame KL tokenizer's hidden features (2x2 merged -> 64 tokens x 1024), encoded live per batch. Transitions t -> t+1.
+# The .h5 files record the true buttons: the held-out ones are read by the action check (button_check) only, and
+# button_labels training pairs supervise a linear head on the action. Never an input of the model.
+# Merged on top of configs/como/zelda.yaml (the CoMo recipe: MSE, Adam, lr 1e-4 -> 1e-5, batch 256; no InfoNCE here):
+#   python scripts/actions/train_como.py --config configs/como/zelda.yaml,configs/como/bigfish.yaml
+run_name: bigfish_action_model
+
+train_h5: data/bigfish_frames.h5        # scripts/data/convert_procgen.py, 1M frames; pairs never cross an episode
+test_h5: data/bigfish_test_frames.h5    # 50k held-out frames: the val batch and the action check
+train_features:
+test_features:
+start_index: 0
+gap: 1                 # consecutive env steps
+jitter: 1              # InfoNCE positive: the action of t -> t+2 (forward only at gap 1)
+
+features: tokenizer
+live_features: true
+tokenizer_path: results/bigfish_tokenizer_long/video_tokenizer/checkpoints/video_tokenizer_step_99000   # the 100k-step tokenizer
+tokenizer_feature: hidden
+history: 0
+merge: 2
+
+# model: about 3.5M (encoder) + 5M (decoder) weights, against 28M + 85M for the paper sizes of configs/como/zelda.yaml
+frame_size: 64
+patch_size: 4          # decoder patches: 16x16 tokens
+n_queries: 1           # one action vector ...
+latent_dim: 8          # ... of 8 numbers
+idm_dim: 256
+idm_depth: 4
+idm_heads: 8
+idm_mlp: 1024
+dec_dim: 256
+dec_depth: 6
+dec_heads: 8
+dec_mlp: 1024
+
+n_updates: 100000      # about 26 passes over the 1M pairs at batch 256
+ckpt_interval: 5000
+val_interval: 1000
+button_check: 8192     # held-out pairs scored against their true button every val_interval (evaluation/action_check.py)
+judge: false           # the action judge is Zelda-only
+
+contrastive_weight: 0  # off: the positive (action over t..t+2) is what stays constant over two steps = the other fish, not the player
+decoder_frames: 2      # the decoder sees frames t-1 and t: the other fish's speeds are predictable, the player's move is not
+button_labels: 25000   # weak supervision: true control of 25,000 fixed training pairs (2.5%), linear head on the action
+button_batch: 64       # labelled pairs per step
+button_weight: 0.1     # x cross-entropy (the pixel loss is near 1e-3)
+checkpoint: auto       # a restarted container resumes from the newest checkpoint of this run
