@@ -19,6 +19,8 @@ from experiments.small_action.shift import known_pixels, shift_frames
 
 HIDDEN_MARGIN = 12  # px; a fixed width, so the action encoder cannot read the shift from the width of the revealed strip
 ERROR_FLOOR = 0.01  # mean |error| of a pair, pixels in [-1, 1], below which its error weights are not amplified
+WINDOW = 96  # px; side of the window some training pairs are cut to (window_fraction of the trainer)
+WHOLE = 999  # jitter value marking a pair that stays whole
 
 
 def hide_margin(x, margin=HIDDEN_MARGIN):
@@ -26,6 +28,47 @@ def hide_margin(x, margin=HIDDEN_MARGIN):
     mask = torch.zeros_like(x[:, :1])
     mask[..., margin:-margin, margin:-margin] = 1
     return x * mask
+
+
+def window_corner(s, jitter, size=WINDOW, frame=128):
+    # s: the shift of a pair (dy, dx) [B, 2], jitter: [B, 2] long, WHOLE = the pair stays whole -> the corner (row, col) of its window
+    # [B, 2] long, -1 = whole. The window follows the shift: corner = centred + round(s) - jitter, so it frames the same patch of ground
+    # in the aligned frame t whatever the shift, as a camera that stays still would. Where the camera follows Link, he then starts near the
+    # centre of the window and ends displaced by his step: the same picture as a pair filmed by a still camera, and nothing in it tells the
+    # direction of the step. The jitter is the same in every direction, so it carries no direction either
+    corner = (frame - size) // 2 + s.round().long() - jitter
+    return torch.where(jitter[:, :1] == WHOLE, torch.full_like(corner, -1), corner)
+
+
+def window_canvas(x, corner, size=WINDOW):
+    # x: [B, 3, H, W] in [-1, 1], corner: (row, col) of each pair's window [B, 2], -1 = the pair stays whole -> [B, 3, H, W]: on the cut
+    # pairs, the size x size window copied pixel for pixel to the centre of a mid-grey frame. No resize, so nothing changes scale
+    cut = corner[:, 0] >= 0
+    if not cut.any():
+        return x
+    margin = (x.shape[-1] - size) // 2
+    steps = torch.arange(size, device=x.device)
+    rows = (corner[cut, 0, None] + steps)[:, :, None]  # [C, size, 1]
+    cols = (corner[cut, 1, None] + steps)[:, None, :]  # [C, 1, size]
+    pair = torch.arange(len(rows), device=x.device)[:, None, None]
+    window = x[cut][pair, :, rows, cols].permute(0, 3, 1, 2)  # [C, 3, size, size]
+    canvas = torch.zeros_like(window[:, :, :1, :1]).expand(-1, -1, *x.shape[-2:]).clone()  # [C, 3, H, W], 0 = mid grey
+    canvas[:, :, margin:margin + size, margin:margin + size] = window
+    out = x.clone()
+    out[cut] = canvas
+    return out
+
+
+def scored_pixels(s, corner, size=WINDOW):
+    # -> float [B, 1, H, W], the pixels the reconstruction loss counts: a whole pair's known pixels (not the strip its shift reveals);
+    # a cut pair's window, which the trainer's jitter keeps inside the known pixels
+    known = known_pixels(s).unsqueeze(1).float()
+    if corner is None:
+        return known
+    margin = (known.shape[-1] - size) // 2
+    centre = torch.zeros_like(known[:1])
+    centre[..., margin:margin + size, margin:margin + size] = 1
+    return torch.where((corner[:, 0] >= 0)[:, None, None, None], centre, known)
 
 
 def pixel_weights(aligned, target, known, strength):
@@ -191,7 +234,7 @@ class SmallActionModel(nn.Module):
     """Action encoder + decoder + shift predictor. The shift predictor gets no gradient path into the action."""
 
     def __init__(self, action_dim=4, dec_dim=384, dec_depth=8, dec_heads=6, dec_mlp=1536, contrastive_weight=0.004, temperature=0.1, kl_weight=0.0,
-                 error_weight=0.0, lpips_weight=0.0, lpips_crop=0):
+                 error_weight=0.0, lpips_weight=0.0, lpips_crop=0, pixel_loss='mse', edge_weight=0.0, edge_crop=32):
         super().__init__()
         self.kl_weight = kl_weight
         self.encoder = ActionEncoder(action_dim, noisy=kl_weight > 0)
@@ -199,6 +242,8 @@ class SmallActionModel(nn.Module):
         self.shift_predictor = ShiftPredictor(action_dim)
         self.contrastive_weight, self.temperature = contrastive_weight, temperature
         self.error_weight, self.lpips_weight, self.lpips_crop = error_weight, lpips_weight, lpips_crop
+        assert pixel_loss in ('mse', 'l1'), pixel_loss
+        self.pixel_loss, self.edge_weight, self.edge_crop = pixel_loss, edge_weight, edge_crop
         self.__dict__['lpips_fn'] = None  # set by training when lpips_weight > 0; kept out of the state dict
 
     def lpips_term(self, pred, aligned, target, known):
@@ -209,38 +254,54 @@ class SmallActionModel(nn.Module):
             pred, target = (F.interpolate(x, size=LPIPS_SIZE, mode='bilinear', align_corners=False) for x in (pred, target))
         return self.lpips_fn(pred, target).mean()
 
+    def edge_term(self, pred, aligned, target, known):
+        # mean |edges of the prediction - edges of the target| on the edge_crop px window holding the most error (0: the whole frame);
+        # an edge = the difference between two neighbouring pixels, down and right. A smeared patch has weak edges where the target's
+        # are sharp, which the pixel loss alone barely penalises. No network
+        pred = torch.where(known.bool(), pred, target)
+        if self.edge_crop:
+            pred, target = residual_crops(pred, target, aligned, known, self.edge_crop)
+        down = lambda x: x[..., 1:, :] - x[..., :-1, :]  # noqa: E731
+        right = lambda x: x[..., :, 1:] - x[..., :, :-1]  # noqa: E731
+        return ((down(pred) - down(target)).abs().mean() + (right(pred) - right(target)).abs().mean()) / 2
+
     def predict(self, x_t, x_later, s):
         # -> (prediction of frame t+n, a)
         aligned = shift_frames(x_t, s)
         a = self.encoder(aligned, x_later)
         return aligned + self.decoder(aligned, a), a
 
-    def reconstruction_loss(self, pred, aligned, target, s):
-        # MSE over known pixels, optionally weighted by each pixel's error after the shift, plus an optional LPIPS term:
-        #   sum_p w_p |pred_p - target_p|^2 / (3 sum_p w_p) + lpips_weight * LPIPS(crop)
-        known = known_pixels(s).unsqueeze(1).float()  # [B, 1, H, W]
+    def reconstruction_loss(self, pred, aligned, target, known):
+        # pixel loss over the scored pixels `known` [B, 1, H, W], optionally weighted by each pixel's error after the shift, plus an optional
+        # LPIPS term:  sum_p w_p |pred_p - target_p|^k / (3 sum_p w_p) + lpips_weight * LPIPS(crop),  k = 2 (pixel_loss mse) or 1 (l1)
         weight = pixel_weights(aligned, target, known, self.error_weight) if self.error_weight > 0 else known
-        per_pixel = (pred - target).pow(2)  # [B, 3, H, W]
+        per_pixel = (pred - target).abs() if self.pixel_loss == 'l1' else (pred - target).pow(2)  # [B, 3, H, W]
         loss = (per_pixel * weight).sum() / (weight.sum() * 3).clamp(min=1)
         return loss + self.lpips_weight * self.lpips_term(pred, aligned, target, known) if self.lpips_weight > 0 else loss
 
-    def contrastive_loss(self, a, x_t, x_b, x_j, s_b, s_j):
+    def contrastive_loss(self, a, x_t, x_b, x_j, s_b, s_j, cut):
         # InfoNCE on a: a(t, t+n+delta) is the positive, the reversed a(t+n, t) the negative. As in CoMo, the two extra
-        # branches run the transformer without gradient and only train the merge and action heads.
+        # branches run the transformer without gradient and only train the merge and action heads. cut(frame, shift of its pair): the window
         with torch.no_grad():
-            q_pos = self.encoder.query_outputs(shift_frames(x_t, s_j), x_j)
-            q_neg = self.encoder.query_outputs(shift_frames(x_b, -s_b), x_t)
+            q_pos = self.encoder.query_outputs(cut(shift_frames(x_t, s_j), s_j), cut(x_j, s_j))
+            q_neg = self.encoder.query_outputs(cut(shift_frames(x_b, -s_b), -s_b), cut(x_t, -s_b))
         return info_nce(a, self.encoder.merge(q_pos), self.encoder.merge(q_neg), self.temperature)
 
-    def forward(self, x_t, x_b, x_j, s_b, s_j):
+    def forward(self, x_t, x_b, x_j, s_b, s_j, window=None):
         # x_t, x_b, x_j: frames t, t+n, t+n+delta [B, 3, 128, 128] in [-1, 1]; s_b, s_j: their measured shifts from t [B, 2]
-        aligned = shift_frames(x_t, s_b)
-        q = self.encoder.query_outputs(aligned, x_b)  # [B, Q, E]
+        # window: None, or the jitter of each pair's window [B, 2] long (WHOLE = whole pair; window_corner). The shift comes first, on the
+        # whole frames; the encoder and the decoder then see the window of the aligned pair; the shift predictor still reads the whole frame t
+        cut = (lambda x, s: window_canvas(x, window_corner(s, window))) if window is not None else (lambda x, s: x)
+        aligned, target = cut(shift_frames(x_t, s_b), s_b), cut(x_b, s_b)
+        q = self.encoder.query_outputs(aligned, target)  # [B, Q, E]
         a, kl = self.encoder.sample(q) if self.kl_weight > 0 else (self.encoder.merge(q), torch.zeros(()))  # [B, A]
         pred = aligned + self.decoder(aligned, a)
-        recon = self.reconstruction_loss(pred, aligned, x_b, s_b)
-        nce = self.contrastive_loss(a, x_t, x_b, x_j, s_b, s_j) if self.contrastive_weight > 0 else torch.zeros(())
+        known = scored_pixels(s_b, window_corner(s_b, window) if window is not None else None)
+        recon = self.reconstruction_loss(pred, aligned, target, known)
+        edge = self.edge_term(pred, aligned, target, known) if self.edge_weight > 0 else torch.zeros(())
+        nce = self.contrastive_loss(a, x_t, x_b, x_j, s_b, s_j, cut) if self.contrastive_weight > 0 else torch.zeros(())
         predicted_shift = self.shift_predictor(x_t, a.detach())  # no gradient into the action
         shift_error = relative_shift_error(predicted_shift, s_b).mean()
-        return {'loss': recon + self.contrastive_weight * nce + self.kl_weight * kl, 'recon': recon, 'nce': nce, 'kl': kl, 'shift_error': shift_error,
+        return {'loss': recon + self.edge_weight * edge + self.contrastive_weight * nce + self.kl_weight * kl,
+                'recon': recon, 'edge': edge, 'nce': nce, 'kl': kl, 'shift_error': shift_error,
                 'a': a, 'pred': pred, 'aligned': aligned}

@@ -1,0 +1,7 @@
+zelda_five_hours_frames.h5
+zelda_five_hours_shifts.npz
+zelda_five_hours_motion.npz
+zelda_train_frames.h5
+zelda_train_shifts.npz
+zelda_test_frames.h5
+zelda_test_shifts.npz

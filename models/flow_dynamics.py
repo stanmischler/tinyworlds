@@ -169,9 +169,10 @@ class FlowDynamicsModel(nn.Module):
         drop = torch.rand(actions.shape[:2], device=actions.device) < self.action_dropout_prob  # [B, T-1]
         return torch.where(drop[..., None], self.null_action.to(actions.dtype), actions)  # [B, T-1, A]
 
-    def token_weighted_loss(self, v_hat, v, token_mask=None, loss_mask=None):
+    def token_weighted_loss(self, v_hat, v, token_mask=None, loss_mask=None, strip_mask=None):
         # v_hat, v: [B, P, L] predicted and true velocity; token_mask: [B, P] moving tokens (token_loss "motion");
-        # loss_mask: [B, P] tokens in the loss (None = all), e.g. without the border revealed by a token shift
+        # loss_mask: [B, P] tokens in the loss (None = all), e.g. without the border revealed by a token shift;
+        # strip_mask: [B, P] tokens of the strip the camera scroll reveals, token_loss "focal" only (None = no special case)
         e = ((v_hat.float() - v) ** 2).mean(-1)  # [B, P] per-token velocity error
         valid = torch.ones_like(e) if loss_mask is None else loss_mask.float()  # [B, P]
         mse = (valid * e).sum() / valid.sum().clamp_min(1)  # mean error over the valid tokens (= e.mean() if all valid)
@@ -194,8 +195,13 @@ class FlowDynamicsModel(nn.Module):
         if self.token_loss == "focal":
             # dynamic focal weight w = sg((e / e_mean)^gamma), e_mean = the sample's mean error over its valid tokens:
             # tokens above it weigh more; the loss is the mean of w * e over the valid tokens
-            e_mean = (valid * e).sum(1, keepdim=True) / valid.sum(1, keepdim=True).clamp_min(1)  # [B, 1]
+            # strip_mask: the mean is taken outside the strip, and a strip token weighs at most 1:
+            #   w = sg((e / e_mean_rest)^gamma) outside the strip, sg(min((e / e_mean_rest)^gamma, 1)) in it; loss = mean of w * e
+            rest = valid if strip_mask is None else valid * (~strip_mask).float()  # [B, P] tokens the mean is taken over
+            e_mean = (rest * e).sum(1, keepdim=True) / rest.sum(1, keepdim=True).clamp_min(1)  # [B, 1]
             w = (e / e_mean.clamp_min(1e-8)).pow(self.focal_gamma).detach()  # [B, P]
+            if strip_mask is not None:
+                w = torch.where(strip_mask, w.clamp(max=1.0), w)  # [B, P]
             return (valid * w * e).sum() / valid.sum().clamp_min(1)
         return mse
 
@@ -209,11 +215,12 @@ class FlowDynamicsModel(nn.Module):
         c = self.net(inp, actions, t, modules=self.corrector)[:, -1].float()  # [B, P, L]
         return v + self.correction_gate * (c - v)  # [B, P, L]
 
-    def forward(self, latents, training=True, conditioning=None, targets=None, token_mask=None, loss_mask=None):
+    def forward(self, latents, training=True, conditioning=None, targets=None, token_mask=None, loss_mask=None, strip_mask=None):
         # latents: [B, T, P, L] clean FSQ (or continuous) latents; conditioning: [B, T-1, A] actions. Returns
         # (v_hat, (x1_hat, s, parts), loss) like DynamicsModel.forward returns (logits, mask, loss); x1_hat = x_t + s * v_hat [B, P, L]
         # is the predicted clean last frame, s [B] its noise level and parts the loss terms to log ({} without correction).
-        # token_mask: [B, P] moving tokens (token_loss "motion"); loss_mask: [B, P] tokens in the loss (None = all).
+        # token_mask: [B, P] moving tokens (token_loss "motion"); loss_mask: [B, P] tokens in the loss (None = all);
+        # strip_mask: [B, P] tokens of the scroll-revealed strip, error weight capped at 1 (token_loss "focal")
         if self.null_action is not None and self.training and conditioning is not None:
             conditioning = self.drop_actions(conditioning)
         if self.random_context and training and latents.shape[1] > 2:
@@ -237,7 +244,7 @@ class FlowDynamicsModel(nn.Module):
         noisy = torch.cat([ctx, xt[:, None]], dim=1)  # [B, T, P, L]
         t[:, -1] = tt
         v_hat = self.velocity(noisy, conditioning, t)  # [B, P, L]
-        loss = self.token_weighted_loss(v_hat, x1 - x0, token_mask, loss_mask)
+        loss = self.token_weighted_loss(v_hat, x1 - x0, token_mask, loss_mask, strip_mask)
         x1_hat = xt + s[:, None, None] * v_hat.float()  # [B, P, L] predicted clean latents (for the frequency loss)
         parts = {}  # loss terms to log
         if self.correction:

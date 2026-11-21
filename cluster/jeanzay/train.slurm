@@ -32,8 +32,8 @@ source "$WORK/envs/tinyworlds-$ARCH/bin/activate"
 # no internet on GPU nodes: W&B offline (sync from the login node), weights from the caches setup_env.sh filled
 export WANDB_MODE=offline MPLBACKEND=Agg PYTHONPATH="$PWD"
 export HF_HOME="$WORK/hf_home" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TORCH_HOME="$WORK/torch_home"
-# torch.compile caches, kept across jobs
-export TORCHINDUCTOR_CACHE_DIR="$SCRATCH/tinyworlds_cache/inductor" TRITON_CACHE_DIR="$SCRATCH/tinyworlds_cache/triton"
+# torch.compile caches, one per job: jobs that start together and compile into one cache can crash (InductorError)
+export TORCHINDUCTOR_CACHE_DIR="$SCRATCH/tinyworlds_cache/inductor_${SLURM_JOB_ID}" TRITON_CACHE_DIR="$SCRATCH/tinyworlds_cache/triton_${SLURM_JOB_ID}"
 
 if [ "${1:-}" = "--lines" ]; then  # one sweep setting per line of the file
     set -- $(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "$2")

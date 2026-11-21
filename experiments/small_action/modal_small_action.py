@@ -5,6 +5,8 @@
     modal run experiments/small_action/modal_small_action.py::five_hours_data
     TINYWORLDS_GPU=H100 modal run --detach experiments/small_action/modal_small_action.py::train_small_action --config five_hours_plain
     (then long_late_lpips, ours_heavy_long, late_weight_long, late_weight_focus: each starts from the previous one's checkpoint, init_from)
+    TINYWORLDS_GPU=H100 modal run --detach experiments/small_action/modal_small_action.py::train_small_action --config simple_recipe --overrides "run_name=...,error_weight=1.0"
+    (simple_recipe.yaml: the one-stage recipe and its knobs: action_dim, still_fraction, contrastive_weight, error_weight, window_fraction)
 """
 
 import os
@@ -17,10 +19,11 @@ CONFIGS = 'configs/experiments/small_action'
 
 @app.function(gpu=GPU, cpu=4 if GPU == "L4" else 8, memory=65536, volumes=VOLUMES, secrets=SECRETS, timeout=24 * 60 * 60)  # an L4 machine has too few CPUs for 8: the call waits in the queue
 def train_small_action(config: str, overrides: str = ""):
-    """config: a yaml name in configs/experiments/small_action, merged over base.yaml. overrides: "k=v,k=v"."""
+    """config: a yaml name in configs/experiments/small_action, or several joined by commas, merged left to right over base.yaml. overrides: "k=v,k=v" (split on commas, so no list values)."""
     os.chdir(REPO_DIR)
+    configs = ",".join(f"{CONFIGS}/{name}.yaml" for name in ["base", *config.split(",")])
     with committing():
-        subprocess.run(["python", "experiments/small_action/train.py", "--config", f"{CONFIGS}/base.yaml,{CONFIGS}/{config}.yaml", "--",
+        subprocess.run(["python", "experiments/small_action/train.py", "--config", configs, "--",
                         *[o for o in overrides.split(",") if o]], check=True)
 
 
@@ -96,6 +99,14 @@ def five_hours_data():
     data_volume.commit()
     with committing():
         subprocess.run(["python", "experiments/small_action/five_hours.py", "--stage", "tables"], check=True)
+    data_volume.commit()
+
+
+@app.function(gpu=GPU, cpu=8, memory=65536, volumes=VOLUMES, timeout=2 * 60 * 60)
+def positive_shifts():
+    """The shifts to the InfoNCE positives on the YouTube rows of the 5 h shift table (experiments/small_action/positive_shifts.py), on the data volume."""
+    os.chdir(REPO_DIR)
+    subprocess.run(["python", "experiments/small_action/positive_shifts.py"], check=True)
     data_volume.commit()
 
 

@@ -229,6 +229,10 @@ def linear_shift_readout(vectors, shift, blocks, valid, ridges=(1e-3, 1e-2, 1e-1
 
 def shift_scores(pred, shift, group, valid):
     # relative distance ||pred - true|| / max(||true||, 1 px) per camera group, on the pairs where the computed shift means something
+    # a group without pairs (a small eval_limit keeps camera-still pairs only) scores None
     d = np.linalg.norm(pred - shift, axis=1) / np.maximum(np.linalg.norm(shift, axis=1), 1)
-    return {name: {'n': int(((group == name) & valid).sum()), 'median': round(float(np.median(d[(group == name) & valid])), 3),
-                   'p90': round(float(np.percentile(d[(group == name) & valid], 90)), 3)} for name in GROUPS}
+    out = {}
+    for name in GROUPS:
+        g = d[(group == name) & valid]  # [n]
+        out[name] = {'n': len(g), 'median': round(float(np.median(g)), 3) if len(g) else None, 'p90': round(float(np.percentile(g, 90)), 3) if len(g) else None}
+    return out
