@@ -39,8 +39,14 @@ class FlowDynamicsModel(nn.Module):
                  t_eps=0.05, round_latents=True, fm_source="noise", fm_source_noise=0.0, noise_cond=False, random_context=False,
                  bridge_loss="stabilised", bridge_t_max=0.999, bridge_delta=1e-4, correction=False, correction_weight=1.0,
                  token_loss="mse", token_loss_weight=1.0, topk_frac=0.05, focal_gamma=1.0, action_dropout_prob=0.0,
-                 motion_loss_per_sample=False, dropout=0.0, action_token=False):
+                 motion_loss_per_sample=False, dropout=0.0, action_token=False, context_noise_max=0.0):
         super().__init__()
+        # context noise (GameNGen-style noise augmentation, fm_source "noise" only): in training each context frame is
+        # mixed with Gaussian noise as the predicted frame is, (1 - s) x + s eps, s ~ U(0, context_noise_max) per frame and
+        # sample, and its flow time input says so (t = 1 - s). The model learns to read imperfect contexts, as in its own
+        # rollouts. context_noise is the sampling-time level (an inference knob, 0 = clean context as before).
+        assert context_noise_max == 0 or fm_source == "noise", 'context noise needs fm_source "noise"'
+        self.context_noise_max, self.context_noise = float(context_noise_max), 0.0
         # token_loss: how the per-token velocity error e [B, P] is reduced (see token_weighted_loss); "mse" = plain mean
         assert token_loss in ("mse", "motion", "topk", "focal"), token_loss
         assert token_loss == "mse" or fm_source != "bridge", 'token_loss needs fm_source "noise" or "copy"'
@@ -222,8 +228,13 @@ class FlowDynamicsModel(nn.Module):
         s = shift_noise_level(torch.rand(B, device=latents.device), self.fm_shift)  # [B] noise level
         tt = 1 - s  # [B] flow time
         xt = tt[:, None, None] * x1 + s[:, None, None] * x0  # [B, P, L]
-        noisy = torch.cat([latents[:, :-1].float(), xt[:, None]], dim=1)  # [B, T, P, L]
+        ctx = latents[:, :-1].float()  # [B, T-1, P, L]
         t = torch.ones(B, T, device=latents.device)  # [B, T] context is clean (t = 1)
+        if self.context_noise_max > 0 and self.training and training:
+            sc = torch.rand(B, T - 1, device=latents.device) * self.context_noise_max  # [B, T-1] context noise levels
+            ctx = (1 - sc[..., None, None]) * ctx + sc[..., None, None] * torch.randn_like(ctx)  # [B, T-1, P, L]
+            t[:, :-1] = 1 - sc
+        noisy = torch.cat([ctx, xt[:, None]], dim=1)  # [B, T, P, L]
         t[:, -1] = tt
         v_hat = self.velocity(noisy, conditioning, t)  # [B, P, L]
         loss = self.token_weighted_loss(v_hat, x1 - x0, token_mask, loss_mask)
@@ -317,9 +328,14 @@ class FlowDynamicsModel(nn.Module):
             x = torch.randn(B, P, L, device=dev, generator=generator)  # [B, P, L]
         s_grid = shift_noise_level(torch.linspace(1, 0, num_steps + 1, device=dev), self.fm_shift)  # [N+1], 1 -> 0
         t = torch.ones(B, Tc + 1, device=dev)  # [B, Tc+1]
+        ctx = context_latents.float()  # [B, Tc, P, L]
+        if self.context_noise > 0:  # one noise draw for the whole integration, flagged in the time input
+            eps = torch.randn(ctx.shape, device=dev, generator=generator)  # [B, Tc, P, L]
+            ctx = (1 - self.context_noise) * ctx + self.context_noise * eps
+            t[:, :-1] = 1 - self.context_noise
         for k in range(num_steps):
             t[:, -1] = 1 - s_grid[k]
-            inp = torch.cat([context_latents.float(), x[:, None]], dim=1)  # [B, Tc+1, P, L]
+            inp = torch.cat([ctx, x[:, None]], dim=1)  # [B, Tc+1, P, L]
             v = self.guided_velocity(inp, conditioning, t)  # [B, P, L]
             if self.correction and k < math.ceil(self.correction_interval * num_steps):  # the first, noisiest steps
                 for _ in range(self.correction_k):

@@ -1,0 +1,41 @@
+# "noisy context dynamics": the "bigfish dynamics" recipe (dynamics.yaml, below unchanged) with one change, context noise:
+# each of the 3 context frames is mixed with Gaussian noise at a level s ~ U(0, 0.4) per frame and sample, flagged in
+# its flow time input (models/flow_dynamics.py). 0.4 is GameNGen's maximum (noise std 0.7) on the flow's scale
+# (s / (1 - s) = 0.7). Goal: stable long rollouts (no fish multiplying) without losing next-frame quality.
+# Launch as dynamics.yaml with this file as --config and NG_RUN_ROOT_DIR=$PWD/results/noisy_context_dynamics.
+# The held-out curve uses the first 1,024 windows (test_eval_limit) instead of all 6,465 (10 min per point).
+batch_size_per_gpu: 16    # global batch 64 = 16 x 4 GPUs; set batch_size_per_gpu=64/N on the command line for N GPUs
+gradient_accumulation_steps: 1
+n_updates: 100000
+learning_rate: 0.001
+log_interval: 2000        # checkpoint + sampled-prediction PNG
+
+use_actions: true
+
+embed_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_blocks: 12
+
+dynamics_type: flow
+fm_pred: v
+fm_shift: 3.0
+qk_norm: true
+ema_decay: 0.999
+seed: 0
+
+context_noise_max: 0.4   # the only change from dynamics.yaml
+
+token_loss: focal         # error-weighted loss: mean(sg((e / per-sample mean e)^focal_gamma) * e)
+focal_gamma: 1.0
+focal_exclude_scroll_strip: false   # still camera: nothing is revealed at the edges
+
+video_tokenizer_path: results/bigfish_tokenizer_long/video_tokenizer/checkpoints/video_tokenizer_step_99000
+latent_actions_path: results/bigfish_action_model_actions_full   # action dir: mean/std of the training pairs' actions
+action_file: data/bigfish_como_z.npy                              # raw action per .h5 row (row t: frames t -> t+1)
+
+test_eval_h5: data/bigfish_test_frames.h5
+test_eval_interval: 5000
+test_eval_limit: 1024  # held-out curve, for watching only; report numbers come from eval_next_frame.py at 32 steps
+
+checkpoint:

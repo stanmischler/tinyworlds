@@ -322,6 +322,9 @@ class DynamicsConfig:
 	# Variable context (flow only): each training batch keeps its first Tc + 1 frames, Tc ~ U{1, ..., T - 1}, so
 	# the model also learns to predict from short histories (NanoWM's 1 context frame -> 3 rollout). False = always T - 1.
 	fm_random_context: bool = False
+	# Context noise (flow, fm_source "noise"): each training context frame is mixed with noise at a level
+	# s ~ U(0, context_noise_max), flagged in its flow time input, so rollouts of the model's own frames stay stable. 0 = off.
+	context_noise_max: float = 0.0
 	# Correction training (Ahn et al. 2026, arXiv 2610.14136, flow only, models/flow_dynamics.py): a corrector network (a copy of the
 	# dynamics net when fine-tuning from init_weights) refines the predicted clean frame; loss = flow loss +
 	# correction_weight * corrected-velocity loss. Corrections per sampling step are an eval knob (--correction-k).
