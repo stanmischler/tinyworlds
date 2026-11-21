@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bigfish Dream</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+:root {
+  --bg0:#030b18; --bg1:#071a2e; --panel:rgba(10,32,56,.72); --line:rgba(120,200,255,.16);
+  --ink:#e4f3ff; --muted:#7f9bb5; --accent:#3ef0b0; --accent2:#4fb4ff; --warn:#ffb547; --hot:#ff5d7a;
+  --sans:'Space Grotesk',system-ui,sans-serif; --mono:'JetBrains Mono',ui-monospace,monospace;
+}
+* { box-sizing:border-box; }
+html,body { margin:0; height:100%; }
+body {
+  background: radial-gradient(1200px 700px at 50% -10%, #0d3a63 0%, var(--bg1) 45%, var(--bg0) 100%) fixed;
+  color:var(--ink); font-family:var(--sans); overflow-x:hidden;
+}
+/* drifting bubbles */
+.bubbles { position:fixed; inset:0; pointer-events:none; overflow:hidden; z-index:0; }
+.bubbles i { position:absolute; bottom:-20px; border-radius:50%; border:1px solid rgba(160,220,255,.25);
+  background:radial-gradient(circle at 30% 30%, rgba(255,255,255,.25), rgba(255,255,255,0) 60%); animation:rise linear infinite; }
+@keyframes rise { to { transform:translateY(-110vh) translateX(30px); opacity:0; } }
+@media (prefers-reduced-motion: reduce) { .bubbles { display:none; } }
+
+.app { position:relative; z-index:1; max-width:1500px; margin:0 auto; padding:18px 16px 28px;
+  display:grid; grid-template-columns: 250px minmax(0,1fr) 300px; gap:18px; }
+header { grid-column:1/-1; display:flex; align-items:baseline; gap:16px; flex-wrap:wrap; }
+h1 { margin:0; font-size:30px; letter-spacing:.02em; }
+h1 b { color:var(--accent); }
+.tag { font-family:var(--mono); font-size:12px; color:var(--muted); }
+.status { margin-left:auto; font-family:var(--mono); font-size:12px; display:flex; gap:8px; align-items:center; }
+.dot { width:9px; height:9px; border-radius:50%; background:var(--hot); box-shadow:0 0 10px var(--hot); }
+.dot.ok { background:var(--accent); box-shadow:0 0 10px var(--accent); }
+
+.panel { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:14px; backdrop-filter:blur(6px); }
+.panel h2 { margin:0 0 10px; font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); font-weight:600; }
+.panel + .panel { margin-top:14px; }
+
+/* scenes */
+.scenes { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; max-height:520px; overflow:auto; padding-right:2px; }
+.scenes canvas { width:100%; aspect-ratio:1; image-rendering:pixelated; border-radius:6px; cursor:pointer;
+  border:2px solid transparent; transition:transform .12s, border-color .12s; }
+.scenes canvas:hover { transform:scale(1.06); }
+.scenes canvas.sel { border-color:var(--accent); box-shadow:0 0 12px rgba(62,240,176,.5); }
+
+/* stage */
+.stage { display:flex; flex-direction:column; align-items:center; gap:12px; }
+.modes { display:flex; gap:6px; background:rgba(0,0,0,.25); padding:4px; border-radius:999px; border:1px solid var(--line); }
+.modes button { all:unset; cursor:pointer; padding:7px 16px; border-radius:999px; font-size:14px; color:var(--muted); }
+.modes button.on { background:var(--accent); color:#00261a; font-weight:700; }
+.screens { display:flex; gap:16px; flex-wrap:wrap; justify-content:center; width:100%; }
+.screen { position:relative; width:min(100%, 560px); }
+.screen.half { width:min(48%, 440px); }
+.screen canvas { width:100%; aspect-ratio:1; display:block; image-rendering:pixelated; border-radius:12px;
+  box-shadow:0 0 0 1px var(--line), 0 20px 60px rgba(0,0,0,.55), 0 0 80px rgba(79,180,255,.15); background:#000; }
+.screen .label { position:absolute; top:10px; left:12px; font-family:var(--mono); font-size:12px; padding:3px 8px;
+  border-radius:6px; background:rgba(0,0,0,.55); }
+.screen .label.dream { color:var(--accent); } .screen .label.real { color:var(--warn); }
+.scan::after { content:""; position:absolute; inset:0; border-radius:12px; pointer-events:none;
+  background:repeating-linear-gradient(0deg, rgba(0,0,0,.10) 0 2px, transparent 2px 4px); mix-blend-mode:multiply; }
+.hud { position:absolute; bottom:10px; left:12px; right:12px; display:flex; justify-content:space-between;
+  font-family:var(--mono); font-size:12px; text-shadow:0 1px 3px #000; pointer-events:none; }
+.overlay { position:absolute; inset:0; display:grid; place-items:center; border-radius:12px; background:rgba(3,11,24,.55);
+  font-size:22px; font-weight:700; letter-spacing:.06em; pointer-events:none; opacity:0; transition:opacity .2s; }
+.overlay.show { opacity:1; }
+.rec { position:absolute; top:10px; right:12px; font-family:var(--mono); font-size:12px; color:var(--hot); display:none; }
+.rec.show { display:block; animation:blink 1s steps(2) infinite; }
+@keyframes blink { 50% { opacity:.2; } }
+
+.film { display:flex; gap:4px; width:100%; max-width:900px; overflow:hidden; justify-content:center; min-height:52px; }
+.film canvas { width:48px; height:48px; image-rendering:pixelated; border-radius:4px; opacity:.85; flex:none; }
+.spark { width:100%; max-width:900px; height:70px; display:none; }
+.spark.show { display:block; }
+
+/* controls */
+.dpad { display:grid; grid-template-columns:repeat(3,58px); grid-template-rows:repeat(3,58px); gap:6px; justify-content:center; }
+.dpad button { all:unset; cursor:pointer; display:grid; place-items:center; border-radius:10px; font-size:20px;
+  background:rgba(255,255,255,.05); border:1px solid var(--line); color:var(--muted); transition:all .08s; user-select:none; }
+.dpad button.on { background:var(--accent); color:#00261a; border-color:var(--accent); box-shadow:0 0 16px rgba(62,240,176,.6); transform:scale(.96); }
+.dpad button small { font-size:9px; font-family:var(--mono); display:block; text-align:center; }
+.codes { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; }
+.codes button { all:unset; cursor:pointer; border-radius:8px; padding:6px 4px; text-align:center; font-family:var(--mono);
+  font-size:10.5px; background:rgba(255,255,255,.05); border:1px solid var(--line); color:var(--ink); user-select:none; line-height:1.3; }
+.codes button b { display:block; font-size:13px; color:var(--accent2); }
+.codes button.on { background:var(--accent2); color:#001a33; border-color:var(--accent2); }
+.codes button.on b { color:#001a33; }
+.seg { display:flex; gap:4px; }
+.seg button { all:unset; cursor:pointer; flex:1; text-align:center; padding:6px 0; border-radius:8px; font-family:var(--mono); font-size:12px;
+  background:rgba(255,255,255,.05); border:1px solid var(--line); color:var(--muted); }
+.seg button.on { background:var(--accent2); color:#001a33; font-weight:600; border-color:var(--accent2); }
+.row { display:flex; justify-content:space-between; align-items:center; gap:10px; margin:10px 0 6px; font-size:13px; }
+.row span:last-child { font-family:var(--mono); color:var(--accent); }
+input[type=range] { width:100%; accent-color:var(--accent); }
+.bars { display:grid; grid-template-columns:repeat(8,1fr); gap:5px; height:84px; align-items:center; }
+.bars div { position:relative; height:100%; background:rgba(255,255,255,.04); border-radius:4px; }
+.bars div i { position:absolute; left:0; right:0; background:linear-gradient(var(--accent2), var(--accent)); border-radius:3px; transition:all .15s; }
+.bars div::after { content:""; position:absolute; left:0; right:0; top:50%; border-top:1px dashed rgba(255,255,255,.2); }
+.btns { display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; }
+.btns button { all:unset; cursor:pointer; text-align:center; padding:9px 0; border-radius:9px; font-size:13px; font-weight:600;
+  background:rgba(255,255,255,.07); border:1px solid var(--line); }
+.btns button:hover { border-color:var(--accent); }
+.keys { font-size:12.5px; color:var(--muted); line-height:1.8; }
+kbd { font-family:var(--mono); font-size:11px; padding:1px 6px; border-radius:5px; background:rgba(255,255,255,.1); border:1px solid var(--line); color:var(--ink); }
+.note { font-size:12px; color:var(--muted); line-height:1.5; margin:8px 0 0; }
+
+@media (max-width:1150px) { .app { grid-template-columns:1fr; } .scenes { grid-template-columns:repeat(8,1fr); max-height:none; } }
+@media (max-width:600px) { .scenes { grid-template-columns:repeat(4,1fr); } .screen.half { width:100%; } }
+</style>
+</head>
+<body>
+<div class="bubbles" id="bubbles"></div>
+<div class="app">
+  <header>
+    <h1>BIGFISH <b>DREAM</b></h1>
+    <span class="tag">every frame imagined by a 10.8M flow-matching world model · no game engine</span>
+    <div class="status"><span class="dot" id="dot"></span><span id="statusText">connecting…</span></div>
+  </header>
+
+  <aside>
+    <div class="panel">
+      <h2>Start scene</h2>
+      <div class="scenes" id="scenes"></div>
+      <p class="note">32 held-out scenes the model never trained on. The first 3 frames are real; everything after is dreamed.</p>
+    </div>
+  </aside>
+
+  <main class="stage">
+    <div class="modes">
+      <button id="modePlay" class="on">▶ Play</button>
+      <button id="modeReplay">◐ Dream vs reality</button>
+    </div>
+    <div class="screens">
+      <div class="screen scan" id="scrDream">
+        <canvas id="cvDream" width="64" height="64"></canvas>
+        <span class="label dream">DREAM</span>
+        <span class="rec" id="recBadge">● REC</span>
+        <div class="hud"><span id="hudT">t = 0</span><span id="hudFps">– fps</span><span id="hudMs">– ms</span></div>
+        <div class="overlay show" id="overlay">PRESS AN ARROW</div>
+      </div>
+      <div class="screen scan" id="scrReal" style="display:none">
+        <canvas id="cvReal" width="64" height="64"></canvas>
+        <span class="label real">REALITY</span>
+        <div class="hud"><span id="hudBtn">true key –</span><span id="hudPsnr">PSNR –</span></div>
+      </div>
+    </div>
+    <canvas class="spark" id="spark" width="900" height="70"></canvas>
+    <div class="film" id="film"></div>
+  </main>
+
+  <aside>
+    <div class="panel">
+      <h2>Controls</h2>
+      <div class="seg" id="ctlSrc" style="margin-bottom:12px">
+        <button data-v="dir" class="on">9 directions</button>
+        <button data-v="codes">16 learned codes</button>
+      </div>
+      <div class="dpad" id="dpad"></div>
+      <div class="codes" id="codes" style="display:none"></div>
+      <div class="row"><span>Action strength</span><span id="strVal">1.00×</span></div>
+      <input type="range" id="strength" min="0" max="2.5" step="0.05" value="1">
+      <div class="row"><span>Euler steps per frame</span><span id="stepsVal">8</span></div>
+      <div class="seg" id="steps">
+        <button data-v="4">4 fast</button><button data-v="8" class="on">8</button><button data-v="16">16</button><button data-v="32">32 sharp</button>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Action sent (8 numbers)</h2>
+      <div class="bars" id="bars"></div>
+    </div>
+    <div class="panel">
+      <div class="btns">
+        <button id="btnPause">Pause</button><button id="btnReset">Restart</button><button id="btnRec">Record</button>
+      </div>
+      <div class="row"><span>Noise seed</span><span><input id="seed" type="number" value="0" style="width:70px;background:transparent;color:var(--accent);border:1px solid var(--line);border-radius:6px;font-family:var(--mono);padding:2px 6px"></span></div>
+      <div class="row"><span>CRT scanlines</span><span><input id="scan" type="checkbox" checked></span></div>
+    </div>
+    <div class="panel keys">
+      <h2>Keys</h2>
+      <kbd>←↑→↓</kbd> / <kbd>WASD</kbd> swim (diagonals OK)<br>
+      <kbd>1</kbd>–<kbd>9</kbd> <kbd>0</kbd> <kbd>Q</kbd>–<kbd>Y</kbd> learned codes<br>
+      <kbd>Space</kbd> pause · <kbd>R</kbd> restart · <kbd>V</kbd> record<br>
+      <kbd>[</kbd> <kbd>]</kbd> fewer / more Euler steps
+      <p class="note">You are the green fish. With no key held, the model gets the "no move" command and the world keeps going.</p>
+    </div>
+  </aside>
+</div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const state = { meta:null, ws:null, start:0, mode:'play', src:'dir', steps:8, strength:1, paused:true, inflight:false,
+    keys:new Set(), held:null, code:null, t:0, times:[], psnrs:[], id:0, recorder:null, ended:false };
+
+  // bubbles
+  for (let i = 0; i < 28; i++) {
+    const b = document.createElement('i'), s = 4 + Math.random() * 14;
+    Object.assign(b.style, { left: Math.random() * 100 + 'vw', width: s + 'px', height: s + 'px',
+      animationDuration: 9 + Math.random() * 14 + 's', animationDelay: -Math.random() * 20 + 's' });
+    $('bubbles').appendChild(b);
+  }
+
+  // ---------- drawing ----------
+  function rgbToImage(b64) {
+    const bin = atob(b64), img = new ImageData(64, 64);
+    for (let i = 0, j = 0; i < bin.length; i += 3, j += 4) {
+      img.data[j] = bin.charCodeAt(i); img.data[j + 1] = bin.charCodeAt(i + 1); img.data[j + 2] = bin.charCodeAt(i + 2); img.data[j + 3] = 255;
+    }
+    return img;
+  }
+  function draw(cv, b64) { const img = rgbToImage(b64); cv.getContext('2d').putImageData(img, 0, 0); return img; }
+  function pushFilm(img) {
+    const c = document.createElement('canvas'); c.width = c.height = 64; c.getContext('2d').putImageData(img, 0, 0);
+    const f = $('film'); f.appendChild(c); while (f.children.length > 16) f.removeChild(f.firstChild);
+  }
+
+  // ---------- controls ----------
+  // class order (export): 0 left+down, 1 left, 2 left+up, 3 down, 4 no move, 5 up, 6 right+down, 7 right, 8 right+up
+  const GRID = [[2,'↖'],[5,'↑'],[8,'↗'],[1,'←'],[4,'•'],[7,'→'],[0,'↙'],[3,'↓'],[6,'↘']];
+  const CODE_KEYS = ['1','2','3','4','5','6','7','8','9','0','q','w','e','r','t','y'];
+  const ARROWS = { arrowleft:'L', a:'L', arrowright:'R', d:'R', arrowup:'U', w:'U', arrowdown:'D', s:'D' };
+
+  function dirClass() {
+    if (state.held !== null) return state.held;
+    const k = state.keys, dx = (k.has('R') ? 1 : 0) - (k.has('L') ? 1 : 0), dy = (k.has('U') ? 1 : 0) - (k.has('D') ? 1 : 0);
+    return { '-1,-1':0, '-1,0':1, '-1,1':2, '0,-1':3, '0,0':4, '0,1':5, '1,-1':6, '1,0':7, '1,1':8 }[dx + ',' + dy];
+  }
+  function currentAction() {
+    const m = state.meta, base = m.commands[4];
+    let v, label;
+    if (state.src === 'codes' && state.code !== null) {
+      v = m.centroids[state.code]; label = 'code ' + CODE_KEYS[state.code].toUpperCase();
+    } else {
+      const c = dirClass(); v = m.commands[c]; label = m.command_names[c];
+    }
+    return { action: v.map((x, i) => base[i] + state.strength * (x - base[i])), label };
+  }
+  function refreshPads() {
+    const c = state.src === 'dir' ? dirClass() : -1;
+    [...$('dpad').children].forEach(b => b.classList.toggle('on', +b.dataset.c === c && (c !== 4 || state.keys.size + (state.held !== null) > 0)));
+    [...$('codes').children].forEach((b, i) => b.classList.toggle('on', state.code === i));
+  }
+  function showBars(a) {
+    [...$('bars').children].forEach((d, i) => {
+      const v = Math.max(-3, Math.min(3, a[i])), h = Math.abs(v) / 3 * 50;
+      const bar = d.firstChild; bar.style.height = h + '%'; bar.style.top = v >= 0 ? (50 - h) + '%' : '50%';
+    });
+  }
+
+  function buildControls() {
+    const m = state.meta;
+    GRID.forEach(([c, sym]) => {
+      const b = document.createElement('button'); b.dataset.c = c;
+      b.innerHTML = sym + '<small>' + m.command_names[c].replace('no move', 'idle') + '</small>';
+      const on = e => { e.preventDefault(); state.held = c; wake(); refreshPads(); };
+      const off = () => { state.held = null; refreshPads(); };
+      b.addEventListener('pointerdown', on); b.addEventListener('pointerup', off); b.addEventListener('pointerleave', off);
+      $('dpad').appendChild(b);
+    });
+    m.centroids.forEach((_, i) => {
+      const b = document.createElement('button');
+      b.innerHTML = '<b>' + CODE_KEYS[i].toUpperCase() + '</b>' + m.command_names[m.centroid_class[i]] + '<br>' + Math.round(100 * m.centroid_purity[i]) + '% pure';
+      b.title = 'k-means centroid ' + i + ': its training pairs are ' + Math.round(100 * m.centroid_purity[i]) + '% "' + m.command_names[m.centroid_class[i]] + '"';
+      const on = e => { e.preventDefault(); state.code = i; wake(); refreshPads(); };
+      const off = () => { state.code = null; refreshPads(); };
+      b.addEventListener('pointerdown', on); b.addEventListener('pointerup', off); b.addEventListener('pointerleave', off);
+      $('codes').appendChild(b);
+    });
+    for (let i = 0; i < 8; i++) { const d = document.createElement('div'); d.appendChild(document.createElement('i')); $('bars').appendChild(d); }
+    m.starts.forEach((s, i) => {
+      const c = document.createElement('canvas'); c.width = c.height = 64; draw(c, s);
+      c.title = 'held-out scene ' + (i + 1); c.onclick = () => { state.start = i; reset(); };
+      $('scenes').appendChild(c);
+    });
+  }
+
+  function seg(id, key, cb) {
+    $(id).addEventListener('click', e => {
+      const b = e.target.closest('button'); if (!b) return;
+      [...$(id).children].forEach(x => x.classList.toggle('on', x === b)); cb(b.dataset.v);
+    });
+  }
+  seg('ctlSrc', 'src', v => { state.src = v; $('dpad').style.display = v === 'dir' ? '' : 'none'; $('codes').style.display = v === 'codes' ? '' : 'none'; });
+  seg('steps', 'steps', v => { state.steps = +v; $('stepsVal').textContent = v; });
+  function setSteps(n) { state.steps = n; $('stepsVal').textContent = n; [...$('steps').children].forEach(b => b.classList.toggle('on', +b.dataset.v === n)); }
+  $('strength').oninput = e => { state.strength = +e.target.value; $('strVal').textContent = state.strength.toFixed(2) + '×'; };
+  $('scan').onchange = e => document.querySelectorAll('.screen').forEach(s => s.classList.toggle('scan', e.target.checked));
+  $('btnPause').onclick = () => togglePause();
+  $('btnReset').onclick = () => reset();
+  $('btnRec').onclick = () => toggleRec();
+
+  function setMode(mode) {
+    state.mode = mode;
+    $('modePlay').classList.toggle('on', mode === 'play'); $('modeReplay').classList.toggle('on', mode === 'replay');
+    $('scrReal').style.display = mode === 'replay' ? '' : 'none';
+    $('scrDream').classList.toggle('half', mode === 'replay'); $('scrReal').classList.toggle('half', mode === 'replay');
+    $('spark').classList.toggle('show', mode === 'replay');
+    reset();
+  }
+  $('modePlay').onclick = () => setMode('play');
+  $('modeReplay').onclick = () => setMode('replay');
+
+  // ---------- keyboard ----------
+  addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' && e.target.type === 'number') return;
+    const k = e.key.toLowerCase();
+    if (ARROWS[k]) { state.keys.add(ARROWS[k]); e.preventDefault(); wake(); }
+    else if (CODE_KEYS.includes(k)) { state.code = CODE_KEYS.indexOf(k); if (state.src !== 'codes') $('ctlSrc').children[1].click(); wake(); }
+    else if (k === ' ') { e.preventDefault(); togglePause(); }
+    else if (k === 'r') reset();
+    else if (k === 'v') toggleRec();
+    else if (k === '[' || k === ']') { const opts = [4, 8, 16, 32], i = opts.indexOf(state.steps); setSteps(opts[Math.max(0, Math.min(3, i + (k === ']' ? 1 : -1)))]); }
+    refreshPads();
+  });
+  addEventListener('keyup', e => {
+    const k = e.key.toLowerCase();
+    if (ARROWS[k]) state.keys.delete(ARROWS[k]);
+    if (CODE_KEYS.includes(k) && state.code === CODE_KEYS.indexOf(k)) state.code = null;
+    refreshPads();
+  });
+  addEventListener('blur', () => { state.keys.clear(); state.held = null; state.code = null; refreshPads(); });
+
+  // ---------- game loop ----------
+  function overlay(text) { $('overlay').textContent = text || ''; $('overlay').classList.toggle('show', !!text); }
+  function wake() { if (state.paused && !state.ended && state.mode === 'play') { state.paused = false; overlay(''); $('btnPause').textContent = 'Pause'; tick(); } }
+  function togglePause() {
+    if (state.ended) return reset();
+    state.paused = !state.paused; $('btnPause').textContent = state.paused ? 'Resume' : 'Pause';
+    overlay(state.paused ? 'PAUSED' : ''); if (!state.paused) tick();
+  }
+  function tick() {
+    if (state.paused || state.inflight || !state.ws || state.ws.readyState !== 1) return;
+    const { action } = currentAction();
+    state.inflight = true;
+    state.ws.send(JSON.stringify({ op: 'step', action, steps: state.steps, id: ++state.id }));
+  }
+  function reset() {
+    if (!state.ws || state.ws.readyState !== 1) return;
+    state.paused = true; state.ended = false; state.t = 0; state.times = []; state.psnrs = [];
+    $('film').innerHTML = ''; drawSpark();
+    [...$('scenes').children].forEach((c, i) => c.classList.toggle('sel', i === state.start));
+    state.ws.send(JSON.stringify({ op: 'reset', start: state.start, seed: +$('seed').value || 0, mode: state.mode }));
+    overlay(state.mode === 'play' ? 'PRESS AN ARROW' : 'SPACE TO ROLL');
+    $('btnPause').textContent = 'Start';
+  }
+
+  function onMessage(m) {
+    if (m.op === 'reset') {
+      let img; m.frames.forEach(f => { img = draw($('cvDream'), f); pushFilm(img); });
+      if (state.mode === 'replay') draw($('cvReal'), m.frames[m.frames.length - 1]);
+      $('hudT').textContent = 't = 0 (real)'; $('hudFps').textContent = '– fps'; $('hudMs').textContent = '– ms';
+      state.inflight = false;
+    } else if (m.op === 'frame') {
+      state.inflight = false;
+      const img = draw($('cvDream'), m.frame); pushFilm(img);
+      state.t = m.t; showBars(m.action);
+      const now = performance.now(); state.times.push(now); while (state.times.length > 10) state.times.shift();
+      const fps = state.times.length > 1 ? (state.times.length - 1) * 1000 / (now - state.times[0]) : 0;
+      $('hudT').textContent = 't = ' + m.t; $('hudFps').textContent = fps.toFixed(1) + ' fps'; $('hudMs').textContent = m.ms + ' ms';
+      if (m.real) {
+        draw($('cvReal'), m.real); state.psnrs.push(m.psnr); drawSpark();
+        $('hudPsnr').textContent = 'PSNR ' + m.psnr.toFixed(1) + ' dB'; $('hudBtn').textContent = 'true key ' + state.meta.command_names[m.button];
+      }
+      tick();
+    } else if (m.op === 'end') {
+      state.inflight = false; state.paused = true; state.ended = true; overlay('END OF THE REAL CLIP · R');
+    }
+  }
+
+  function drawSpark() {
+    const cv = $('spark'), g = cv.getContext('2d'), W = cv.width, H = cv.height, p = state.psnrs, n = state.meta ? state.meta.horizon : 60;
+    g.clearRect(0, 0, W, H);
+    const y = v => H - 8 - (Math.max(10, Math.min(45, v)) - 10) / 35 * (H - 16);
+    g.strokeStyle = 'rgba(255,255,255,.12)'; g.setLineDash([3, 4]);
+    [20, 30, 40].forEach(v => { g.beginPath(); g.moveTo(0, y(v)); g.lineTo(W, y(v)); g.stroke(); g.fillStyle = 'rgba(255,255,255,.35)'; g.font = '10px JetBrains Mono'; g.fillText(v + ' dB', 4, y(v) - 3); });
+    g.setLineDash([]);
+    if (!p.length) return;
+    g.strokeStyle = '#3ef0b0'; g.lineWidth = 2; g.beginPath();
+    p.forEach((v, i) => { const x = 40 + i / Math.max(1, n - 1) * (W - 50); i ? g.lineTo(x, y(v)) : g.moveTo(x, y(v)); });
+    g.stroke();
+    g.fillStyle = 'rgba(255,255,255,.55)'; g.fillText('dream vs reality, PSNR per frame (true actions fed in)', W - 330, 12);
+  }
+
+  // ---------- recording ----------
+  function toggleRec() {
+    if (state.recorder) { state.recorder.stop(); return; }
+    const big = document.createElement('canvas'); big.width = big.height = 512;
+    const g = big.getContext('2d'); g.imageSmoothingEnabled = false;
+    let alive = true; (function copy() { if (!alive) return; g.drawImage($('cvDream'), 0, 0, 512, 512); requestAnimationFrame(copy); })();
+    const rec = new MediaRecorder(big.captureStream(30), { mimeType: 'video/webm' }), chunks = [];
+    rec.ondataavailable = e => chunks.push(e.data);
+    rec.onstop = () => {
+      alive = false; state.recorder = null; $('recBadge').classList.remove('show'); $('btnRec').textContent = 'Record';
+      const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(chunks, { type: 'video/webm' }));
+      a.download = 'bigfish-dream-' + Date.now() + '.webm'; a.click();
+    };
+    rec.start(); state.recorder = rec; $('recBadge').classList.add('show'); $('btnRec').textContent = 'Stop';
+  }
+
+  // ---------- boot ----------
+  async function boot() {
+    state.meta = await (await fetch('/meta')).json();
+    buildControls(); refreshPads(); showBars(state.meta.commands[4]);
+    const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
+    state.ws = ws;
+    ws.onopen = () => { $('dot').classList.add('ok'); $('statusText').textContent = 'world model live on ' + state.meta.device; reset(); };
+    ws.onclose = () => { $('dot').classList.remove('ok'); $('statusText').textContent = 'disconnected: restart server.py and reload'; };
+    ws.onmessage = e => onMessage(JSON.parse(e.data));
+  }
+  boot().catch(err => { $('statusText').textContent = 'server not reachable: ' + err; });
+})();
+</script>
+</body>
+</html>

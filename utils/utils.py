@@ -343,7 +343,8 @@ def flow_dynamics_kwargs(cfg, action_dim):
                       topk_frac=cfg.get('topk_frac', 0.05), focal_gamma=cfg.get('focal_gamma', 1.0),
                       action_dropout_prob=cfg.get('action_dropout_prob', 0.0),
                       motion_loss_per_sample=cfg.get('motion_loss_per_sample', False),
-                      dropout=cfg.get('dropout', 0.0), action_token=cfg.get('action_token', False))
+                      dropout=cfg.get('dropout', 0.0), action_token=cfg.get('action_token', False),
+                      context_noise_max=cfg.get('context_noise_max', 0.0))
     return kwargs
 
 
