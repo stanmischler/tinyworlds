@@ -2,7 +2,7 @@
 
 ## Jean Zay (`jeanzay/`)
 
-IDRIS's national GPU cluster, used through the project `hsq` (A100 and H100 hours, counted with `idracct`).
+IDRIS's national GPU cluster, used through Paul Couairon's project `ehr` (105352, AD011017489: 4,999 A100 h until 2027-02-16, counted with `idracct`; `hsq` expired on 2026-10-31, `qvw` is another group's EEG allocation and is never used here).
 It is reached only through the CMAP gateway, so `~/.ssh/config` needs:
 
 ```
@@ -41,5 +41,5 @@ on one GPU (A100 by default, 20 h max) with W&B offline (`wandb sync` from the l
 offline and `PYTHONPATH` set; logs go to `logs/`. Its header lists the variants: test queue
 (`--qos=qos_gpu_a100-dev`, 2 h max), H100, sweeps as job arrays (`--lines sweep.txt`) and chained jobs
 (`--dependency=afterany:<id>`) to resume past 20 h. Copy results back with
-`rsync -rltz jeanzay:/lustre/fswork/projects/rech/hsq/<idris login>/runs/<folder>/results/<run> results/`
+`rsync -rltz jeanzay:/lustre/fswork/projects/rech/ehr/<idris login>/runs/<folder>/results/<run> results/`
 (the full path: `$WORK` is unset in rsync's shell).

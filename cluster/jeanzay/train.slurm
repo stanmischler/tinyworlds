@@ -2,14 +2,14 @@
 # Run `python <args>` on one Jean Zay GPU, from the run folder this job is submitted in.
 #   sbatch cluster/jeanzay/train.slurm scripts/dynamics/train_dynamics.py --config <dyn yaml> --training_config <training yaml> -- key=val   # A100, up to 20 h
 #   sbatch --qos=qos_gpu_a100-dev --time=00:10:00 cluster/jeanzay/train.slurm …           # test queue, 2 h max
-#   sbatch -A hsq@h100 -C h100 --qos=qos_gpu_h100-t3 --cpus-per-task=24 cluster/jeanzay/train.slurm …   # H100
+#   sbatch -A ehr@h100 -C h100 --qos=qos_gpu_h100-t3 --cpus-per-task=24 cluster/jeanzay/train.slurm …   # H100
 #   sbatch --array=0-3 cluster/jeanzay/train.slurm --lines sweep.txt                       # sweep: task i runs line i+1
 #   sbatch --dependency=afterany:<jobid> cluster/jeanzay/train.slurm …                    # chain past the 20 h limit
 #   sbatch --gres=gpu:4 --cpus-per-task=32 cluster/jeanzay/train.slurm …                  # one run on 4 GPUs of a node (torchrun;
 #                                                                                          the script must support it)
 # Options given to sbatch override the defaults below. Logs go to logs/<job name>_<job id>.out (each array task has its own job id).
 #SBATCH --job-name=tinyworlds
-#SBATCH --account=hsq@a100
+#SBATCH --account=ehr@a100
 #SBATCH -C a100
 #SBATCH --qos=qos_gpu_a100-t3
 #SBATCH --nodes=1
